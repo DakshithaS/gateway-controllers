@@ -65,12 +65,6 @@ jobs:
           cache: true
 
       # ------------------------------------------------------------
-      # Install jq
-      # ------------------------------------------------------------
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      # ------------------------------------------------------------
       # Resolve module metadata
       # ------------------------------------------------------------
       - name: Resolve module metadata
@@ -199,7 +193,7 @@ jobs:
           exit 1
 
       # ------------------------------------------------------------
-      # Register Policy in Policy Hub (MANDATORY)
+      # Register Policy in Policy Hub (MANDATORY, multipart)
       # ------------------------------------------------------------
       - name: Register policy in Policy Hub
         id: policy-hub
@@ -211,36 +205,24 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${POLICY_HUB_URL:-}" || -z "${POLICY_HUB_TOKEN:-}" ]]; then
-            echo "❌ Policy Hub credentials missing"
             echo "registration_status=skipped" >> "$GITHUB_OUTPUT"
             echo "registration_message=Missing POLICY_HUB_URL or POLICY_HUB_TOKEN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          PAYLOAD=$(jq -n \
-            --arg policy "${{ github.event.inputs.policy }}" \
-            --arg version "${{ github.event.inputs.version }}" \
-            --arg module_path "${{ steps.meta.outputs.module_path }}" \
-            --arg git_tag "${{ steps.meta.outputs.tag_name }}" \
-            --arg repository "${{ github.repository }}" \
-            --arg commit_sha "${{ github.sha }}" \
-            --rawfile policy_def "${{ steps.meta.outputs.target_dir }}/policy-definition.yaml" \
-            '{
-              policy: $policy,
-              version: $version,
-              module_path: $module_path,
-              git_tag: $git_tag,
-              repository: $repository,
-              commit_sha: $commit_sha,
-              policy_definition: $policy_def,
-              published_at: now | strftime("%Y-%m-%dT%H:%M:%SZ")
-            }')
+          DIR="${{ steps.meta.outputs.target_dir }}"
 
           RESPONSE=$(curl -sSL -w "HTTPSTATUS:%{http_code}" \
             -X POST "$POLICY_HUB_URL/policies/register" \
             -H "Authorization: Bearer $POLICY_HUB_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            -F "policy=${{ github.event.inputs.policy }}" \
+            -F "version=${{ github.event.inputs.version }}" \
+            -F "module_path=${{ steps.meta.outputs.module_path }}" \
+            -F "git_tag=${{ steps.meta.outputs.tag_name }}" \
+            -F "repository=${{ github.repository }}" \
+            -F "commit_sha=${{ github.sha }}" \
+            -F "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -F "policy_definition=@$DIR/policy-definition.yaml;type=application/yaml")
 
           STATUS=$(echo "$RESPONSE" | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
           BODY=$(echo "$RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
