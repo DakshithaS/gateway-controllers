@@ -154,47 +154,6 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Create and push Git tag
-      # ------------------------------------------------------------
-      - name: Create and push tag
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git tag -a "${{ steps.meta.outputs.tag_name }}" \
-            -m "Release ${{ github.event.inputs.policy }} v${{ github.event.inputs.version }}"
-
-          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
-            "${{ steps.meta.outputs.tag_name }}"
-
-      # ------------------------------------------------------------
-      # Verify Go module resolution
-      # ------------------------------------------------------------
-      - name: Verify Go module resolution
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MOD="${{ steps.meta.outputs.module_path }}"
-          VER="v${{ github.event.inputs.version }}"
-
-          for i in 1 2 3; do
-            if go list -m "$MOD@$VER"; then
-              echo "✅ Module resolved"
-              exit 0
-            fi
-            sleep 15
-          done
-
-          echo "❌ Go module resolution failed"
-          exit 1
-
-      # ------------------------------------------------------------
       # Register Policy in Policy Hub (MANDATORY, multipart)
       # ------------------------------------------------------------
       - name: Register policy in Policy Hub
@@ -220,10 +179,7 @@ jobs:
             -F "policy=${{ github.event.inputs.policy }}" \
             -F "version=${{ github.event.inputs.version }}" \
             -F "module_path=${{ steps.meta.outputs.module_path }}" \
-            -F "git_tag=${{ steps.meta.outputs.tag_name }}" \
             -F "repository=${{ github.repository }}" \
-            -F "commit_sha=${{ github.sha }}" \
-            -F "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -F "policy_definition=@$DIR/policy-definition.yaml;type=application/yaml")
 
           STATUS=$(echo "$RESPONSE" | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
@@ -238,6 +194,49 @@ jobs:
           fi
 
       # ------------------------------------------------------------
+      # Create and push Git tag (only on successful registration)
+      # ------------------------------------------------------------
+      - name: Create and push tag
+        if: steps.policy-hub.outputs.registration_status == 'success'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${{ steps.meta.outputs.tag_name }}" \
+            -m "Release ${{ github.event.inputs.policy }} v${{ github.event.inputs.version }}"
+
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
+            "${{ steps.meta.outputs.tag_name }}"
+
+      # ------------------------------------------------------------
+      # Verify Go module resolution
+      # ------------------------------------------------------------
+      - name: Verify Go module resolution
+        if: steps.policy-hub.outputs.registration_status == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MOD="${{ steps.meta.outputs.module_path }}"
+          VER="v${{ github.event.inputs.version }}"
+
+          for i in 1 2 3; do
+            if go list -m "$MOD@$VER"; then
+              echo "✅ Module resolved"
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "❌ Go module resolution failed"
+          exit 1
+
+      # ------------------------------------------------------------
       # Publish summary (Markdown)
       # ------------------------------------------------------------
       - name: Publish summary
@@ -247,21 +246,29 @@ jobs:
               TITLE="🎉 Policy Published Successfully"
               HUB="✅ Policy Hub registration successful"
               ACTION=""
+              TAG_STATUS="✅ Git tag created"
+              MODULE_STATUS="✅ Go module verified"
               ;;
             skipped)
               TITLE="❌ Policy Publish Failed"
               HUB="❌ Policy Hub registration skipped"
               ACTION="**Fix:** Configure \`POLICY_HUB_URL\` and \`POLICY_HUB_TOKEN\` secrets and re-run the workflow."
+              TAG_STATUS="❌ Git tag not created"
+              MODULE_STATUS="❌ Go module not verified"
               ;;
             failed)
               TITLE="❌ Policy Publish Failed"
               HUB="❌ Policy Hub registration failed"
               ACTION="**Fix:** Review Policy Hub error details above and retry."
+              TAG_STATUS="❌ Git tag not created"
+              MODULE_STATUS="❌ Go module not verified"
               ;;
             *)
               TITLE="❌ Policy Publish Failed"
               HUB="❌ Unknown Policy Hub state"
               ACTION="**Fix:** Inspect workflow logs."
+              TAG_STATUS="❌ Git tag not created"
+              MODULE_STATUS="❌ Go module not verified"
               ;;
           esac
 
@@ -277,8 +284,8 @@ jobs:
 
           ## Status
           ✅ Tests passed  
-          ✅ Git tag created  
-          ✅ Go module verified  
+          $TAG_STATUS  
+          $MODULE_STATUS  
           $HUB
 
           $ACTION
