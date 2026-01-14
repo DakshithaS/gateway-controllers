@@ -1,0 +1,195 @@
+name: Publish Policy
+
+on:
+  workflow_dispatch:
+    inputs:
+      policy:
+        description: 'Policy name (e.g., rate-limit)'
+        required: true
+        type: string
+      version:
+        description: 'Version (SemVer format: X.Y.Z or X.Y.Z-dev.N or X.Y.Z-rc.N)'
+        required: true
+        type: string
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch all history for tag checking
+
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    - name: Validate policy exists
+      run: |
+        POLICY_DIR="policies/${{ github.event.inputs.policy }}"
+        if [ ! -d "$POLICY_DIR" ]; then
+          echo "❌ Policy '${{ github.event.inputs.policy }}' does not exist"
+          echo "Available policies:"
+          ls -1 policies/
+          exit 1
+        fi
+        echo "✅ Policy directory exists: $POLICY_DIR"
+
+    - name: Parse and validate version
+      id: version-validation
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        
+        # Validate SemVer format
+        if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+|-rc\.[0-9]+)?$' > /dev/null; then
+          echo "❌ Version must be SemVer (e.g. 2.4.0, 2.4.0-dev.1, 2.4.0-rc.1)"
+          exit 1
+        fi
+        
+        # Extract major, minor, patch
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3 | sed 's/-.*//')
+        
+        echo "✅ Version format valid: $VERSION"
+        echo "major=$MAJOR" >> $GITHUB_OUTPUT
+        echo "minor=$MINOR" >> $GITHUB_OUTPUT
+        echo "patch=$PATCH" >> $GITHUB_OUTPUT
+
+    - name: Validate branch correctness
+      run: |
+        EXPECTED_BRANCH="${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}.${{ steps.version-validation.outputs.minor }}.x"
+        CURRENT_BRANCH="${{ github.ref_name }}"
+        
+        if [ "$CURRENT_BRANCH" != "$EXPECTED_BRANCH" ]; then
+          echo "❌ Releases for ${{ steps.version-validation.outputs.major }}.${{ steps.version-validation.outputs.minor }}.x must come from branch '$EXPECTED_BRANCH'"
+          echo "Current branch: $CURRENT_BRANCH"
+          exit 1
+        fi
+        echo "✅ Branch validation passed: $CURRENT_BRANCH"
+
+    - name: Validate policy structure
+      run: |
+        POLICY_DIR="policies/${{ github.event.inputs.policy }}"
+        MAJOR_VERSION_DIR="$POLICY_DIR/v${{ steps.version-validation.outputs.major }}"
+        
+        if [ ! -d "$MAJOR_VERSION_DIR" ]; then
+          echo "❌ Policy v${{ steps.version-validation.outputs.major }} directory does not exist"
+          exit 1
+        fi
+        
+        if [ ! -f "$MAJOR_VERSION_DIR/go.mod" ]; then
+          echo "❌ go.mod not found in $MAJOR_VERSION_DIR"
+          exit 1
+        fi
+        
+        if [ ! -f "$MAJOR_VERSION_DIR/policy-definition.yaml" ]; then
+          echo "❌ policy-definition.yaml not found in $MAJOR_VERSION_DIR"
+          exit 1
+        fi
+        
+        echo "✅ Policy structure validation passed"
+
+    - name: Run policy tests
+      run: |
+        POLICY_DIR="policies/${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}"
+        
+        echo "Running tests in $POLICY_DIR"
+        cd "$POLICY_DIR"
+        
+        if ! go test ./...; then
+          echo "❌ Tests failed — release aborted"
+          exit 1
+        fi
+        
+        echo "✅ All tests passed"
+
+    - name: Ensure version is new
+      run: |
+        TAG_NAME="${{ github.event.inputs.policy }}/v${{ github.event.inputs.version }}"
+        
+        if git tag | grep -q "^$TAG_NAME$"; then
+          echo "❌ Version ${{ github.event.inputs.version }} already exists (tag: $TAG_NAME)"
+          exit 1
+        fi
+        
+        echo "✅ Version ${{ github.event.inputs.version }} is new"
+
+    - name: Create Git tag
+      run: |
+        TAG_NAME="${{ github.event.inputs.policy }}/v${{ github.event.inputs.version }}"
+        
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        git tag "$TAG_NAME"
+        git push origin "$TAG_NAME"
+        
+        echo "✅ Created and pushed tag: $TAG_NAME"
+
+    - name: Verify Go module resolution
+      run: |
+        MODULE_PATH="github.com/DakshithaS/gateway-controllers/policies/${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}"
+        VERSION_TAG="${{ github.event.inputs.policy }}/v${{ github.event.inputs.version }}"
+        
+        echo "Testing module resolution: $MODULE_PATH@$VERSION_TAG"
+        
+        # Try to get the module
+        if ! go list -m "$MODULE_PATH@$VERSION_TAG" 2>/dev/null; then
+          echo "❌ Go cannot resolve module $MODULE_PATH@$VERSION_TAG"
+          echo "This might be due to network issues or the tag not being available yet."
+          echo "Try again in a few minutes or check the repository."
+          exit 1
+        fi
+        
+        echo "✅ Go module resolution successful"
+
+    - name: Register policy in Policy Hub
+      run: |
+        echo "📝 Registering policy in Policy Hub..."
+        
+        # This is a placeholder for the actual Policy Hub API call
+        # You would replace this with the actual API endpoint and authentication
+        
+        POLICY_DATA=$(cat <<EOF
+        {
+          "policy": "${{ github.event.inputs.policy }}",
+          "version": "${{ github.event.inputs.version }}",
+          "module_path": "github.com/DakshithaS/gateway-controllers/policies/${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}",
+          "git_tag": "${{ github.event.inputs.policy }}/v${{ github.event.inputs.version }}",
+          "policy_definition": $(cat "policies/${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}/policy-definition.yaml" | jq -Rs .)
+        }
+        EOF
+        )
+        
+        echo "Policy registration data prepared:"
+        echo "$POLICY_DATA" | jq .
+        
+        # Placeholder API call - replace with actual Policy Hub endpoint
+        # curl -X POST https://policy-hub-api.example.com/register \
+        #   -H "Authorization: Bearer ${{ secrets.POLICY_HUB_TOKEN }}" \
+        #   -H "Content-Type: application/json" \
+        #   -d "$POLICY_DATA"
+        
+        echo "⚠️  Policy Hub registration is currently a placeholder"
+        echo "Implement the actual API call to your Policy Hub service"
+        
+        echo "✅ Policy registration step completed (placeholder)"
+
+    - name: Summary
+      run: |
+        echo "🎉 Policy publication completed successfully!"
+        echo ""
+        echo "📦 Policy: ${{ github.event.inputs.policy }}"
+        echo "🏷️  Version: ${{ github.event.inputs.version }}"
+        echo "🏷️  Tag: ${{ github.event.inputs.policy }}/v${{ github.event.inputs.version }}"
+        echo "📚 Module: github.com/DakshithaS/gateway-controllers/policies/${{ github.event.inputs.policy }}/v${{ steps.version-validation.outputs.major }}"
+        echo ""
+        echo "✅ Version exists in Git"
+        echo "✅ Go can fetch the module"
+        echo "✅ Policy Hub registration prepared"
+        echo ""
+        echo "🚀 Ready for use!"
