@@ -11,10 +11,6 @@ on:
         description: "Version (SemVer format: X.Y.Z)"
         required: true
         type: string
-      git_tag:
-        description: "Git tag (optional - will be auto-resolved if not provided)"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -79,12 +75,8 @@ jobs:
             MODULE_PATH="github.com/DakshithaS/gateway-controllers/policies/$POLICY/v$MAJOR"
           fi
 
-          # Use provided tag or auto-resolve
-          if [[ -n "${{ github.event.inputs.git_tag }}" ]]; then
-            GIT_TAG="${{ github.event.inputs.git_tag }}"
-          else
-            GIT_TAG="policies/$POLICY/v$VERSION"
-          fi
+          # Auto-resolve git tag
+          GIT_TAG="policies/$POLICY/v$VERSION"
 
           # Verify tag exists
           if ! git tag -l | grep -qx "$GIT_TAG"; then
