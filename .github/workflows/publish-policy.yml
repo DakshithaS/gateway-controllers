@@ -2,8 +2,6 @@ name: Publish Policy
 
 on:
   workflow_dispatch:
-    branches:
-      - main
     inputs:
       policy:
         description: "Policy folder name (e.g., ratelimit)"
@@ -108,7 +106,7 @@ jobs:
           done
 
           EXPECTED="${{ steps.meta.outputs.module_path }}"
-          ACTUAL=$(awk 'NR==1 {print $2}' "$DIR/go.mod")
+          ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
           [[ "$EXPECTED" == "$ACTUAL" ]] || {
             echo "❌ go.mod module mismatch"
@@ -146,10 +144,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rev-parse "${{ steps.meta.outputs.tag_name }}" >/dev/null 2>&1 && {
-            echo "❌ Tag already exists"
+          if git rev-parse "${{ steps.meta.outputs.tag_name }}" >/dev/null 2>&1; then
+            echo "❌ Tag already exists: ${{ steps.meta.outputs.tag_name }}"
+            echo "Existing tag information:"
+            git show "${{ steps.meta.outputs.tag_name }}" --no-patch --format="%H %s (%ai)"
             exit 1
-          } || echo "✅ Version is new"
+          else
+            echo "✅ Version is new"
+          fi
 
       # ------------------------------------------------------------
       # Create and push Git tag
