@@ -190,7 +190,7 @@ jobs:
       run: |
         echo "📝 Registering policy in Policy Hub..."
         
-MODULE_PATH="${{ steps.version-validation.outputs.module-path }}"
+        MODULE_PATH="${{ steps.version-validation.outputs.module-path }}"
         TARGET_DIR="${{ steps.version-validation.outputs.target-dir }}"
         TAG_NAME="${{ steps.version-validation.outputs.tag-name }}"
         
