@@ -2,9 +2,11 @@ name: Publish Policy
 
 on:
   workflow_dispatch:
+    branches:
+      - main
     inputs:
       policy:
-        description: 'Policy name (e.g., rate-limit)'
+        description: 'Policy folder name (e.g., ratelimit)'
         required: true
         type: string
       version:
@@ -23,9 +25,9 @@ jobs:
     steps:
     - name: Validate inputs
       run: |
-        # Validate policy name (alphanumeric, hyphens only)
+        # Validate policy folder name (alphanumeric, hyphens only)
         if ! echo "${{ github.event.inputs.policy }}" | grep -E '^[a-zA-Z0-9-]+$'; then
-          echo "❌ Policy name must contain only alphanumeric characters and hyphens"
+          echo "❌ Policy folder name must contain only alphanumeric characters and hyphens"
           exit 1
         fi
         
@@ -251,7 +253,7 @@ jobs:
         
         # Create GitHub step summary
         cat >> $GITHUB_STEP_SUMMARY << EOF
-        # 🎉 Policy Published Successfully
+        # Policy Published Successfully
         
         | Item | Value |
         |------|-------|
