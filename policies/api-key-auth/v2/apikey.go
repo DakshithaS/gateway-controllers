@@ -20,11 +20,12 @@ package apikey
 import (
 	"encoding/json"
 	"fmt"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+
+	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
 const (
