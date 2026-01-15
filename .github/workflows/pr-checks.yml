@@ -14,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -132,23 +132,19 @@ jobs:
         run: |
           echo "Running go vet on changed policies..."
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Checking policy: $policy"
-            if ! (cd "policies/$policy" && go vet ./...); then
-              echo "❌ go vet failed for policy: $policy"
-              EXIT_CODE=1
+            output=$(cd "policies/$policy" && go vet ./... 2>&1)
+            if [[ $? -ne 0 ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ go vet failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ go vet passed for all policies"
-          fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Static check
@@ -158,23 +154,19 @@ jobs:
         run: |
           echo "Running staticcheck on changed policies..."
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Checking policy: $policy"
-            if ! (cd "policies/$policy" && staticcheck ./...); then
-              echo "❌ staticcheck failed for policy: $policy"
-              EXIT_CODE=1
+            output=$(cd "policies/$policy" && staticcheck ./... 2>&1)
+            if [[ $? -ne 0 ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ staticcheck failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ staticcheck passed for all policies"
-          fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Vulnerability check
@@ -187,23 +179,19 @@ jobs:
           # Ensure govulncheck is in PATH
           export PATH="$PATH:$(go env GOPATH)/bin"
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Checking vulnerabilities in policy: $policy"
-            if ! (cd "policies/$policy" && govulncheck ./...); then
-              echo "❌ govulncheck failed for policy: $policy"
-              EXIT_CODE=1
+            output=$(cd "policies/$policy" && govulncheck ./... 2>&1)
+            if [[ $? -ne 0 ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ govulncheck failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ govulncheck passed for all policies"
-          fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Build check
@@ -213,23 +201,19 @@ jobs:
         run: |
           echo "Building changed policies..."
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Building policy: $policy"
-            if ! (cd "policies/$policy" && go build -v ./...); then
-              echo "❌ Build failed for policy: $policy"
-              EXIT_CODE=1
+            output=$(cd "policies/$policy" && go build -v ./... 2>&1)
+            if [[ $? -ne 0 ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Build failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ Build successful for all policies"
-          fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Test policies
@@ -239,23 +223,19 @@ jobs:
         run: |
           echo "Testing changed policies..."
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Testing policy: $policy"
-            if ! (cd "policies/$policy" && go test -v -race -timeout=5m ./...); then
-              echo "❌ Tests failed for policy: $policy"
-              EXIT_CODE=1
+            output=$(cd "policies/$policy" && go test -v -race -timeout=5m ./... 2>&1)
+            if [[ $? -ne 0 ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Tests failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ Tests passed for all policies"
-          fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Validate policy structure
@@ -265,27 +245,24 @@ jobs:
         run: |
           echo "Validating policy structure..."
           
-          EXIT_CODE=0
-          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
             
             echo "Validating policy: $policy"
             
             POLICY_DIR="policies/$policy"
+            POLICY_ERRORS=""
             
             # Check required files exist
             for file in go.mod policy-definition.yaml; do
               if [[ ! -f "$POLICY_DIR/$file" ]]; then
-                echo "❌ Missing required file: $POLICY_DIR/$file"
-                EXIT_CODE=1
+                POLICY_ERRORS+="❌ Missing required file: $POLICY_DIR/$file\n"
               fi
             done
             
             # Check at least one .go file exists
             if ! find "$POLICY_DIR" -name "*.go" -type f | grep -q .; then
-              echo "❌ No .go files found in $POLICY_DIR"
-              EXIT_CODE=1
+              POLICY_ERRORS+="❌ No .go files found in $POLICY_DIR\n"
             fi
             
             # Validate go.mod module path
@@ -294,20 +271,32 @@ jobs:
               EXPECTED="github.com/DakshithaS/gateway-controllers/policies/$policy"
               
               if [[ "$MODULE_PATH" != "$EXPECTED"* ]]; then
-                echo "❌ Invalid module path in $POLICY_DIR/go.mod"
-                echo "   Expected: $EXPECTED"
-                echo "   Got: $MODULE_PATH"
-                EXIT_CODE=1
+                POLICY_ERRORS+="❌ Invalid module path in $POLICY_DIR/go.mod\n"
+                POLICY_ERRORS+="   Expected: $EXPECTED\n"
+                POLICY_ERRORS+="   Got: $MODULE_PATH\n"
               fi
             fi
             
+            if [[ -n "$POLICY_ERRORS" ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Policy structure validation failed for: $policy" >> $GITHUB_ENV
+              echo "$POLICY_ERRORS" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+            fi
+            
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          if [[ $EXIT_CODE -eq 0 ]]; then
-            echo "✅ Policy structure validation passed"
+
+      # ------------------------------------------------------------
+      # Check for errors and fail
+      # ------------------------------------------------------------
+      - name: Fail if errors found
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          if [[ -n "$ERRORS" ]]; then
+            echo "The following checks failed:"
+            echo "$ERRORS"
+            exit 1
           fi
-          
-          exit $EXIT_CODE
 
       # ------------------------------------------------------------
       # Summary
@@ -340,3 +329,32 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "No policy changes detected in this PR." >> $GITHUB_STEP_SUMMARY
           fi
+
+      # ------------------------------------------------------------
+      # Comment on PR if failed
+      # ------------------------------------------------------------
+      - name: Comment on PR if checks failed
+        if: failure() && steps.changed-policies.outputs.has_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ❌ PR Checks Failed
+
+            Some automated checks failed for the policies in this PR. Please review the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for detailed error messages.
+
+            **Failed Checks:**
+            ${process.env.ERRORS || 'Unknown errors occurred.'}
+
+            **Common fixes:**
+            - Run \`go fmt ./...\` to fix formatting issues
+            - Run \`goimports -w .\` to fix import issues
+            - Address any \`go vet\`, \`staticcheck\`, or build errors shown above
+
+            The checks include: Go formatting, import formatting, vet, static analysis, vulnerability scanning, build verification, and tests.`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
