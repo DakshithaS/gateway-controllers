@@ -6,11 +6,6 @@ on:
     paths:
       - 'policies/**'
       - '.github/workflows/**'
-  pull_request_target:
-    branches: [main, master]
-    paths:
-      - 'policies/**'
-      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -184,12 +179,21 @@ jobs:
             
             echo "Checking vulnerabilities in policy: $policy"
             output=$(cd "policies/$policy" && govulncheck ./... 2>&1)
-            if [[ $? -ne 0 ]]; then
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ govulncheck failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+            exit_code=$?
+            if [[ $exit_code -ne 0 ]]; then
+              if [[ $exit_code -eq 3 ]]; then
+                echo "ERRORS<<EOF" >> $GITHUB_ENV
+                echo "❌ Vulnerabilities found in policy: $policy" >> $GITHUB_ENV
+                echo "$output" >> $GITHUB_ENV
+                echo "" >> $GITHUB_ENV
+                echo "EOF" >> $GITHUB_ENV
+              else
+                echo "ERRORS<<EOF" >> $GITHUB_ENV
+                echo "❌ govulncheck failed for policy: $policy" >> $GITHUB_ENV
+                echo "$output" >> $GITHUB_ENV
+                echo "" >> $GITHUB_ENV
+                echo "EOF" >> $GITHUB_ENV
+              fi
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
