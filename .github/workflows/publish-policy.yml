@@ -198,7 +198,7 @@ jobs:
       # Set default Policy Hub outputs (since registration is disabled)
       # ------------------------------------------------------------
       - name: Set default Policy Hub outputs
-        id: policy-hub
+        id: policy-hub-default
         shell: bash
         run: |
           echo "registration_status=skipped" >> "$GITHUB_OUTPUT"
@@ -208,7 +208,7 @@ jobs:
       # Create and push Git tag (only on successful registration)
       # ------------------------------------------------------------
       - name: Create and push tag
-        if: steps.policy-hub.outputs.registration_status == 'success'
+        if: steps.policy-hub-default.outputs.registration_status == 'success'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -228,7 +228,7 @@ jobs:
       # Verify Go module resolution
       # ------------------------------------------------------------
       - name: Verify Go module resolution
-        if: steps.policy-hub.outputs.registration_status == 'success'
+        if: steps.policy-hub-default.outputs.registration_status == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -252,7 +252,7 @@ jobs:
       # ------------------------------------------------------------
       - name: Publish summary
         run: |
-          case "${{ steps.policy-hub.outputs.registration_status }}" in
+          case "${{ steps.policy-hub-default.outputs.registration_status }}" in
             success)
               TITLE="🎉 Policy Published Successfully"
               HUB="✅ Policy Hub registration successful"
@@ -308,7 +308,7 @@ jobs:
       - name: Final status check
         shell: bash
         run: |
-          case "${{ steps.policy-hub.outputs.registration_status }}" in
+          case "${{ steps.policy-hub-default.outputs.registration_status }}" in
             success|skipped)
               echo "✅ Workflow completed successfully"
               exit 0
