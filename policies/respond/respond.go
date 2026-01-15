@@ -14,10 +14,11 @@
  *  limitations under the License.
  *
  */
- 
+
 package respond
 
 import (
+	"encoding/json"
 	"fmt"
 
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
@@ -34,6 +35,21 @@ func GetPolicy(
 	params map[string]interface{},
 ) (policy.Policy, error) {
 	return ins, nil
+}
+
+// configError returns a 500 error response for configuration issues
+func configError(message string) policy.ImmediateResponse {
+	errBody, _ := json.Marshal(map[string]string{
+		"error":   "Configuration Error",
+		"message": message,
+	})
+	return policy.ImmediateResponse{
+		StatusCode: 500,
+		Headers: map[string]string{
+			"content-type": "application/json",
+		},
+		Body: errBody,
+	}
 }
 
 // Mode returns the processing mode for this policy
@@ -77,66 +93,30 @@ func (p *RespondPolicy) OnRequest(ctx *policy.RequestContext, params map[string]
 			for i, headerRaw := range headersList {
 				headerMap, ok := headerRaw.(map[string]interface{})
 				if !ok {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d] must be an object"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d] must be an object", i))
 				}
 
 				// Safe type assertion for name
 				nameRaw, ok := headerMap["name"]
 				if !ok {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d] missing required 'name' field"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d] missing required 'name' field", i))
 				}
 				name, ok := nameRaw.(string)
 				if !ok {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d].name must be a string"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d].name must be a string", i))
 				}
 				if name == "" {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d].name cannot be empty"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d].name cannot be empty", i))
 				}
 
 				// Safe type assertion for value
 				valueRaw, ok := headerMap["value"]
 				if !ok {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d] missing required 'value' field"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d] missing required 'value' field", i))
 				}
 				value, ok := valueRaw.(string)
 				if !ok {
-					return policy.ImmediateResponse{
-						StatusCode: 500,
-						Headers: map[string]string{
-							"content-type": "application/json",
-						},
-						Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "headers[%d].value must be a string"}`, i)),
-					}
+					return configError(fmt.Sprintf("headers[%d].value must be a string", i))
 				}
 
 				headers[name] = value

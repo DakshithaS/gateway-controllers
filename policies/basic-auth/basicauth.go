@@ -14,11 +14,13 @@
  *  limitations under the License.
  *
  */
- 
+
 package basicauth
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -59,23 +61,31 @@ func (p *BasicAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[strin
 	// Get configuration parameters with safe type assertions
 	expectedUsername, ok := params["username"].(string)
 	if !ok || expectedUsername == "" {
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Internal Server Error",
+			"message": "Invalid policy configuration: username must be a non-empty string",
+		})
 		return policy.ImmediateResponse{
 			StatusCode: 500,
 			Headers: map[string]string{
 				"content-type": "application/json",
 			},
-			Body: []byte(`{"error": "Internal Server Error", "message": "Invalid policy configuration: username must be a non-empty string"}`),
+			Body: errBody,
 		}
 	}
 
 	expectedPassword, ok := params["password"].(string)
 	if !ok || expectedPassword == "" {
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Internal Server Error",
+			"message": "Invalid policy configuration: password must be a non-empty string",
+		})
 		return policy.ImmediateResponse{
 			StatusCode: 500,
 			Headers: map[string]string{
 				"content-type": "application/json",
 			},
-			Body: []byte(`{"error": "Internal Server Error", "message": "Invalid policy configuration: password must be a non-empty string"}`),
+			Body: errBody,
 		}
 	}
 
@@ -123,8 +133,11 @@ func (p *BasicAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[strin
 	providedUsername := parts[0]
 	providedPassword := parts[1]
 
-	// Validate credentials
-	if providedUsername != expectedUsername || providedPassword != expectedPassword {
+	// Validate credentials using constant-time comparison to prevent timing attacks
+	usernameMatch := subtle.ConstantTimeCompare([]byte(providedUsername), []byte(expectedUsername)) == 1
+	passwordMatch := subtle.ConstantTimeCompare([]byte(providedPassword), []byte(expectedPassword)) == 1
+
+	if !usernameMatch || !passwordMatch {
 		return p.handleAuthFailure(ctx, allowUnauthenticated, realm, "invalid credentials")
 	}
 

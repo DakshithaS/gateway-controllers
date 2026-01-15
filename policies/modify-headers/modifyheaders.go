@@ -14,10 +14,11 @@
  *  limitations under the License.
  *
  */
- 
+
 package modifyheaders
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -60,66 +61,6 @@ func (p *ModifyHeadersPolicy) Mode() policy.ProcessingMode {
 		ResponseHeaderMode: policy.HeaderModeProcess, // Can modify response headers
 		ResponseBodyMode:   policy.BodyModeSkip,      // Don't need response body
 	}
-}
-
-// validateHeaderModifications validates a list of header modifications
-func (p *ModifyHeadersPolicy) validateHeaderModifications(headersRaw interface{}, fieldName string) error {
-	headers, ok := headersRaw.([]interface{})
-	if !ok {
-		return fmt.Errorf("%s must be an array", fieldName)
-	}
-
-	if len(headers) == 0 {
-		return fmt.Errorf("%s cannot be empty", fieldName)
-	}
-
-	for i, headerRaw := range headers {
-		headerMap, ok := headerRaw.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("%s[%d] must be an object with 'action', 'name', and optionally 'value' fields", fieldName, i)
-		}
-
-		// Validate action
-		actionRaw, ok := headerMap["action"]
-		if !ok {
-			return fmt.Errorf("%s[%d] missing required 'action' field", fieldName, i)
-		}
-		action, ok := actionRaw.(string)
-		if !ok {
-			return fmt.Errorf("%s[%d].action must be a string", fieldName, i)
-		}
-		action = strings.ToUpper(action)
-		if action != string(ActionSet) && action != string(ActionAppend) && action != string(ActionDelete) {
-			return fmt.Errorf("%s[%d].action must be SET, APPEND, or DELETE", fieldName, i)
-		}
-
-		// Validate name
-		nameRaw, ok := headerMap["name"]
-		if !ok {
-			return fmt.Errorf("%s[%d] missing required 'name' field", fieldName, i)
-		}
-		name, ok := nameRaw.(string)
-		if !ok {
-			return fmt.Errorf("%s[%d].name must be a string", fieldName, i)
-		}
-		if len(name) == 0 {
-			return fmt.Errorf("%s[%d].name cannot be empty", fieldName, i)
-		}
-
-		// Validate value for SET and APPEND actions
-		if action == string(ActionSet) || action == string(ActionAppend) {
-			valueRaw, ok := headerMap["value"]
-			if !ok {
-				return fmt.Errorf("%s[%d].value is required for %s action", fieldName, i, action)
-			}
-			_, ok = valueRaw.(string)
-			if !ok {
-				return fmt.Errorf("%s[%d].value must be a string", fieldName, i)
-			}
-		}
-	}
-
-	return nil
 }
 
 // parseHeaderModifications parses header modifications from config
@@ -193,7 +134,12 @@ func (p *ModifyHeadersPolicy) applyHeaderModifications(modifications []HeaderMod
 		case ActionDelete:
 			removeHeaders = append(removeHeaders, mod.Name)
 		case ActionAppend:
-			appendHeaders[mod.Name] = []string{mod.Value}
+			// Accumulate multiple APPEND operations for the same header
+			if existing, ok := appendHeaders[mod.Name]; ok {
+				appendHeaders[mod.Name] = append(existing, mod.Value)
+			} else {
+				appendHeaders[mod.Name] = []string{mod.Value}
+			}
 		}
 	}
 
@@ -213,12 +159,16 @@ func (p *ModifyHeadersPolicy) OnRequest(ctx *policy.RequestContext, params map[s
 	modifications, err := p.parseHeaderModifications(requestHeadersRaw)
 	if err != nil {
 		// Configuration error - fail with 500
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Configuration Error",
+			"message": fmt.Sprintf("Invalid requestHeaders configuration: %s", err.Error()),
+		})
 		return policy.ImmediateResponse{
 			StatusCode: 500,
 			Headers: map[string]string{
 				"content-type": "application/json",
 			},
-			Body: []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "Invalid requestHeaders configuration: %s"}`, err.Error())),
+			Body: errBody,
 		}
 	}
 	if len(modifications) == 0 {
@@ -249,9 +199,13 @@ func (p *ModifyHeadersPolicy) OnResponse(ctx *policy.ResponseContext, params map
 	if err != nil {
 		// Configuration error - return error response by modifying upstream response
 		statusCode := 500
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Configuration Error",
+			"message": fmt.Sprintf("Invalid responseHeaders configuration: %s", err.Error()),
+		})
 		return policy.UpstreamResponseModifications{
 			StatusCode: &statusCode,
-			Body:       []byte(fmt.Sprintf(`{"error": "Configuration Error", "message": "Invalid responseHeaders configuration: %s"}`, err.Error())),
+			Body:       errBody,
 			SetHeaders: map[string]string{
 				"content-type": "application/json",
 			},
