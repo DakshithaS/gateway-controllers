@@ -1,11 +1,6 @@
 name: PR Checks
 
 on:
-  pull_request:
-    branches: [main, master]
-    paths:
-      - 'policies/**'
-      - '.github/workflows/**'
   pull_request_target:
     branches: [main, master]
     paths:
@@ -14,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -30,6 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       # ------------------------------------------------------------
       # Setup Go
@@ -38,7 +34,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-          cache: true
 
       # ------------------------------------------------------------
       # Install additional tools
@@ -56,12 +51,12 @@ jobs:
         id: changed-policies
         run: |
           # Get list of changed files
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            BASE_SHA="${{ github.event.pull_request_target.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request_target.head.sha }}"
           else
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            BASE_SHA="${{ github.event.pull_request_target.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request_target.head.sha }}"
           fi
 
           # Find changed policy directories
@@ -83,192 +78,227 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Run all checks
+      # Format check
       # ------------------------------------------------------------
-      - name: Run all checks
+      - name: Check Go formatting
         if: steps.changed-policies.outputs.has_changes == 'true'
         run: |
-          echo "## 🔍 PR Checks Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Changed policies:**" >> $GITHUB_STEP_SUMMARY
+          echo "Checking Go formatting..."
           
-          while IFS= read -r policy; do
-            [[ -z "$policy" ]] && continue
-            echo "- \`$policy\`" >> $GITHUB_STEP_SUMMARY
-          done <<< "${{ steps.changed-policies.outputs.policies }}"
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Checks performed:**" >> $GITHUB_STEP_SUMMARY
-          
-          FAILED=false
-          
-          # Go formatting
-          echo "Checking Go formatting..." >> $GITHUB_STEP_SUMMARY
+          # Check if gofmt would make any changes
           UNFORMATTED=$(find policies/ -name "*.go" -exec gofmt -l {} +)
+          
           if [[ -n "$UNFORMATTED" ]]; then
-            echo "- ❌ Go formatting errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "$UNFORMATTED" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "Run \`go fmt ./...\` to fix." >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Go formatting" >> $GITHUB_STEP_SUMMARY
+            echo "❌ The following files are not properly formatted:"
+            echo "$UNFORMATTED"
+            echo ""
+            echo "Run 'go fmt ./...' to fix formatting issues."
+            exit 1
           fi
           
-          # Go imports
-          echo "Checking Go imports..." >> $GITHUB_STEP_SUMMARY
+          echo "✅ All Go files are properly formatted"
+
+      # ------------------------------------------------------------
+      # Import check
+      # ------------------------------------------------------------
+      - name: Check Go imports
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Checking Go imports..."
+          
+          # Check if goimports would make any changes
           UNFORMATTED=$(find policies/ -name "*.go" -exec goimports -l {} +)
+          
           if [[ -n "$UNFORMATTED" ]]; then
-            echo "- ❌ Import formatting errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "$UNFORMATTED" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "Run \`goimports -w .\` to fix." >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Import formatting" >> $GITHUB_STEP_SUMMARY
+            echo "❌ The following files have import issues:"
+            echo "$UNFORMATTED"
+            echo ""
+            echo "Run 'goimports -w .' to fix import issues."
+            exit 1
           fi
           
-          # go vet
-          echo "Running go vet..." >> $GITHUB_STEP_SUMMARY
-          VET_ERRORS=""
+          echo "✅ All Go imports are properly formatted"
+
+      # ------------------------------------------------------------
+      # Vet check
+      # ------------------------------------------------------------
+      - name: Run go vet
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Running go vet on changed policies..."
+          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
-            VET_OUTPUT=$(cd "policies/$policy" && go vet ./... 2>&1)
+            
+            echo "Checking policy: $policy"
+            output=$(cd "policies/$policy" && go vet ./... 2>&1)
             if [[ $? -ne 0 ]]; then
-              VET_ERRORS="${VET_ERRORS}Failed for $policy\n$VET_OUTPUT\n"
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ go vet failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$VET_ERRORS" ]]; then
-            echo "- ❌ Go vet errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$VET_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Go vet" >> $GITHUB_STEP_SUMMARY
-          fi
+
+      # ------------------------------------------------------------
+      # Static check
+      # ------------------------------------------------------------
+      - name: Run staticcheck
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Running staticcheck on changed policies..."
           
-          # staticcheck
-          echo "Running staticcheck..." >> $GITHUB_STEP_SUMMARY
-          STATIC_ERRORS=""
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
-            STATIC_OUTPUT=$(cd "policies/$policy" && staticcheck ./... 2>&1)
+            
+            echo "Checking policy: $policy"
+            output=$(cd "policies/$policy" && staticcheck ./... 2>&1)
             if [[ $? -ne 0 ]]; then
-              STATIC_ERRORS="${STATIC_ERRORS}Failed for $policy\n$STATIC_OUTPUT\n"
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ staticcheck failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$STATIC_ERRORS" ]]; then
-            echo "- ❌ Static analysis errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$STATIC_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Static analysis (staticcheck)" >> $GITHUB_STEP_SUMMARY
-          fi
+
+      # ------------------------------------------------------------
+      # Vulnerability check
+      # ------------------------------------------------------------
+      - name: Run govulncheck
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Running govulncheck on changed policies..."
           
-          # govulncheck
-          echo "Running govulncheck..." >> $GITHUB_STEP_SUMMARY
+          # Ensure govulncheck is in PATH
           export PATH="$PATH:$(go env GOPATH)/bin"
-          VULN_ERRORS=""
+          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
-            VULN_OUTPUT=$(cd "policies/$policy" && govulncheck ./... 2>&1)
-            if [[ $? -ne 0 ]]; then
-              VULN_ERRORS="${VULN_ERRORS}Failed for $policy\n$VULN_OUTPUT\n"
+            
+            echo "Checking vulnerabilities in policy: $policy"
+            output=$(cd "policies/$policy" && govulncheck ./... 2>&1)
+            exit_code=$?
+            if [[ $exit_code -ne 0 ]]; then
+              if [[ $exit_code -eq 3 ]]; then
+                echo "ERRORS<<EOF" >> $GITHUB_ENV
+                echo "❌ Vulnerabilities found in policy: $policy" >> $GITHUB_ENV
+                echo "$output" >> $GITHUB_ENV
+                echo "" >> $GITHUB_ENV
+                echo "EOF" >> $GITHUB_ENV
+              else
+                echo "ERRORS<<EOF" >> $GITHUB_ENV
+                echo "❌ govulncheck failed for policy: $policy" >> $GITHUB_ENV
+                echo "$output" >> $GITHUB_ENV
+                echo "" >> $GITHUB_ENV
+                echo "EOF" >> $GITHUB_ENV
+              fi
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$VULN_ERRORS" ]]; then
-            echo "- ❌ Vulnerability check errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$VULN_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Vulnerability check (govulncheck)" >> $GITHUB_STEP_SUMMARY
-          fi
+
+      # ------------------------------------------------------------
+      # Build check
+      # ------------------------------------------------------------
+      - name: Build policies
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Building changed policies..."
           
-          # Build
-          echo "Building policies..." >> $GITHUB_STEP_SUMMARY
-          BUILD_ERRORS=""
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
-            BUILD_OUTPUT=$(cd "policies/$policy" && go build -v ./... 2>&1)
+            
+            echo "Building policy: $policy"
+            output=$(cd "policies/$policy" && go build -v ./... 2>&1)
             if [[ $? -ne 0 ]]; then
-              BUILD_ERRORS="${BUILD_ERRORS}Failed for $policy\n$BUILD_OUTPUT\n"
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Build failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$BUILD_ERRORS" ]]; then
-            echo "- ❌ Build errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$BUILD_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Build verification" >> $GITHUB_STEP_SUMMARY
-          fi
+
+      # ------------------------------------------------------------
+      # Test policies
+      # ------------------------------------------------------------
+      - name: Test policies
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Testing changed policies..."
           
-          # Tests
-          echo "Testing policies..." >> $GITHUB_STEP_SUMMARY
-          TEST_ERRORS=""
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
-            TEST_OUTPUT=$(cd "policies/$policy" && go test -v -race -timeout=5m ./... 2>&1)
+            
+            echo "Testing policy: $policy"
+            output=$(cd "policies/$policy" && go test -v -race -timeout=5m ./... 2>&1)
             if [[ $? -ne 0 ]]; then
-              TEST_ERRORS="${TEST_ERRORS}Failed for $policy\n$TEST_OUTPUT\n"
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Tests failed for policy: $policy" >> $GITHUB_ENV
+              echo "$output" >> $GITHUB_ENV
+              echo "" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$TEST_ERRORS" ]]; then
-            echo "- ❌ Test errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$TEST_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Test execution (with race detection)" >> $GITHUB_STEP_SUMMARY
-          fi
+
+      # ------------------------------------------------------------
+      # Validate policy structure
+      # ------------------------------------------------------------
+      - name: Validate policy structure
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          echo "Validating policy structure..."
           
-          # Policy structure validation
-          echo "Validating policy structure..." >> $GITHUB_STEP_SUMMARY
-          STRUCT_ERRORS=""
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
+            
+            echo "Validating policy: $policy"
+            
             POLICY_DIR="policies/$policy"
-            # Check required files
+            POLICY_ERRORS=""
+            
+            # Check required files exist
             for file in go.mod policy-definition.yaml; do
               if [[ ! -f "$POLICY_DIR/$file" ]]; then
-                STRUCT_ERRORS="${STRUCT_ERRORS}Missing $file in $POLICY_DIR\n"
+                POLICY_ERRORS+="❌ Missing required file: $POLICY_DIR/$file\n"
               fi
             done
-            # Check .go files
+            
+            # Check at least one .go file exists
             if ! find "$POLICY_DIR" -name "*.go" -type f | grep -q .; then
-              STRUCT_ERRORS="${STRUCT_ERRORS}No .go files in $POLICY_DIR\n"
+              POLICY_ERRORS+="❌ No .go files found in $POLICY_DIR\n"
             fi
-            # Validate module path
+            
+            # Validate go.mod module path
             if [[ -f "$POLICY_DIR/go.mod" ]]; then
               MODULE_PATH=$(grep '^module ' "$POLICY_DIR/go.mod" | awk '{print $2}')
               EXPECTED="github.com/DakshithaS/gateway-controllers/policies/$policy"
+              
               if [[ "$MODULE_PATH" != "$EXPECTED"* ]]; then
-                STRUCT_ERRORS="${STRUCT_ERRORS}Invalid module path in $POLICY_DIR/go.mod: $MODULE_PATH (expected $EXPECTED)\n"
+                POLICY_ERRORS+="❌ Invalid module path in $POLICY_DIR/go.mod\n"
+                POLICY_ERRORS+="   Expected: $EXPECTED\n"
+                POLICY_ERRORS+="   Got: $MODULE_PATH\n"
               fi
             fi
+            
+            if [[ -n "$POLICY_ERRORS" ]]; then
+              echo "ERRORS<<EOF" >> $GITHUB_ENV
+              echo "❌ Policy structure validation failed for: $policy" >> $GITHUB_ENV
+              echo "$POLICY_ERRORS" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+            fi
+            
           done <<< "${{ steps.changed-policies.outputs.policies }}"
-          if [[ -n "$STRUCT_ERRORS" ]]; then
-            echo "- ❌ Policy structure errors:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo -e "$STRUCT_ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            FAILED=true
-          else
-            echo "- ✅ Policy structure validation" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [[ "$FAILED" == "true" ]]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Some checks failed. Please fix the issues above.**" >> $GITHUB_STEP_SUMMARY
+
+      # ------------------------------------------------------------
+      # Check for errors and fail
+      # ------------------------------------------------------------
+      - name: Fail if errors found
+        if: steps.changed-policies.outputs.has_changes == 'true'
+        run: |
+          if [[ -n "$ERRORS" ]]; then
+            echo "The following checks failed:"
+            echo "$ERRORS"
             exit 1
           fi
 
@@ -276,8 +306,59 @@ jobs:
       # Summary
       # ------------------------------------------------------------
       - name: Generate summary
-        if: steps.changed-policies.outputs.has_changes == 'false'
+        if: always()
         run: |
-          echo "## 🔍 PR Checks Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "No policy changes detected in this PR." >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.changed-policies.outputs.has_changes }}" == "true" ]]; then
+            echo "## 🔍 PR Checks Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Changed policies:**" >> $GITHUB_STEP_SUMMARY
+            
+            while IFS= read -r policy; do
+              [[ -z "$policy" ]] && continue
+              echo "- \`$policy\`" >> $GITHUB_STEP_SUMMARY
+            done <<< "${{ steps.changed-policies.outputs.policies }}"
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Checks performed:**" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Go formatting" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Import formatting" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Go vet" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Static analysis (staticcheck)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Vulnerability check (govulncheck)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Build verification" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Test execution (with race detection)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Policy structure validation" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## 🔍 PR Checks Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No policy changes detected in this PR." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ------------------------------------------------------------
+      # Comment on PR if failed
+      # ------------------------------------------------------------
+      - name: Comment on PR if checks failed
+        if: failure() && steps.changed-policies.outputs.has_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ❌ PR Checks Failed
+
+            Some automated checks failed for the policies in this PR. Please review the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for detailed error messages.
+
+            **Failed Checks:**
+            ${process.env.ERRORS || 'Unknown errors occurred.'}
+
+            **Common fixes:**
+            - Run \`go fmt ./...\` to fix formatting issues
+            - Run \`goimports -w .\` to fix import issues
+            - Address any \`go vet\`, \`staticcheck\`, or build errors shown above
+
+            The checks include: Go formatting, import formatting, vet, static analysis, vulnerability scanning, build verification, and tests.`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
