@@ -20,8 +20,8 @@ jobs:
       RUN_FORMAT: true
       RUN_IMPORTS: true
       RUN_VET: true
-      RUN_STATICCHECK: true
-      RUN_GOVULNCHECK: false
+      RUN_STATICCHECK: false
+      RUN_GOVULNCHECK: true
       RUN_BUILD: true
       RUN_TESTS: true
       RUN_POLICY_VALIDATION: true
