@@ -99,12 +99,11 @@ jobs:
           UNFORMATTED=$(find policies/ -name "*.go" -exec gofmt -l {} +)
           
           if [[ -n "$UNFORMATTED" ]]; then
-            echo "ERRORS<<EOF" >> $GITHUB_ENV
-            echo "❌ The following files are not properly formatted:" >> $GITHUB_ENV
-            echo "$UNFORMATTED" >> $GITHUB_ENV
-            echo "" >> $GITHUB_ENV
-            echo "Run 'go fmt ./...' to fix formatting issues." >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
+            echo "❌ The following files are not properly formatted:" >> errors.log
+            echo "$UNFORMATTED" >> errors.log
+            echo "" >> errors.log
+            echo "Run 'go fmt ./...' to fix formatting issues." >> errors.log
+            echo "" >> errors.log
             exit 1
           fi
           
@@ -122,12 +121,11 @@ jobs:
           UNFORMATTED=$(find policies/ -name "*.go" -exec goimports -l {} +)
           
           if [[ -n "$UNFORMATTED" ]]; then
-            echo "ERRORS<<EOF" >> $GITHUB_ENV
-            echo "❌ The following files have import issues:" >> $GITHUB_ENV
-            echo "$UNFORMATTED" >> $GITHUB_ENV
-            echo "" >> $GITHUB_ENV
-            echo "Run 'goimports -w .' to fix import issues." >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
+            echo "❌ The following files have import issues:" >> errors.log
+            echo "$UNFORMATTED" >> errors.log
+            echo "" >> errors.log
+            echo "Run 'goimports -w .' to fix import issues." >> errors.log
+            echo "" >> errors.log
             exit 1
           fi
           
@@ -148,11 +146,9 @@ jobs:
             if output=$(cd "policies/$policy" && go vet ./... 2>&1); then
               echo "✅ go vet passed for policy: $policy"
             else
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ go vet failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ go vet failed for policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -171,11 +167,9 @@ jobs:
             if output=$(cd "policies/$policy" && staticcheck ./... 2>&1); then
               echo "✅ staticcheck passed for policy: $policy"
             else
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ staticcheck failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ staticcheck failed for policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -199,17 +193,13 @@ jobs:
             if [[ $exit_code -eq 0 ]]; then
               echo "✅ govulncheck passed for policy: $policy"
             elif [[ $exit_code -eq 3 ]]; then
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ Vulnerabilities found in policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ Vulnerabilities found in policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             else
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ govulncheck failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ govulncheck failed for policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -228,11 +218,9 @@ jobs:
             if output=$(cd "policies/$policy" && go build -v ./... 2>&1); then
               echo "✅ Build passed for policy: $policy"
             else
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ Build failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ Build failed for policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -251,11 +239,9 @@ jobs:
             if output=$(cd "policies/$policy" && go test -v -race -timeout=5m ./... 2>&1); then
               echo "✅ Tests passed for policy: $policy"
             else
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ Tests failed for policy: $policy" >> $GITHUB_ENV
-              echo "$output" >> $GITHUB_ENV
-              echo "" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ Tests failed for policy: $policy" >> errors.log
+              echo "$output" >> errors.log
+              echo "" >> errors.log
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -300,10 +286,9 @@ jobs:
             fi
             
             if [[ -n "$POLICY_ERRORS" ]]; then
-              echo "ERRORS<<EOF" >> $GITHUB_ENV
-              echo "❌ Policy structure validation failed for: $policy" >> $GITHUB_ENV
-              echo "$POLICY_ERRORS" >> $GITHUB_ENV
-              echo "EOF" >> $GITHUB_ENV
+              echo "❌ Policy structure validation failed for: $policy" >> errors.log
+              echo "$POLICY_ERRORS" >> errors.log
+              echo "" >> errors.log
             else
               echo "✅ Policy structure validation passed for: $policy"
             fi
@@ -316,9 +301,8 @@ jobs:
       - name: Fail if errors found
         if: steps.changed-policies.outputs.has_changes == 'true'
         run: |
-          if [[ -n "$ERRORS" ]]; then
-            echo "The following checks failed:"
-            echo "$ERRORS"
+          if [[ -f errors.log ]]; then
+            cat errors.log
             exit 1
           fi
 
@@ -362,12 +346,15 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const errors = fs.existsSync('errors.log') ? fs.readFileSync('errors.log', 'utf8') : 'Unknown errors occurred.';
+            
             const body = `## ❌ PR Checks Failed
 
             Some automated checks failed for the policies in this PR. Please review the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for detailed error messages.
 
             **Failed Checks:**
-            ${process.env.ERRORS || 'Unknown errors occurred.'}
+            ${errors}
 
             **Common fixes:**
             - Run \`go fmt ./...\` to fix formatting issues
