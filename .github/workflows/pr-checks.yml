@@ -70,11 +70,19 @@ jobs:
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           fi
 
-          # Find changed policy directories
+          # Find changed policy modules (directories with go.mod)
           CHANGED_POLICIES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | \
             grep '^policies/' | \
-            cut -d/ -f2 | \
-            sort -u || true)
+            while read -r file; do
+              dir=$(dirname "$file")
+              while [[ "$dir" != "policies" && "$dir" != "." ]]; do
+                if [[ -f "$dir/go.mod" ]]; then
+                  echo "$dir" | sed 's|^policies/||'
+                  break
+                fi
+                dir=$(dirname "$dir")
+              done
+            done | sort -u || true)
 
           if [[ -z "$CHANGED_POLICIES" ]]; then
             echo "No policy changes detected"
