@@ -136,7 +136,7 @@ jobs:
             
             echo "Checking policy: $policy"
             if output=$(cd "policies/$policy" && go vet ./... 2>&1); then
-              :
+              echo "✅ go vet passed for policy: $policy"
             else
               echo "ERRORS<<EOF" >> $GITHUB_ENV
               echo "❌ go vet failed for policy: $policy" >> $GITHUB_ENV
@@ -159,7 +159,7 @@ jobs:
             
             echo "Checking policy: $policy"
             if output=$(cd "policies/$policy" && staticcheck ./... 2>&1); then
-              :
+              echo "✅ staticcheck passed for policy: $policy"
             else
               echo "ERRORS<<EOF" >> $GITHUB_ENV
               echo "❌ staticcheck failed for policy: $policy" >> $GITHUB_ENV
@@ -200,6 +200,8 @@ jobs:
                 echo "" >> $GITHUB_ENV
                 echo "EOF" >> $GITHUB_ENV
               fi
+            else
+              echo "✅ govulncheck passed for policy: $policy"
             fi
           done <<< "${{ steps.changed-policies.outputs.policies }}"
 
@@ -216,7 +218,7 @@ jobs:
             
             echo "Building policy: $policy"
             if output=$(cd "policies/$policy" && go build -v ./... 2>&1); then
-              :
+              echo "✅ Build passed for policy: $policy"
             else
               echo "ERRORS<<EOF" >> $GITHUB_ENV
               echo "❌ Build failed for policy: $policy" >> $GITHUB_ENV
@@ -239,7 +241,7 @@ jobs:
             
             echo "Testing policy: $policy"
             if output=$(cd "policies/$policy" && go test -v -race -timeout=5m ./... 2>&1); then
-              :
+              echo "✅ Tests passed for policy: $policy"
             else
               echo "ERRORS<<EOF" >> $GITHUB_ENV
               echo "❌ Tests failed for policy: $policy" >> $GITHUB_ENV
@@ -294,6 +296,8 @@ jobs:
               echo "❌ Policy structure validation failed for: $policy" >> $GITHUB_ENV
               echo "$POLICY_ERRORS" >> $GITHUB_ENV
               echo "EOF" >> $GITHUB_ENV
+            else
+              echo "✅ Policy structure validation passed for: $policy"
             fi
             
           done <<< "${{ steps.changed-policies.outputs.policies }}"
