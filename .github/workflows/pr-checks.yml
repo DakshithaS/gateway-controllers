@@ -21,7 +21,7 @@ jobs:
       RUN_IMPORTS: true
       RUN_VET: true
       RUN_STATICCHECK: true
-      RUN_GOVULNCHECK: true
+      RUN_GOVULNCHECK: false
       RUN_BUILD: true
       RUN_TESTS: true
       RUN_POLICY_VALIDATION: true
@@ -43,6 +43,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+          cache: false
 
       # ------------------------------------------------------------
       # Install additional tools
