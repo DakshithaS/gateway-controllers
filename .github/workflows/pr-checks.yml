@@ -201,7 +201,7 @@ jobs:
             [[ -z "$policy" ]] && continue
             
             echo "Checking vulnerabilities in policy: $policy"
-            output=$(cd "policies/$policy" && govulncheck ./... 2>&1 || true)
+            output=$(cd "policies/$policy" && govulncheck -db="" -show verbose ./... 2>&1 || true)
             exit_code=$?
             if [[ $exit_code -eq 0 ]]; then
               echo "✅ govulncheck passed for policy: $policy"
