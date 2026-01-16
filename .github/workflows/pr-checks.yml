@@ -190,6 +190,10 @@ jobs:
         run: |
           echo "Running govulncheck on changed policies..."
           
+          # Log versions
+          echo "Go version: $(go version)"
+          echo "Govulncheck version: $(govulncheck -version)"
+          
           # Ensure govulncheck is in PATH
           export PATH="$PATH:$(go env GOPATH)/bin"
           
