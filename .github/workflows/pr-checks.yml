@@ -2,10 +2,11 @@ name: PR Checks
 
 on:
   pull_request_target:
-    branches: [main, master]
+    branches: 
+      - main
+      - '*.*.0'
     paths:
       - 'policies/**'
-      - '.github/workflows/**'
 
 permissions:
   contents: read
