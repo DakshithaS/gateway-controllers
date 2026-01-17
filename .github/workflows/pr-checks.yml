@@ -177,6 +177,7 @@ jobs:
               echo "✅ staticcheck passed for policy: $policy"
             else
               echo "❌ staticcheck failed for policy: $policy" >> errors.log
+              echo "🔍 STATICCHECK ERRORS:" >> errors.log
               echo "$output" >> errors.log
               echo "" >> errors.log
             fi
@@ -288,9 +289,10 @@ jobs:
               echo "✅ govulncheck passed for policy: $policy"
             elif [[ $exit_code -eq 3 ]]; then
               echo "❌ Vulnerabilities found in policy: $policy" | tee -a errors.log
+              echo "🔍 VULNERABILITY DETAILS:" >> errors.log
               echo "Policy: $policy" >> errors.log
               echo "Exit code: $exit_code" >> errors.log
-              echo "Full output:" >> errors.log
+              echo "Full vulnerability report:" >> errors.log
               echo "$output" >> errors.log
               echo "===========================================" >> errors.log
               echo "" >> errors.log
