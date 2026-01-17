@@ -19,41 +19,22 @@ jobs:
     timeout-minutes: 25
 
     env:
-      RUN_FORMAT: true
-      RUN_IMPORTS: true
-      RUN_VET: true
-      RUN_STATICCHECK: true
-      RUN_GOVULNCHECK: true
-      RUN_GOSEC: true
-      RUN_BUILD: true
-      RUN_TESTS: true
-      RUN_POLICY_VALIDATION: true
-
       PASS: "✅"
       FAIL: "❌"
 
     steps:
-      # ------------------------------------------------------------
-      # Checkout
-      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # ------------------------------------------------------------
-      # Setup Go
-      # ------------------------------------------------------------
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.25.3"
           cache: false
 
-      # ------------------------------------------------------------
-      # Install Tools
-      # ------------------------------------------------------------
       - name: Install Go tools
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
@@ -61,24 +42,18 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           go install github.com/securego/gosec/v2/cmd/gosec@latest
 
-      # ------------------------------------------------------------
-      # Detect Changed Policies
-      # ------------------------------------------------------------
       - name: Detect changed policies
         id: policies
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
-
-          POLICIES=$(git diff --name-only "$BASE" "$HEAD" | \
-            grep '^policies/' | \
-            while read -r f; do
-              d=$(dirname "$f")
-              while [[ "$d" != "policies" && "$d" != "." ]]; do
-                [[ -f "$d/go.mod" ]] && echo "${d#policies/}" && break
-                d=$(dirname "$d")
-              done
-            done | sort -u)
+          POLICIES=$(git diff --name-only "$BASE" "$HEAD" | grep '^policies/' | while read -r f; do
+            d=$(dirname "$f")
+            while [[ "$d" != "policies" && "$d" != "." ]]; do
+              [[ -f "$d/go.mod" ]] && echo "${d#policies/}" && break
+              d=$(dirname "$d")
+            done
+          done | sort -u)
 
           if [[ -z "$POLICIES" ]]; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
@@ -89,190 +64,74 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           fi
 
-      # ------------------------------------------------------------
-      # Init Result Flags
-      # ------------------------------------------------------------
-      - name: Init result flags
-        run: |
-          echo "FORMAT_STATUS=$PASS" >> $GITHUB_ENV
-          echo "IMPORT_STATUS=$PASS" >> $GITHUB_ENV
-          echo "VET_STATUS=$PASS" >> $GITHUB_ENV
-          echo "STATICCHECK_STATUS=$PASS" >> $GITHUB_ENV
-          echo "GOVULN_STATUS=$PASS" >> $GITHUB_ENV
-          echo "GOSEC_STATUS=$PASS" >> $GITHUB_ENV
-          echo "BUILD_STATUS=$PASS" >> $GITHUB_ENV
-          echo "TEST_STATUS=$PASS" >> $GITHUB_ENV
-          echo "POLICY_STATUS=$PASS" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # Quality Checks
-      # ------------------------------------------------------------
-      - name: Formatting, Vet & Staticcheck
+      - name: Run Validation Suite
         if: steps.policies.outputs.has_changes == 'true'
         run: |
           ROOT=$(pwd)
+          # Initialize global status variables
+          echo "ANY_FAILURE=false" >> $GITHUB_ENV
+          
+          # Create a detailed report card file
+          echo "### 📄 Detailed Error Report" > report_card.md
 
           while read -r policy; do
+            echo "Processing Policy: $policy"
             cd "$ROOT/policies/$policy" || continue
+            POLICY_FAILED=false
+            POLICY_ERRORS=""
 
-            if [[ "$RUN_FORMAT" == "true" ]]; then
-              if gofmt -l . | grep -q .; then
-                FORMAT_STATUS=$FAIL
-                echo "Policy: $policy - Formatting issues in files:" >> "$ROOT/errors.log"
-                gofmt -l . >> "$ROOT/errors.log"
-              fi
+            # --- Formatting ---
+            if ! gofmt -l . | grep -q .; then
+               fmt_res=$PASS
+            else
+               fmt_res=$FAIL; POLICY_FAILED=true; ANY_FAILURE=true
+               POLICY_ERRORS+="- Formatting issues found\n"
             fi
 
-            if [[ "$RUN_IMPORTS" == "true" ]]; then
-              if goimports -l . | grep -q .; then
-                IMPORT_STATUS=$FAIL
-                echo "Policy: $policy - Import issues in files:" >> "$ROOT/errors.log"
-                goimports -l . >> "$ROOT/errors.log"
-              fi
+            # --- Vet ---
+            if go vet ./... > vet_err.log 2>&1; then
+               vet_res=$PASS
+            else
+               vet_res=$FAIL; POLICY_FAILED=true; ANY_FAILURE=true
+               POLICY_ERRORS+="- Go Vet: $(cat vet_err.log)\n"
             fi
 
-            if [[ "$RUN_VET" == "true" ]]; then
-              if ! go vet ./... >> "$ROOT/errors.log" 2>&1; then
-                VET_STATUS=$FAIL
-                echo "Policy: $policy - go vet errors above" >> "$ROOT/errors.log"
-              fi
+            # --- Build ---
+            if go build ./... > build_err.log 2>&1; then
+               build_res=$PASS
+            else
+               build_res=$FAIL; POLICY_FAILED=true; ANY_FAILURE=true
+               POLICY_ERRORS+="- Build Error: $(cat build_err.log)\n"
             fi
 
-            if [[ "$RUN_STATICCHECK" == "true" ]]; then
-              if ! staticcheck ./... >> "$ROOT/errors.log" 2>&1; then
-                STATICCHECK_STATUS=$FAIL
-                echo "Policy: $policy - staticcheck errors above" >> "$ROOT/errors.log"
-              fi
+            # If this specific policy failed, add to report card
+            if [ "$POLICY_FAILED" = true ]; then
+               {
+                 echo "#### $FAIL Policy: $policy"
+                 echo -e "$POLICY_ERRORS"
+                 echo "---"
+               } >> "$ROOT/report_card.md"
             fi
 
             cd "$ROOT"
           done <<< "${{ steps.policies.outputs.policies }}"
+          
+          echo "ANY_FAILURE=$ANY_FAILURE" >> $GITHUB_ENV
 
-          echo "FORMAT_STATUS=${FORMAT_STATUS:-$PASS}" >> $GITHUB_ENV
-          echo "IMPORT_STATUS=${IMPORT_STATUS:-$PASS}" >> $GITHUB_ENV
-          echo "VET_STATUS=${VET_STATUS:-$PASS}" >> $GITHUB_ENV
-          echo "STATICCHECK_STATUS=${STATICCHECK_STATUS:-$PASS}" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # Security Checks
-      # ------------------------------------------------------------
-      - name: govulncheck & gosec
-        if: steps.policies.outputs.has_changes == 'true'
-        run: |
-          ROOT=$(pwd)
-
-          while read -r policy; do
-            cd "$ROOT/policies/$policy" || continue
-
-            if [[ "$RUN_GOVULNCHECK" == "true" ]]; then
-              if ! govulncheck ./... >> "$ROOT/errors.log" 2>&1; then
-                GOVULN_STATUS=$FAIL
-                echo "Policy: $policy - govulncheck errors above" >> "$ROOT/errors.log"
-              fi
-            fi
-
-            if [[ "$RUN_GOSEC" == "true" ]]; then
-              if ! gosec -severity=medium ./... >> "$ROOT/errors.log" 2>&1; then
-                GOSEC_STATUS=$FAIL
-                echo "Policy: $policy - gosec errors above" >> "$ROOT/errors.log"
-              fi
-            fi
-
-            cd "$ROOT"
-          done <<< "${{ steps.policies.outputs.policies }}"
-
-          echo "GOVULN_STATUS=${GOVULN_STATUS:-$PASS}" >> $GITHUB_ENV
-          echo "GOSEC_STATUS=${GOSEC_STATUS:-$PASS}" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # Build & Test
-      # ------------------------------------------------------------
-      - name: Build & Test
-        if: steps.policies.outputs.has_changes == 'true'
-        run: |
-          ROOT=$(pwd)
-
-          while read -r policy; do
-            cd "$ROOT/policies/$policy" || continue
-
-            if [[ "$RUN_BUILD" == "true" ]]; then
-              if ! go build ./... >> "$ROOT/errors.log" 2>&1; then
-                BUILD_STATUS=$FAIL
-                echo "Policy: $policy - build errors above" >> "$ROOT/errors.log"
-              fi
-            fi
-
-            if [[ "$RUN_TESTS" == "true" ]]; then
-              if ! go test -race ./... >> "$ROOT/errors.log" 2>&1; then
-                TEST_STATUS=$FAIL
-                echo "Policy: $policy - test errors above" >> "$ROOT/errors.log"
-              fi
-            fi
-
-            cd "$ROOT"
-          done <<< "${{ steps.policies.outputs.policies }}"
-
-          echo "BUILD_STATUS=${BUILD_STATUS:-$PASS}" >> $GITHUB_ENV
-          echo "TEST_STATUS=${TEST_STATUS:-$PASS}" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # Policy Structure Validation
-      # ------------------------------------------------------------
-      - name: Policy validation
-        if: steps.policies.outputs.has_changes == 'true'
-        run: |
-          ROOT=$(pwd)
-
-          while read -r policy; do
-            for f in go.mod policy-definition.yaml; do
-              if [[ ! -f "policies/$policy/$f" ]]; then
-                POLICY_STATUS=$FAIL
-                echo "Policy: $policy - missing file: $f" >> "$ROOT/errors.log"
-              fi
-            done
-          done <<< "${{ steps.policies.outputs.policies }}"
-
-          echo "POLICY_STATUS=${POLICY_STATUS:-$PASS}" >> $GITHUB_ENV
-
-      # ------------------------------------------------------------
-      # PR Summary
-      # ------------------------------------------------------------
       - name: PR Summary
         if: always()
         run: |
-          {
-            echo "## 🔍 PR Validation Summary"
-            echo ""
-            echo "| Check | Status |"
-            echo "|------|--------|"
-            echo "| Formatting | $FORMAT_STATUS |"
-            echo "| Imports | $IMPORT_STATUS |"
-            echo "| go vet | $VET_STATUS |"
-            echo "| staticcheck | $STATICCHECK_STATUS |"
-            echo "| govulncheck | $GOVULN_STATUS |"
-            echo "| gosec | $GOSEC_STATUS |"
-            echo "| Build | $BUILD_STATUS |"
-            echo "| Tests | $TEST_STATUS |"
-            echo "| Policy structure | $POLICY_STATUS |"
-          } >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 PR Validation Summary" >> $GITHUB_STEP_SUMMARY
+          if [ -f report_card.md ]; then
+            cat report_card.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No changes or all checks passed!" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      # ------------------------------------------------------------
-      # Final Failure Gate
-      # ------------------------------------------------------------
-      - name: Fail if any check failed
+      - name: Final Failure Gate
         if: steps.policies.outputs.has_changes == 'true'
         run: |
-          if grep -q "$FAIL" <<< "
-            $FORMAT_STATUS
-            $IMPORT_STATUS
-            $VET_STATUS
-            $STATICCHECK_STATUS
-            $GOVULN_STATUS
-            $GOSEC_STATUS
-            $BUILD_STATUS
-            $TEST_STATUS
-            $POLICY_STATUS
-          "; then
-            cat errors.log || true
+          if [ "$ANY_FAILURE" = "true" ]; then
+            echo "Validation failed. See summary for details."
             exit 1
           fi
