@@ -84,10 +84,10 @@ jobs:
                 echo true > $BUILD_FAILED_FILE
                 echo "### $policy" >> $SUMMARY_FILE
                 echo "- Build failed" >> $SUMMARY_FILE
-                echo "op" >> $SUMMARY_FILE
-                echo '```' >> $SUMMARY_FILE
+                echo "```" >> $SUMMARY_FILE
+                # echo '```' >> $SUMMARY_FILE
                 echo "$output" >> $SUMMARY_FILE
-                echo '```' >> $SUMMARY_FILE
+                echo "```" >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
                 echo "Build successful for $policy"
