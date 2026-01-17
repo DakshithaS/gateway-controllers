@@ -313,9 +313,11 @@ jobs:
             
             echo "Processing $policy..."
             POLICY_DIR="${{ github.workspace }}/policies/$policy"
+
+            echo "### $policy" >> $GITHUB_STEP_SUMMARY
             
             if [[ ! -d "$POLICY_DIR" ]]; then
-              echo "### ❌ $policy" >> $GITHUB_STEP_SUMMARY
+              echo "#### ❌ $policy" >> $GITHUB_STEP_SUMMARY
               echo "Directory not found." >> $GITHUB_STEP_SUMMARY
               FAILED=true
               continue
@@ -325,7 +327,7 @@ jobs:
             
             # --- 1. BUILD CHECK ---
             if ! build_out=$(go build . 2>&1); then
-              echo "### ❌ Build Failed: $policy" >> $GITHUB_STEP_SUMMARY
+              echo "#### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
               echo '```text' >> $GITHUB_STEP_SUMMARY
               echo "$build_out" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
@@ -354,7 +356,7 @@ jobs:
 
             # Finalize summary for this specific policy
             if [[ -n "$CHECK_ERRORS" ]]; then
-              echo "### ⚠️ Checks Failed: $policy" >> $GITHUB_STEP_SUMMARY
+              # echo "### ⚠️ Checks Failed: $policy" >> $GITHUB_STEP_SUMMARY
               echo "$CHECK_ERRORS" >> $GITHUB_STEP_SUMMARY
               FAILED=true
             else
