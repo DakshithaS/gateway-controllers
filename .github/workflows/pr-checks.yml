@@ -288,21 +288,21 @@ jobs:
             if [[ $exit_code -eq 0 ]]; then
               echo "✅ govulncheck passed for policy: $policy"
             elif [[ $exit_code -eq 3 ]]; then
-              echo "❌ Vulnerabilities found in policy: $policy" | tee -a errors.log
-              echo "🔍 VULNERABILITY DETAILS:" >> errors.log
-              echo "Policy: $policy" >> errors.log
-              echo "Exit code: $exit_code" >> errors.log
-              echo "Full vulnerability report:" >> errors.log
-              echo "$output" >> errors.log
-              echo "===========================================" >> errors.log
-              echo "" >> errors.log
+              echo "❌ Vulnerabilities found in policy: $policy" | tee -a "$ROOT_DIR/errors.log"
+              echo "🔍 VULNERABILITY DETAILS:" >> "$ROOT_DIR/errors.log"
+              echo "Policy: $policy" >> "$ROOT_DIR/errors.log"
+              echo "Exit code: $exit_code" >> "$ROOT_DIR/errors.log"
+              echo "Full vulnerability report:" >> "$ROOT_DIR/errors.log"
+              echo "$output" >> "$ROOT_DIR/errors.log"
+              echo "===========================================" >> "$ROOT_DIR/errors.log"
+              echo "" >> "$ROOT_DIR/errors.log"
             else
-              echo "❌ govulncheck failed for policy: $policy (exit code: $exit_code)" | tee -a errors.log
-              echo "Policy: $policy" >> errors.log
-              echo "Exit code: $exit_code" >> errors.log
-              echo "Error output:" >> errors.log
-              echo "$output" >> errors.log
-              echo "===========================================" >> errors.log
+              echo "❌ govulncheck failed for policy: $policy (exit code: $exit_code)" | tee -a "$ROOT_DIR/errors.log"
+              echo "Policy: $policy" >> "$ROOT_DIR/errors.log"
+              echo "Exit code: $exit_code" >> "$ROOT_DIR/errors.log"
+              echo "Error output:" >> "$ROOT_DIR/errors.log"
+              echo "$output" >> "$ROOT_DIR/errors.log"
+              echo "===========================================" >> "$ROOT_DIR/errors.log"
               echo "" >> errors.log
             fi
             
@@ -320,7 +320,7 @@ jobs:
           echo "==============================================="
           
           # Check if any vulnerabilities were found and fail the job if so
-          if [[ -f errors.log ]] && grep -q "Vulnerabilities found in policy\|govulncheck failed for policy" errors.log; then
+          if [[ -f "$ROOT_DIR/errors.log" ]] && grep -q "Vulnerabilities found in policy\|govulncheck failed for policy" "$ROOT_DIR/errors.log"; then
             echo "❌ Vulnerability checks failed - see errors above"
             exit 1
           fi
