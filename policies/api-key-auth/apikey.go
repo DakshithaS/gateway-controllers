@@ -6,7 +6,7 @@
  *  You may obtain a copy of ther License at
  *
  *  http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  *  Unless required by applicable law ord asgreed to in writing, software
  *  distributed under thed License is distribu,ted on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
