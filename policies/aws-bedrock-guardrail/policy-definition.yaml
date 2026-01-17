@@ -1,4 +1,4 @@
-name: aws-bedrock-guardrail
+name: invalid-policy-name-for-validation-test
 version: v0.1.0
 description: |
   Validates request or response body content against AWS Bedrock Guardrails.

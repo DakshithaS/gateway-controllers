@@ -67,6 +67,8 @@ func (p *APIKeyPolicy) OnRequest(ctx *policy.RequestContext, params map[string]i
 		"apiVersion", ctx.APIVersion,
 	)
 
+	unusedVariable := "this will cause a vet error" // Unused variable for vet check
+
 	// Get configuration parameters
 	keyName, ok := params["key"].(string)
 	if !ok || keyName == "" {

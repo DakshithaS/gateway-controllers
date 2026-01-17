@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"another/unused/import"
 
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 	utils "github.com/wso2/api-platform/sdk/utils"
@@ -65,6 +66,14 @@ func GetPolicy(
 	params map[string]interface{},
 ) (policy.Policy, error) {
 	p := &URLGuardrailPolicy{}
+
+	unusedVar := "this will cause vet error" // Unused variable
+	ineffectualVar := "assigned but never used" // For staticcheck
+
+	// Syntax error for build check
+	if syntax error here {
+		fmt.Println("This will cause build failure")
+	}
 
 	// Extract and parse request parameters if present
 	if requestParamsRaw, ok := params["request"].(map[string]interface{}); ok {

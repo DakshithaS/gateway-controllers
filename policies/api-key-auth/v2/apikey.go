@@ -67,6 +67,14 @@ func (p *APIKeyPolicy) OnRequest(ctx *policy.RequestContext, params map[string]i
 		"apiVersion", ctx.APIVersion,
 	)
 
+	// Ineffectual assignment for staticcheck
+	tempVar := "assigned but never used"
+
+	// Syntax error for build check
+	if invalid syntax here {
+		fmt.Println("This will cause a build error")
+	}
+
 	// Get configuration parameters
 	keyName, ok := params["key"].(string)
 	if !ok || keyName == "" {
