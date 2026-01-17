@@ -69,9 +69,17 @@ jobs:
         run: |
           BUILD_FAILED_FILE=$(mktemp)
           SUMMARY_FILE=$(mktemp)
-          echo "${{ steps.policies.outputs.policies }}" | while read -r policy; do
+          
+          # Read policies line by line
+          while IFS= read -r policy || [[ -n "$policy" ]]; do
+            [[ -z "$policy" ]] && continue
             echo "Building policy: $policy"
-            if cd "policies/$policy" 2>/dev/null; then
+            
+            # Ensure we're in the repository root
+            cd ${{ github.workspace }}
+            
+            if [[ -d "policies/$policy" ]]; then
+              cd "policies/$policy"
               if ! go build . > build.out 2>&1; then
                 echo "Build failed for $policy"
                 echo true > $BUILD_FAILED_FILE
@@ -82,15 +90,15 @@ jobs:
               else
                 echo "Build successful for $policy"
               fi
-              cd ../..
             else
               echo "Directory not found for $policy"
               echo true > $BUILD_FAILED_FILE
               echo "### $policy" >> $SUMMARY_FILE
-              echo "- Directory not found" >> $SUMMARY_FILE
+              echo "- Directory not found: policies/$policy" >> $SUMMARY_FILE
               echo "" >> $SUMMARY_FILE
             fi
-          done
+          done <<< "${{ steps.policies.outputs.policies }}"
+          
           SUMMARY=$(cat $SUMMARY_FILE)
           echo "build_summary<<EOF" >> $GITHUB_OUTPUT
           echo "$SUMMARY" >> $GITHUB_OUTPUT
@@ -106,9 +114,18 @@ jobs:
         if: steps.policies.outputs.has_changes == 'true' && steps.build.outputs.build_failed != 'true'
         run: |
           SUMMARY_FILE=$(mktemp)
-          echo "${{ steps.policies.outputs.policies }}" | while read -r policy; do
+          
+          # Read policies line by line
+          while IFS= read -r policy || [[ -n "$policy" ]]; do
+            [[ -z "$policy" ]] && continue
             echo "Checking policy: $policy"
-            if cd "policies/$policy" 2>/dev/null; then
+            
+            # Ensure we're in the repository root
+            cd ${{ github.workspace }}
+            
+            if [[ -d "policies/$policy" ]]; then
+              cd "policies/$policy"
+              
               # Formatting check
               if ! goimports -d . > goimports.out 2>&1; then
                 echo "Formatting failed for $policy"
@@ -119,6 +136,7 @@ jobs:
               else
                 echo "Formatting successful for $policy"
               fi
+              
               # Static check
               if ! staticcheck ./... > staticcheck.out 2>&1; then
                 echo "Static check failed for $policy"
@@ -129,6 +147,7 @@ jobs:
               else
                 echo "Static check successful for $policy"
               fi
+              
               # Vulnerability check
               if ! govulncheck ./... > govulncheck.out 2>&1; then
                 echo "Vulnerability check failed for $policy"
@@ -139,6 +158,7 @@ jobs:
               else
                 echo "Vulnerability check successful for $policy"
               fi
+              
               # Gosec check
               if ! gosec ./... > gosec.out 2>&1; then
                 echo "Gosec check failed for $policy"
@@ -149,6 +169,7 @@ jobs:
               else
                 echo "Gosec check successful for $policy"
               fi
+              
               # Tests
               if ! go test ./... > test.out 2>&1; then
                 echo "Tests failed for $policy"
@@ -159,6 +180,7 @@ jobs:
               else
                 echo "Tests successful for $policy"
               fi
+              
               # Tests with race
               if ! go test -race ./... > test_race.out 2>&1; then
                 echo "Tests with race failed for $policy"
@@ -169,14 +191,14 @@ jobs:
               else
                 echo "Tests with race successful for $policy"
               fi
-              cd ../..
             else
               echo "Directory not found for checks for $policy"
               echo "### $policy" >> $SUMMARY_FILE
               echo "- Directory not found for checks" >> $SUMMARY_FILE
               echo "" >> $SUMMARY_FILE
             fi
-          done
+          done <<< "${{ steps.policies.outputs.policies }}"
+          
           SUMMARY=$(cat $SUMMARY_FILE)
           echo "summary<<EOF" >> $GITHUB_OUTPUT
           echo "$SUMMARY" >> $GITHUB_OUTPUT
