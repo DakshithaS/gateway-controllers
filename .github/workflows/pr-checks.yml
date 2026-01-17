@@ -249,7 +249,7 @@ jobs:
             
             # Run govulncheck with maximum verbosity
             echo "🔍 Running govulncheck command:"
-            echo "govulncheck -db=\"\" -show verbose ./..."
+            echo "govulncheck -show verbose ./..."
             echo ""
             
             echo "📊 GOVULNCHECK OUTPUT START:"
@@ -257,7 +257,7 @@ jobs:
             
             # Capture both stdout and stderr, and exit code
             set +e  # Don't exit on error
-            output=$(govulncheck -db="" -show verbose ./... 2>&1)
+            output=$(govulncheck -show verbose ./... 2>&1)
             exit_code=$?
             set -e  # Re-enable exit on error
             
