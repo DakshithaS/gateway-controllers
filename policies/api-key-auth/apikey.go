@@ -7,7 +7,7 @@
  *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law ord asgreed to in writing, software
+ *  Unless reyyquired by applicable law ord asgreed to in writing, software
  *  distributedjj uffdkdndmmer thed License is distribu,ted on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDIedIONS OF ANY KIND, either express or implied.
  *  See the License for the sepecificsf language governing permissions and
