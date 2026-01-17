@@ -79,13 +79,13 @@ jobs:
             
             if [[ -d "policies/$policy" ]]; then
               cd "policies/$policy"
-              if ! go build . > build.out 2>&1; then
+              if ! output=$(go build . 2>&1); then
                 echo "Build failed for $policy"
                 echo true > $BUILD_FAILED_FILE
                 echo "### $policy" >> $SUMMARY_FILE
                 echo "- Build failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat build.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -128,12 +128,12 @@ jobs:
               cd "policies/$policy"
               
               # Formatting check
-              if ! goimports -d . > goimports.out 2>&1; then
+              if ! output=$(goimports -d . 2>&1); then
                 echo "Formatting failed for $policy"
                 echo "### $policy" >> $SUMMARY_FILE
                 echo "- Formatting failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat goimports.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -141,12 +141,12 @@ jobs:
               fi
               
               # Static check
-              if ! staticcheck ./... > staticcheck.out 2>&1; then
+              if ! output=$(staticcheck ./... 2>&1); then
                 echo "Static check failed for $policy"
                 if ! grep -q "### $policy" $SUMMARY_FILE; then echo "### $policy" >> $SUMMARY_FILE; fi
                 echo "- Static check failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat staticcheck.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -154,12 +154,12 @@ jobs:
               fi
               
               # Vulnerability check
-              if ! govulncheck ./... > govulncheck.out 2>&1; then
+              if ! output=$(govulncheck ./... 2>&1); then
                 echo "Vulnerability check failed for $policy"
                 if ! grep -q "### $policy" $SUMMARY_FILE; then echo "### $policy" >> $SUMMARY_FILE; fi
                 echo "- Vulnerability check failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat govulncheck.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -167,12 +167,12 @@ jobs:
               fi
               
               # Gosec check
-              if ! gosec ./... > gosec.out 2>&1; then
+              if ! output=$(gosec ./... 2>&1); then
                 echo "Gosec check failed for $policy"
                 if ! grep -q "### $policy" $SUMMARY_FILE; then echo "### $policy" >> $SUMMARY_FILE; fi
                 echo "- Gosec check failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat gosec.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -180,12 +180,12 @@ jobs:
               fi
               
               # Tests
-              if ! go test ./... > test.out 2>&1; then
+              if ! output=$(go test ./... 2>&1); then
                 echo "Tests failed for $policy"
                 if ! grep -q "### $policy" $SUMMARY_FILE; then echo "### $policy" >> $SUMMARY_FILE; fi
                 echo "- Tests failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat test.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
@@ -193,12 +193,12 @@ jobs:
               fi
               
               # Tests with race
-              if ! go test -race ./... > test_race.out 2>&1; then
+              if ! output=$(go test -race ./... 2>&1); then
                 echo "Tests with race failed for $policy"
                 if ! grep -q "### $policy" $SUMMARY_FILE; then echo "### $policy" >> $SUMMARY_FILE; fi
                 echo "- Tests with race failed" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
-                cat test_race.out >> $SUMMARY_FILE
+                echo "$output" >> $SUMMARY_FILE
                 echo '```' >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
