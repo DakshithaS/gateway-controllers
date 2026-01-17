@@ -484,17 +484,26 @@ jobs:
               const lines = rawErrors.split('\n');
               let currentPolicy = '';
               let currentType = '';
+              let collectingStatic = false;
               
               for (const line of lines) {
                 if (line.includes('❌ Vulnerabilities found in policy:')) {
                   currentPolicy = line.match(/policy: (.+)$/)?.[1];
                   if (currentPolicy) vulnerabilityPolicies.add(currentPolicy);
                   currentType = 'vuln';
+                  collectingStatic = false;
                 } else if (line.includes('❌ staticcheck failed for policy:')) {
                   currentPolicy = line.match(/policy: (.+)$/)?.[1];
                   currentType = 'static';
+                  collectingStatic = false;
                 } else if (line.includes('🔍 STATICCHECK ERRORS:')) {
                   currentType = 'static';
+                  collectingStatic = true;
+                } else if (collectingStatic && line.trim() && !line.includes('❌') && !line.includes('🔍')) {
+                  if (!staticcheckPolicies.has(currentPolicy)) {
+                    staticcheckPolicies.set(currentPolicy, []);
+                  }
+                  staticcheckPolicies.get(currentPolicy).push(line);
                 } else if (line.includes('Error:') && currentType === 'static' && currentPolicy) {
                   if (!staticcheckPolicies.has(currentPolicy)) {
                     staticcheckPolicies.set(currentPolicy, []);
