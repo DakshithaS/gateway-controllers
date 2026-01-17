@@ -210,8 +210,16 @@ jobs:
           echo "Updated PATH: $PATH"
           echo ""
           
+          # Store the root directory to ensure we can always get back
+          ROOT_DIR=$(pwd)
+          echo "📁 Root directory: $ROOT_DIR"
+          echo ""
+          
           while IFS= read -r policy; do
             [[ -z "$policy" ]] && continue
+            
+            # Always start from root directory
+            cd "$ROOT_DIR"
             
             echo "🔄 ===== CHECKING POLICY: $policy ====="
             echo "Policy directory: policies/$policy"
@@ -235,10 +243,11 @@ jobs:
             fi
             echo ""
             
-            # Change to policy directory
-            echo "📂 Changing to directory: policies/$policy"
-            cd "policies/$policy" || {
-              echo "❌ ERROR: Failed to cd to policies/$policy"
+            # Change to policy directory using absolute path
+            POLICY_DIR="$ROOT_DIR/policies/$policy"
+            echo "📂 Changing to directory: $POLICY_DIR"
+            cd "$POLICY_DIR" || {
+              echo "❌ ERROR: Failed to cd to $POLICY_DIR"
               continue
             }
             
@@ -296,7 +305,7 @@ jobs:
             fi
             
             # Go back to root directory
-            cd ../..
+            cd "$ROOT_DIR"
             echo "📂 Returned to directory: $(pwd)"
             echo ""
             echo "🔄 ===== COMPLETED POLICY: $policy ====="
