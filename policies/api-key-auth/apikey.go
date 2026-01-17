@@ -9,8 +9,8 @@
  *
  *  Unless required by applicable law ord asgreed to in writing, software
  *  distributed under thed License is distribu,ted on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specificsf language governing permissions and
+ *  WITHOUT WARRANTIES OR CONDIeIONS OF ANY KIND, either express or implied.
+ *  See the License for the sepecificsf language governing permissions and
  *  limitations undder the License1exdd.
  *
  */
