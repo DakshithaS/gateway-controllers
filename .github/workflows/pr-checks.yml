@@ -220,22 +220,18 @@ jobs:
       - name: Generate Summary
         if: steps.policies.outputs.has_changes == 'true'
         run: |
-          {
-            echo "## PR Checks Summary"
-            echo ""
-            BUILD_SUMMARY="${{ steps.build.outputs.build_summary }}"
-            if [[ -n "$BUILD_SUMMARY" ]]; then
-              echo "### Build Failures"
-              echo "$BUILD_SUMMARY"
-              echo ""
-            fi
-            CHECK_SUMMARY="${{ steps.checks.outputs.summary }}"
-            if [[ -n "$CHECK_SUMMARY" ]]; then
-              echo "### Check Failures"
-              echo "$CHECK_SUMMARY"
-              echo ""
-            fi
-          } >> $GITHUB_STEP_SUMMARY
+          echo "## PR Checks Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${{ steps.build.outputs.build_summary }}" ]]; then
+            echo "### Build Failures" >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.build.outputs.build_summary }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [[ -n "${{ steps.checks.outputs.summary }}" ]]; then
+            echo "### Check Failures" >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.checks.outputs.summary }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Fail if build failed
         if: steps.build.outputs.build_failed == 'true'
