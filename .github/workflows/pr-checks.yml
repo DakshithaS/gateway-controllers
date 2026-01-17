@@ -496,23 +496,6 @@ jobs:
               "- Address staticcheck suggestions in the files mentioned above\n\n" +
               "---\n" +
               "*Automated checks include: formatting, imports, vet, staticcheck, vulnerability scanning, build verification, and tests.*";
-            
-            const serverUrl = '${{ github.server_url }}';
-            const repo = '${{ github.repository }}';
-            const runId = '${{ github.run_id }}';
-            
-            const body = "## ❌ PR Checks Failed\n\n" +
-              errorsContent + "\n\n" +
-              "### 🛠️ How to Fix\n\n" +
-              "**For Security Vulnerabilities:**\n" +
-              "- Upgrade to Go 1.25.5 or later to fix standard library vulnerabilities\n" +
-              "- See [workflow run](" + serverUrl + "/" + repo + "/actions/runs/" + runId + ") for detailed vulnerability reports\n\n" +
-              "**For Code Quality Issues:**\n" +
-              "- Run `go fmt ./...` to fix formatting issues  \n" +
-              "- Run `goimports -w .` to fix import issues\n" +
-              "- Address staticcheck suggestions in the files mentioned above\n\n" +
-              "---\n" +
-              "*Automated checks include: formatting, imports, vet, staticcheck, vulnerability scanning, build verification, and tests.*";
 
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
