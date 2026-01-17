@@ -67,13 +67,14 @@ jobs:
         id: build
         if: steps.policies.outputs.has_changes == 'true'
         run: |
-          BUILD_FAILED=false
+          BUILD_FAILED_FILE=$(mktemp)
           SUMMARY_FILE=$(mktemp)
           echo "${{ steps.policies.outputs.policies }}" | while read -r policy; do
             echo "Building policy: $policy"
             if cd "policies/$policy" 2>/dev/null; then
               if ! go build . > build.out 2>&1; then
-                BUILD_FAILED=true
+                echo "Build failed for $policy"
+                echo true > $BUILD_FAILED_FILE
                 echo "### $policy" >> $SUMMARY_FILE
                 echo "- Build failed" >> $SUMMARY_FILE
                 cat build.out >> $SUMMARY_FILE
@@ -83,7 +84,8 @@ jobs:
               fi
               cd ../..
             else
-              BUILD_FAILED=true
+              echo "Directory not found for $policy"
+              echo true > $BUILD_FAILED_FILE
               echo "### $policy" >> $SUMMARY_FILE
               echo "- Directory not found" >> $SUMMARY_FILE
               echo "" >> $SUMMARY_FILE
@@ -93,7 +95,11 @@ jobs:
           echo "build_summary<<EOF" >> $GITHUB_OUTPUT
           echo "$SUMMARY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          echo "build_failed=$BUILD_FAILED" >> $GITHUB_OUTPUT
+          if [ -f $BUILD_FAILED_FILE ]; then
+            echo "build_failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_failed=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run checks on policies
         id: checks
