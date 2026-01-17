@@ -71,15 +71,21 @@ jobs:
           SUMMARY_FILE=$(mktemp)
           echo "${{ steps.policies.outputs.policies }}" | while read -r policy; do
             echo "Building policy: $policy"
-            cd policies/$policy
-            if ! go build . > build.out 2>&1; then
+            if cd "policies/$policy" 2>/dev/null; then
+              if ! go build . > build.out 2>&1; then
+                BUILD_FAILED=true
+                echo "### $policy" >> $SUMMARY_FILE
+                echo "- Build failed" >> $SUMMARY_FILE
+                cat build.out >> $SUMMARY_FILE
+                echo "" >> $SUMMARY_FILE
+              fi
+              cd ../..
+            else
               BUILD_FAILED=true
               echo "### $policy" >> $SUMMARY_FILE
-              echo "- Build failed" >> $SUMMARY_FILE
-              cat build.out >> $SUMMARY_FILE
+              echo "- Directory not found" >> $SUMMARY_FILE
               echo "" >> $SUMMARY_FILE
             fi
-            cd ../..
           done
           SUMMARY=$(cat $SUMMARY_FILE)
           echo "build_summary<<EOF" >> $GITHUB_OUTPUT
