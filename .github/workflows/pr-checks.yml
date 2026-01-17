@@ -84,7 +84,7 @@ jobs:
                 echo true > $BUILD_FAILED_FILE
                 echo "### $policy" >> $SUMMARY_FILE
                 echo "- Build failed" >> $SUMMARY_FILE
-                # sed 's/^/  /' build.out >> $SUMMARY_FILE
+                sed 's/^/  /' build.out >> $SUMMARY_FILE
                 echo "" >> $SUMMARY_FILE
               else
                 echo "Build successful for $policy"
