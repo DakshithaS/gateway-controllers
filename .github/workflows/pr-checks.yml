@@ -433,4 +433,4 @@ jobs:
         if: steps.checks.outputs.optional_failed == 'true' && steps.checks.outputs.failed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: "gh pr comment ${{ github.event.pull_request.number }} --body \"## ⚠️ Optional Checks Failed\n\nSome optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the job summary for details and consider addressing them.\""
+        run: "gh pr comment ${{ github.event.pull_request.number }} --body \"## ⚠️ Optional Checks Failed\n\nSome optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the [job summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details and consider addressing them.\""
