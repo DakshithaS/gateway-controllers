@@ -205,10 +205,10 @@ jobs:
           echo "registration_message=Policy Hub registration disabled for testing" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
-      # Create and push Git tag (only on successful registration)
+      # Create and push Git tag (only on successful registration or skipped)
       # ------------------------------------------------------------
       - name: Create and push tag
-        if: steps.policy-hub-default.outputs.registration_status == 'success'
+        if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -225,10 +225,10 @@ jobs:
             "${{ steps.meta.outputs.tag_name }}"
 
       # ------------------------------------------------------------
-      # Verify Go module resolution
+      # Verify Go module resolution (only on successful registration or skipped)
       # ------------------------------------------------------------
       - name: Verify Go module resolution
-        if: steps.policy-hub-default.outputs.registration_status == 'success'
+        if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
         shell: bash
         run: |
           set -euo pipefail
@@ -261,11 +261,11 @@ jobs:
               MODULE_STATUS="✅ Go module verified"
               ;;
             skipped)
-              TITLE="❌ Policy Publish Failed"
-              HUB="❌ Policy Hub registration skipped"
-              ACTION="**Fix:** Configure \`POLICY_HUB_URL\` and \`POLICY_HUB_TOKEN\` secrets and re-run the workflow."
-              TAG_STATUS="❌ Git tag not created"
-              MODULE_STATUS="❌ Go module not verified"
+              TITLE="🎉 Policy Published Successfully"
+              HUB="ℹ️ Policy Hub registration skipped (not configured)"
+              ACTION=""
+              TAG_STATUS="✅ Git tag created"
+              MODULE_STATUS="✅ Go module verified"
               ;;
             failed)
               TITLE="❌ Policy Publish Failed"
