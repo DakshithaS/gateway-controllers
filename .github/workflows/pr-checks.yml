@@ -307,17 +307,17 @@ jobs:
         if: steps.policies.outputs.has_changes == 'true'
         env:
           # Formatting
-          ENABLE_FORMATTING: true      # Set to true to run formatting checks
-          REQUIRED_FORMATTING: false   # Set to true to block merge on formatting failures
+          ENABLE_FORMATTING: true
+          REQUIRED_FORMATTING: false
           # Staticcheck
-          ENABLE_STATICCHECK: true     # Set to true to run static analysis checks
-          REQUIRED_STATICCHECK: false  # Set to true to block merge on staticcheck failures
+          ENABLE_STATICCHECK: true
+          REQUIRED_STATICCHECK: false
           # Govulncheck
-          ENABLE_GOVULNCHECK: true     # Set to true to run vulnerability checks
-          REQUIRED_GOVULNCHECK: false  # Set to true to block merge on govulncheck failures
+          ENABLE_GOVULNCHECK: true
+          REQUIRED_GOVULNCHECK: false
           # Gosec
-          ENABLE_GOSEC: true           # Set to true to run security checks with gosec
-          REQUIRED_GOSEC: false        # Set to true to block merge on gosec failures
+          ENABLE_GOSEC: true
+          REQUIRED_GOSEC: false
         run: |
           FAILED=false
           OPTIONAL_FAILED=false
@@ -430,7 +430,4 @@ jobs:
 
       - name: Comment on PR for optional failures
         if: steps.checks.outputs.optional_failed == 'true'
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "## ⚠️ Optional Checks Failed
-
-Some optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the job summary for details and consider addressing them."
+        run: "gh pr comment ${{ github.event.pull_request.number }} --body \"## ⚠️ Optional Checks Failed\n\nSome optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the job summary for details and consider addressing them.\""
