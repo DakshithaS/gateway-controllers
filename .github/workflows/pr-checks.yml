@@ -406,7 +406,7 @@ jobs:
 
             # Tests
             if ! test_out=$(go test -race ./... 2>&1); then
-              CHECK_ERRORS+=$'\n- #### Unit Tests Failed\n```text\n'"$test_out"$'\n```\n'
+              CHECK_ERRORS+=$'\n- #### Unit Tests Failed ❌\n```text\n'"$test_out"$'\n```\n'
               FAILED=true
             fi
 
