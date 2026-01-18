@@ -249,7 +249,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   pr-checks:
@@ -303,13 +303,24 @@ jobs:
           fi
 
       - name: Run Build and Checks
+        id: checks
         if: steps.policies.outputs.has_changes == 'true'
         env:
-          ENABLE_GOVULNCHECK: true  # Set to true to enable vulnerability checks
-          ENABLE_GOSEC: true       # Set to true to enable security checks with gosec
-          ENABLE_STATICCHECK: true  # Set to false to disable static analysis checks
+          # Formatting
+          ENABLE_FORMATTING: true      # Set to true to run formatting checks
+          REQUIRED_FORMATTING: false   # Set to true to block merge on formatting failures
+          # Staticcheck
+          ENABLE_STATICCHECK: true     # Set to true to run static analysis checks
+          REQUIRED_STATICCHECK: false  # Set to true to block merge on staticcheck failures
+          # Govulncheck
+          ENABLE_GOVULNCHECK: true     # Set to true to run vulnerability checks
+          REQUIRED_GOVULNCHECK: false  # Set to true to block merge on govulncheck failures
+          # Gosec
+          ENABLE_GOSEC: true           # Set to true to run security checks with gosec
+          REQUIRED_GOSEC: false        # Set to true to block merge on gosec failures
         run: |
           FAILED=false
+          OPTIONAL_FAILED=false
           echo "## 🛡️ PR Checks Summary" >> $GITHUB_STEP_SUMMARY
           
           while IFS= read -r policy || [[ -n "$policy" ]]; do
@@ -346,28 +357,50 @@ jobs:
             CHECK_ERRORS=""
 
             # Formatting
-            if ! fmt_out=$(goimports -d . 2>&1) || [[ -n "$fmt_out" ]]; then
-              CHECK_ERRORS+=$'\n- #### Formatting Issues\n```diff\n'"$fmt_out"$'\n```\n'
+            if [[ "${ENABLE_FORMATTING:-true}" == "true" ]]; then
+              if ! fmt_out=$(goimports -d . 2>&1) || [[ -n "$fmt_out" ]]; then
+                CHECK_ERRORS+=$'\n- #### Formatting Issues\n```diff\n'"$fmt_out"$'\n```\n'
+                if [[ "${REQUIRED_FORMATTING:-false}" == "true" ]]; then
+                  FAILED=true
+                else
+                  OPTIONAL_FAILED=true
+                fi
+              fi
             fi
 
             # Staticcheck
             if [[ "${ENABLE_STATICCHECK:-true}" == "true" ]]; then
               if ! sc_out=$(staticcheck ./... 2>&1); then
                 CHECK_ERRORS+=$'\n- #### Static Analysis (staticcheck)\n```text\n'"$sc_out"$'\n```\n'
+                if [[ "${REQUIRED_STATICCHECK:-false}" == "true" ]]; then
+                  FAILED=true
+                else
+                  OPTIONAL_FAILED=true
+                fi
               fi
             fi
 
-            # Vulnerability check (optional)
+            # Vulnerability check
             if [[ "${ENABLE_GOVULNCHECK:-false}" == "true" ]]; then
               if ! vuln_out=$(govulncheck ./... 2>&1); then
                 CHECK_ERRORS+=$'\n- #### Vulnerability Check Failed\n```text\n'"$vuln_out"$'\n```\n'
+                if [[ "${REQUIRED_GOVULNCHECK:-false}" == "true" ]]; then
+                  FAILED=true
+                else
+                  OPTIONAL_FAILED=true
+                fi
               fi
             fi
 
-            # Security check (optional)
+            # Security check
             if [[ "${ENABLE_GOSEC:-false}" == "true" ]]; then
               if ! gosec_out=$(gosec ./... 2>&1); then
                 CHECK_ERRORS+=$'\n- #### Security Check (gosec) Failed\n```text\n'"$gosec_out"$'\n```\n'
+                if [[ "${REQUIRED_GOSEC:-false}" == "true" ]]; then
+                  FAILED=true
+                else
+                  OPTIONAL_FAILED=true
+                fi
               fi
             fi
 
@@ -388,7 +421,16 @@ jobs:
 
           done <<< "${{ steps.policies.outputs.policies }}"
 
-          # Fail the job if any step failed
+          echo "optional_failed=$OPTIONAL_FAILED" >> $GITHUB_OUTPUT
+
+          # Fail the job if any required check failed
           if [ "$FAILED" = true ]; then
             exit 1
           fi
+
+      - name: Comment on PR for optional failures
+        if: steps.checks.outputs.optional_failed == 'true'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "## ⚠️ Optional Checks Failed
+
+Some optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the job summary for details and consider addressing them."
