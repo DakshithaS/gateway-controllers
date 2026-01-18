@@ -81,15 +81,6 @@ jobs:
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
-      # Setup Go
-      # ------------------------------------------------------------
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
-          cache: false
-
-      # ------------------------------------------------------------
       # Validate policy structure
       # ------------------------------------------------------------
       - name: Validate policy structure
@@ -116,6 +107,15 @@ jobs:
           }
 
           echo "✅ Policy structure valid"
+
+      # ------------------------------------------------------------
+      # Setup Go
+      # ------------------------------------------------------------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
+          cache: false
 
       # ------------------------------------------------------------
       # Run tests
