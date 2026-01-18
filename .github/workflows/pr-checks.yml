@@ -422,6 +422,7 @@ jobs:
           done <<< "${{ steps.policies.outputs.policies }}"
 
           echo "optional_failed=$OPTIONAL_FAILED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
 
           # Fail the job if any required check failed
           if [ "$FAILED" = true ]; then
@@ -429,7 +430,7 @@ jobs:
           fi
 
       - name: Comment on PR for optional failures
-        if: steps.checks.outputs.optional_failed == 'true'
+        if: steps.checks.outputs.optional_failed == 'true' && steps.checks.outputs.failed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: "gh pr comment ${{ github.event.pull_request.number }} --body \"## ⚠️ Optional Checks Failed\n\nSome optional checks (formatting, static analysis, vulnerability, or security) failed. This does not block the merge, but please review the job summary for details and consider addressing them.\""
