@@ -54,15 +54,6 @@ jobs:
           echo "✅ Inputs validated"
 
       # ------------------------------------------------------------
-      # Setup Go
-      # ------------------------------------------------------------
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-
-      # ------------------------------------------------------------
       # Resolve module metadata
       # ------------------------------------------------------------
       - name: Resolve module metadata
@@ -88,6 +79,15 @@ jobs:
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
           echo "module_path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # Setup Go
+      # ------------------------------------------------------------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
+          cache: false
 
       # ------------------------------------------------------------
       # Validate policy structure
