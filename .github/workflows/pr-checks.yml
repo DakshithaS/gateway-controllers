@@ -317,7 +317,7 @@ jobs:
             echo "### $policy" >> $GITHUB_STEP_SUMMARY
             
             if [[ ! -d "$POLICY_DIR" ]]; then
-              echo "#### ❌ $policy" >> $GITHUB_STEP_SUMMARY
+              # echo "#### ❌ $policy" >> $GITHUB_STEP_SUMMARY
               echo "Directory not found." >> $GITHUB_STEP_SUMMARY
               FAILED=true
               continue
@@ -327,7 +327,7 @@ jobs:
             
             # --- 1. BUILD CHECK ---
             if ! build_out=$(go build . 2>&1); then
-              echo "#### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
+              echo "- #### Build Failed" >> $GITHUB_STEP_SUMMARY
               echo '```text' >> $GITHUB_STEP_SUMMARY
               echo "$build_out" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
@@ -341,17 +341,17 @@ jobs:
 
             # Formatting
             if ! fmt_out=$(goimports -d . 2>&1) || [[ -n "$fmt_out" ]]; then
-              CHECK_ERRORS+=$'\n#### Formatting Issues\n```diff\n'"$fmt_out"$'\n```\n'
+              CHECK_ERRORS+=$'\n- #### Formatting Issues\n```diff\n'"$fmt_out"$'\n```\n'
             fi
 
             # Staticcheck
             if ! sc_out=$(staticcheck ./... 2>&1); then
-              CHECK_ERRORS+=$'\n#### Static Analysis (staticcheck)\n```text\n'"$sc_out"$'\n```\n'
+              CHECK_ERRORS+=$'\n- #### Static Analysis (staticcheck)\n```text\n'"$sc_out"$'\n```\n'
             fi
 
             # Tests
             if ! test_out=$(go test -race ./... 2>&1); then
-              CHECK_ERRORS+=$'\n#### Unit Tests Failed\n```text\n'"$test_out"$'\n```\n'
+              CHECK_ERRORS+=$'\n- #### Unit Tests Failed\n```text\n'"$test_out"$'\n```\n'
             fi
 
             # Finalize summary for this specific policy
