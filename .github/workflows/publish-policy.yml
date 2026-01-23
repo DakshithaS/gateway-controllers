@@ -285,7 +285,7 @@ jobs:
         run: |
           case "${{ steps.policy-hub-default.outputs.registration_status }}" in
             success)
-              TITLE="🎉 Policy Published Successfully"
+              TITLE=" Policy Published Successfully"
               HUB="✅ Policy Hub registration successful"
               ACTION=""
               TAG_STATUS="✅ Git tag created"
