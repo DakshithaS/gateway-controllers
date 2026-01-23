@@ -31,6 +31,37 @@ jobs:
           fetch-depth: 0
 
       # ------------------------------------------------------------
+      # Access control
+      # ------------------------------------------------------------
+      - name: Check access permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Define allowed users (add/remove GitHub usernames as needed)
+          ALLOWED_USERS=(
+            "DakshithaS"
+            "maintainer1"
+            "maintainer2"
+          )
+
+          ACTOR="${{ github.actor }}"
+          
+          echo "Workflow triggered by: $ACTOR"
+          
+          # Check if user is in allowed list
+          for user in "${ALLOWED_USERS[@]}"; do
+            if [[ "$user" == "$ACTOR" ]]; then
+              echo "Access granted to $ACTOR"
+              exit 0
+            fi
+          done
+
+          echo "Access denied for $ACTOR"
+
+          exit 1
+
+      # ------------------------------------------------------------
       # Validate inputs
       # ------------------------------------------------------------
       - name: Validate inputs
