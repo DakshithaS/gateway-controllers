@@ -109,6 +109,37 @@ jobs:
           echo "✅ Policy structure valid"
 
       # ------------------------------------------------------------
+      # Validate version consistency
+      # ------------------------------------------------------------
+      - name: Validate version consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DIR="${{ steps.meta.outputs.target_dir }}"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+
+          # Extract version from policy-definition.yaml
+          POLICY_DEF_VERSION=$(yq eval '.version' "$DIR/policy-definition.yaml")
+
+          # Remove 'v' prefix if present in policy-definition.yaml
+          POLICY_DEF_VERSION=${POLICY_DEF_VERSION#v}
+
+          echo "Input version: $INPUT_VERSION"
+          echo "Policy definition version: $POLICY_DEF_VERSION"
+
+          if [[ "$INPUT_VERSION" != "$POLICY_DEF_VERSION" ]]; then
+            echo "❌ Version mismatch!"
+            echo "The version specified in the workflow input ($INPUT_VERSION) does not match"
+            echo "the version in the policy-definition.yaml file ($POLICY_DEF_VERSION)."
+            echo "Please update the policy-definition.yaml version to v$INPUT_VERSION or"
+            echo "use version $POLICY_DEF_VERSION in the workflow input."
+            exit 1
+          fi
+
+          echo "✅ Version consistency validated"
+
+      # ------------------------------------------------------------
       # Setup Go
       # ------------------------------------------------------------
       - name: Setup Go
