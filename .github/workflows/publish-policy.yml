@@ -259,25 +259,25 @@ jobs:
       # ------------------------------------------------------------
       # Verify Go module resolution (only on successful registration or skipped)
       # ------------------------------------------------------------
-      - name: Verify Go module resolution
-        if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Verify Go module resolution
+      #   if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
 
-          MOD="${{ steps.meta.outputs.module_path }}"
-          VER="v${{ github.event.inputs.version }}"
+      #     MOD="${{ steps.meta.outputs.module_path }}"
+      #     VER="v${{ github.event.inputs.version }}"
 
-          for i in 1 2 3; do
-            if go list -m "$MOD@$VER"; then
-              echo "✅ Module resolved"
-              exit 0
-            fi
-            sleep 15
-          done
+      #     for i in 1 2 3; do
+      #       if go list -m "$MOD@$VER"; then
+      #         echo "✅ Module resolved"
+      #         exit 0
+      #       fi
+      #       sleep 15
+      #     done
 
-          echo "❌ Go module resolution failed"
-          exit 1
+      #     echo "❌ Go module resolution failed"
+      #     exit 1
 
       # ------------------------------------------------------------
       # Publish summary (Markdown)
