@@ -40,7 +40,7 @@ jobs:
 
           # Define allowed users (add/remove GitHub usernames as needed)
           ALLOWED_USERS=(
-            "DakshithaS"
+            "DakshithaSe"
             "maintainer1"
             "maintainer2"
           )
