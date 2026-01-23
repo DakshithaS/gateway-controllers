@@ -23,14 +23,6 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # Checkout
-      # ------------------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # ------------------------------------------------------------
       # Access control
       # ------------------------------------------------------------
       - name: Check access permissions
@@ -60,6 +52,14 @@ jobs:
           echo "Access denied for $ACTOR"
 
           exit 1
+
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # ------------------------------------------------------------
       # Validate inputs
@@ -99,10 +99,10 @@ jobs:
 
           if [[ "$MAJOR" == "0" || "$MAJOR" == "1" ]]; then
             TARGET_DIR="policies/$POLICY"
-            MODULE_PATH="github.com/DakshithaS/gateway-controllers/policies/$POLICY"
+            MODULE_PATH="github.com/${{ github.repository }}/gateway-controllers/policies/$POLICY"
           else
             TARGET_DIR="policies/$POLICY/v$MAJOR"
-            MODULE_PATH="github.com/DakshithaS/gateway-controllers/policies/$POLICY/v$MAJOR"
+            MODULE_PATH="github.com/${{ github.repository }}/gateway-controllers/policies/$POLICY/v$MAJOR"
           fi
 
           TAG_NAME="policies/$POLICY/v$VERSION"
