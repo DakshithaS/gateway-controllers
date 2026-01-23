@@ -1,4 +1,4 @@
-name: Publish Policy
+name: Release Policy
 
 on:
   workflow_dispatch:
@@ -16,13 +16,12 @@ permissions:
   contents: write
 
 jobs:
-  publish-policy:
-    name: Validate, Test & Publish Policy
+  release-policy:
+    name: Validate, Test & Release Policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-
       # ------------------------------------------------------------
       # Checkout
       # ------------------------------------------------------------
@@ -237,10 +236,26 @@ jobs:
           echo "registration_message=Policy Hub registration disabled for testing" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
+      # Resolve final Policy Hub status
+      # ------------------------------------------------------------
+      - name: Resolve Policy Hub status
+        id: policy-hub-final
+        shell: bash
+        run: |
+          # Use actual Policy Hub result if it ran, otherwise use default
+          if [[ "${{ steps.policy-hub.conclusion }}" == "success" || "${{ steps.policy-hub.conclusion }}" == "failure" ]]; then
+            echo "registration_status=${{ steps.policy-hub.outputs.registration_status }}" >> "$GITHUB_OUTPUT"
+            echo "registration_message=${{ steps.policy-hub.outputs.registration_message }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "registration_status=${{ steps.policy-hub-default.outputs.registration_status }}" >> "$GITHUB_OUTPUT"
+            echo "registration_message=${{ steps.policy-hub-default.outputs.registration_message }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ------------------------------------------------------------
       # Create and push Git tag (only on successful registration or skipped)
       # ------------------------------------------------------------
       - name: Create and push tag
-        if: steps.policy-hub-default.outputs.registration_status == 'success' || steps.policy-hub-default.outputs.registration_status == 'skipped'
+        if: steps.policy-hub-final.outputs.registration_status == 'success' || steps.policy-hub-final.outputs.registration_status == 'skipped'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -284,30 +299,30 @@ jobs:
       # ------------------------------------------------------------
       - name: Publish summary
         run: |
-          case "${{ steps.policy-hub-default.outputs.registration_status }}" in
+          case "${{ steps.policy-hub-final.outputs.registration_status }}" in
             success)
-              TITLE=" Policy Published Successfully"
+              TITLE=" Policy Released Successfully"
               HUB="✅ Policy Hub registration successful"
               ACTION=""
               TAG_STATUS="✅ Git tag created"
               MODULE_STATUS="✅ Go module verified"
               ;;
             skipped)
-              TITLE="🎉 Policy Published Successfully"
+              TITLE="🎉 Policy Released Successfully"
               HUB="ℹ️ Policy Hub registration skipped (not configured)"
               ACTION=""
               TAG_STATUS="✅ Git tag created"
               MODULE_STATUS="✅ Go module verified"
               ;;
             failed)
-              TITLE="❌ Policy Publish Failed"
+              TITLE="❌ Policy Release Failed"
               HUB="❌ Policy Hub registration failed"
               ACTION="**Fix:** Review Policy Hub error details above and retry."
               TAG_STATUS="❌ Git tag not created"
               MODULE_STATUS="❌ Go module not verified"
               ;;
             *)
-              TITLE="❌ Policy Publish Failed"
+              TITLE="❌ Policy Release Failed"
               HUB="❌ Unknown Policy Hub state"
               ACTION="**Fix:** Inspect workflow logs."
               TAG_STATUS="❌ Git tag not created"
@@ -340,7 +355,7 @@ jobs:
       - name: Final status check
         shell: bash
         run: |
-          case "${{ steps.policy-hub-default.outputs.registration_status }}" in
+          case "${{ steps.policy-hub-final.outputs.registration_status }}" in
             success|skipped)
               echo "✅ Workflow completed successfully"
               exit 0
