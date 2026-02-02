@@ -237,17 +237,23 @@ jobs:
         
         # Create zip file
         ZIP_NAME="${METADATA_NAME}-${METADATA_VERSION}.zip"
+        ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
+        
+        echo "Creating ZIP at: $ZIP_PATH"
         cd "$PACKAGE_DIR"
-        zip -r "../../$ZIP_NAME" . -x "*.DS_Store"
-        cd ../..
+        zip -r "$ZIP_PATH" . -x "*.DS_Store"
+        cd "$GITHUB_WORKSPACE"
         
         # Verify zip was created
-        if [[ ! -f "$ZIP_NAME" ]]; then
-          echo "❌ Failed to create zip file: $ZIP_NAME"
+        if [[ ! -f "$ZIP_PATH" ]]; then
+          echo "❌ Failed to create zip file: $ZIP_PATH"
+          echo "Current directory: $(pwd)"
+          echo "Files in workspace:"
+          ls -la
           exit 1
         fi
         
-        echo "✅ Created policy package: $ZIP_NAME"
+        echo "✅ Created policy package: $ZIP_PATH"
         echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
         echo "TEMP_DIR=$TEMP_DIR" >> $GITHUB_ENV
         
@@ -276,10 +282,11 @@ jobs:
         echo "$METADATA_CONTENT"
         echo
         echo "ZIP file: $ZIP_NAME"
-        if [[ -f "$ZIP_NAME" ]]; then
-          ls -la "$ZIP_NAME"
+        ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
+        if [[ -f "$ZIP_PATH" ]]; then
+          ls -la "$ZIP_PATH"
         else
-          echo "❌ ZIP file not found: $ZIP_NAME"
+          echo "❌ ZIP file not found: $ZIP_PATH"
           echo "Looking for files with similar names:"
           ls -la *.zip 2>/dev/null || echo "No .zip files found"
           exit 1
@@ -296,7 +303,7 @@ jobs:
         fi
         
         CURL_CMD="$CURL_CMD -F 'metadata=$METADATA_CONTENT'"
-        CURL_CMD="$CURL_CMD -F 'docs=@$ZIP_NAME'"
+        CURL_CMD="$CURL_CMD -F 'docs=@$GITHUB_WORKSPACE/$ZIP_NAME'"
         
         # Debug: Print the full curl command
         echo "🔍 Full curl command:"
