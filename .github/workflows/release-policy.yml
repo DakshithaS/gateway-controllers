@@ -208,9 +208,7 @@ jobs:
           RESPONSE=$(curl -sSL -w "HTTPSTATUS:%{http_code}" \
             -X POST "$POLICY_HUB_URL/policies/${{ github.event.inputs.policy }}/versions/${{ github.event.inputs.version }}/release" \
             -H "api-key: $POLICY_HUB_TOKEN" \
-            -F "module_path=${{ steps.meta.outputs.module_path }}" \
-            -F "repository=${{ github.repository }}" \
-            -F "policy_definition=@$DIR/policy-definition.yaml;type=application/yaml")
+            -F "definition=@$DIR/policy-definition.yaml;type=application/yaml")
 
           STATUS=$(echo "$RESPONSE" | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
           BODY=$(echo "$RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]{3}$//')

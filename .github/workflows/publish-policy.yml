@@ -265,7 +265,7 @@ jobs:
         echo "🌐 API URL: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
         
         # Prepare curl command with optional authentication
-        CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST --max-time 30 --connect-timeout 10"
+        CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST --max-time 30 --connect-timeout 10 --insecure"
         CURL_CMD="$CURL_CMD '$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION'"
         
         # Add authentication header if token is provided
