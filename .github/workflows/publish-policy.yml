@@ -33,6 +33,8 @@ jobs:
       
     - name: Validate API configuration
       id: api-config
+      env:
+        POLICY_HUB_URL: ${{ vars.POLICY_HUB_URL }}
       run: |
         if [[ -z "${POLICY_HUB_URL:-}" ]]; then
           echo "❌ Missing POLICY_HUB_URL environment variable"
