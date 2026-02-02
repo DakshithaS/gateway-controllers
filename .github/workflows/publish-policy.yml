@@ -36,9 +36,17 @@ jobs:
         POLICY_NAME="${{ github.event.inputs.policy_name }}"
         MINOR_VERSION="${{ github.event.inputs.minor_version }}"
         
-        # Validate policy name
+        # Trim whitespace from policy name
+        POLICY_NAME=$(echo "$POLICY_NAME" | xargs)
+        
+        # Validate policy name: only letters, numbers, hyphen, underscore; no slashes or traversal
         if [[ -z "$POLICY_NAME" ]]; then
           echo "❌ Policy name is required"
+          exit 1
+        fi
+        
+        if [[ ! "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "❌ Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters)"
           exit 1
         fi
         
@@ -104,6 +112,7 @@ jobs:
         
     - name: Parse and validate metadata.json
       run: |
+        set -euo pipefail
         METADATA_FILE="$VERSION_DIR/metadata.json"
         
         # Check if metadata.json exists
@@ -155,6 +164,12 @@ jobs:
         
         if [[ -z "$description" ]]; then
           echo "❌ Missing 'description' field in metadata.json"
+          exit 1
+        fi
+        
+        # Validate that .categories is a non-empty array
+        if ! jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null; then
+          echo "❌ 'categories' must be a non-empty array in metadata.json"
           exit 1
         fi
         
@@ -257,22 +272,20 @@ jobs:
       env:
         POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
       run: |
-        METADATA_CONTENT=$(cat "$VERSION_DIR/metadata.json")
-        
-        # Prepare curl command with optional authentication
-        CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST --max-time 30 --connect-timeout 10 --insecure"
-        CURL_CMD="$CURL_CMD '$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION'"
+        # Build curl args array safely
+        curl_args=("-s" "-w" "%{http_code}" "-o" "response.txt" "-X" "POST" "--max-time" "30" "--connect-timeout" "10" "$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION")
         
         # Add authentication header if token is provided
         if [[ -n "${POLICY_HUB_TOKEN:-}" ]]; then
-          CURL_CMD="$CURL_CMD -H 'api-key: $POLICY_HUB_TOKEN'"
+          curl_args+=("-H" "api-key: $POLICY_HUB_TOKEN")
         fi
         
-        CURL_CMD="$CURL_CMD -F 'metadata=$METADATA_CONTENT'"
-        CURL_CMD="$CURL_CMD -F 'docs=@$GITHUB_WORKSPACE/$ZIP_NAME'"
+        # Add form fields
+        curl_args+=("-F" "metadata=@$VERSION_DIR/metadata.json;type=application/json")
+        curl_args+=("-F" "docs=@$GITHUB_WORKSPACE/$ZIP_NAME")
         
-        # Execute the curl command
-        HTTP_STATUS=$(eval "$CURL_CMD")
+        # Execute the curl command safely
+        HTTP_STATUS=$(curl "${curl_args[@]}")
         
         echo "HTTP Status: $HTTP_STATUS"
         
