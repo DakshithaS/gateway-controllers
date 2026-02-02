@@ -34,15 +34,15 @@ jobs:
     - name: Validate API configuration
       id: api-config
       run: |
-        if [[ -z "${{ secrets.POLICY_HUB_URL }}" ]]; then
-          echo "❌ Missing POLICY_HUB_URL secret"
-          echo "Please configure POLICY_HUB_URL in repository secrets"
-          echo "Go to: Settings → Secrets and variables → Actions → Repository secrets"
+        if [[ -z "${POLICY_HUB_URL:-}" ]]; then
+          echo "❌ Missing POLICY_HUB_URL environment variable"
+          echo "Please configure POLICY_HUB_URL in repository environment variables"
+          echo "Go to: Settings → Environments → [environment] → Environment variables"
           exit 1
         fi
         
         echo "✅ API configuration validated"
-        echo "API_URL=${{ secrets.POLICY_HUB_URL }}" >> $GITHUB_ENV
+        echo "API_URL=$POLICY_HUB_URL" >> $GITHUB_ENV
       
     - name: Setup Node.js for JSON validation
       uses: actions/setup-node@v4
@@ -260,15 +260,15 @@ jobs:
         METADATA_CONTENT=$(cat "$VERSION_DIR/metadata.json")
         
         echo "📦 Publishing policy: $METADATA_NAME v$METADATA_VERSION"
-        echo "🌐 API URL: $API_URL/api/v1/internal/policies/$METADATA_NAME/versions/$METADATA_VERSION"
+        echo "🌐 API URL: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
         
         # Prepare curl command with optional authentication
         CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST"
-        CURL_CMD="$CURL_CMD '$API_URL/api/v1/internal/policies/$METADATA_NAME/versions/$METADATA_VERSION'"
+        CURL_CMD="$CURL_CMD '$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION'"
         
         # Add authentication header if token is provided
         if [[ -n "${POLICY_HUB_TOKEN:-}" ]]; then
-          CURL_CMD="$CURL_CMD -H 'Authorization: Bearer $POLICY_HUB_TOKEN'"
+          CURL_CMD="$CURL_CMD -H 'api-key: $POLICY_HUB_TOKEN'"
         fi
         
         CURL_CMD="$CURL_CMD -F 'metadata=$METADATA_CONTENT'"
@@ -315,4 +315,4 @@ jobs:
         echo "Policy Name: $METADATA_NAME"
         echo "Version: $METADATA_VERSION"
         echo "Status: ✅ Successfully Published"
-        echo "API Endpoint: $API_URL/api/v1/internal/policies/$METADATA_NAME/versions/$METADATA_VERSION"
+        echo "API Endpoint: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
