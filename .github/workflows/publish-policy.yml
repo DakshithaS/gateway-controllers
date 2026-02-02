@@ -264,8 +264,17 @@ jobs:
         echo "📦 Publishing policy: $METADATA_NAME v$METADATA_VERSION"
         echo "🌐 API URL: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
         
+        # Debug: Print payload content
+        echo "📋 Payload content:"
+        echo "Metadata JSON:"
+        echo "$METADATA_CONTENT"
+        echo
+        echo "ZIP file: $ZIP_NAME"
+        ls -la "$ZIP_NAME"
+        echo
+        
         # Prepare curl command with optional authentication
-        CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST --max-time 30 --connect-timeout 10 --insecure"
+        CURL_CMD="curl -w '%{http_code}' -s -o response.txt -X POST --max-time 30 --connect-timeout 10 --insecure -v"
         CURL_CMD="$CURL_CMD '$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION'"
         
         # Add authentication header if token is provided
@@ -276,14 +285,23 @@ jobs:
         CURL_CMD="$CURL_CMD -F 'metadata=$METADATA_CONTENT'"
         CURL_CMD="$CURL_CMD -F 'docs=@$ZIP_NAME'"
         
+        # Debug: Print the full curl command
+        echo "🔍 Full curl command:"
+        echo "$CURL_CMD"
+        echo
+        
         # Execute the curl command
         HTTP_STATUS=$(eval "$CURL_CMD")
         
         echo "HTTP Status: $HTTP_STATUS"
         
         # Show response
-        echo "API Response:"
-        cat response.txt
+        echo "📨 API Response:"
+        if [[ -f response.txt ]]; then
+          cat response.txt
+        else
+          echo "No response file found"
+        fi
         echo
         
         # Check if request was successful
