@@ -264,13 +264,26 @@ jobs:
         echo "📦 Publishing policy: $METADATA_NAME v$METADATA_VERSION"
         echo "🌐 API URL: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
         
+        # Debug: Print current working directory and file listing
+        echo "📂 Current working directory: $(pwd)"
+        echo "📂 Files in current directory:"
+        ls -la
+        echo
+        
         # Debug: Print payload content
         echo "📋 Payload content:"
         echo "Metadata JSON:"
         echo "$METADATA_CONTENT"
         echo
         echo "ZIP file: $ZIP_NAME"
-        ls -la "$ZIP_NAME"
+        if [[ -f "$ZIP_NAME" ]]; then
+          ls -la "$ZIP_NAME"
+        else
+          echo "❌ ZIP file not found: $ZIP_NAME"
+          echo "Looking for files with similar names:"
+          ls -la *.zip 2>/dev/null || echo "No .zip files found"
+          exit 1
+        fi
         echo
         
         # Prepare curl command with optional authentication
