@@ -1,9 +1,8 @@
 name: jwt-auth
-version: v0.2.0
+version: v0.3.0
 description: |
-  Validates JWT access tokens using one or more JWKS providers (key managers).
-  System-level configuration holds key manager endpoints and fetch behavior.
-  User-level configuration holds per-route assertions (selected issuers, audiences, scopes, claims and mappings).
+  Validates JWT access tokens included in API requests. The gateway verifies the
+  token's signature, expiry, issuer, audience, scopes, and required claims.
 
 parameters:
   type: object
@@ -11,46 +10,59 @@ parameters:
   properties:
     issuers:
       type: array
+      x-wso2-policy-advanced-param: true
       description: >-
-        List of issuer names (referencing entries in `system.keyManagers`) to use
-        for validating tokens for this route. If omitted, runtime will try to
-        match token `iss` claim to available key managers or try all providers.
+        Specifies issuer names for token validation by referencing entries in
+        `system.keyManagers`. If omitted, runtime matches by token `iss` or
+        tries all configured providers.
+      default: []
       items:
         type: string
 
     audiences:
       type: array
-      description: List of acceptable audience values; token must contain at least one.
+      x-wso2-policy-advanced-param: true
+      description: Specifies accepted audience values. Token validation succeeds only when at least one configured audience is present.
+      default: []
       items:
         type: string
 
     requiredScopes:
       type: array
-      description: List of scopes that must be present in the token (space-delimited 'scope' claim or array 'scp').
+      x-wso2-policy-advanced-param: true
+      description: Specifies scopes that must exist in the token from `scope` (space-delimited) or `scp` (array) claims.
+      default: []
       items:
         type: string
 
     requiredClaims:
       type: object
-      description: Map of claimName -> expectedValue. Runtime may support equality or regex-based matching.
+      x-wso2-policy-advanced-param: true
+      description: Specifies required claim-value pairs as `claimName -> expectedValue`.
+      default: {}
       additionalProperties:
         type: string
 
     claimMappings:
       type: object
-      description: Map claimName -> downstream header or context key to expose for downstream services.
+      x-wso2-policy-advanced-param: true
+      description: Specifies claim-to-output mappings as `claimName -> headerOrContextKey` for downstream use.
+      default: {}
       additionalProperties:
         type: string
 
     authHeaderPrefix:
       type: string
-      description: Override for the authorization header scheme prefix (e.g., "Bearer", "JWT"). If specified at user-level, takes precedence over system configuration for this route.
+      x-wso2-policy-advanced-param: true
+      description: Specifies a route-level authorization scheme prefix (for example, "Bearer" or "JWT") that overrides `system.authHeaderScheme`.
+      default: Bearer
 
     userIdClaim:
       type: string
+      x-wso2-policy-advanced-param: true
       description: >-
-        Claim name to extract the user ID from the JWT token for analytics.
-        If not specified, defaults to "sub" claim.
+        Specifies the claim name used to extract the user ID for analytics.
+        Defaults to "sub" when omitted.
       default: sub
 
 systemParameters:          
@@ -125,21 +137,25 @@ systemParameters:
     jwksCacheTtl:
       type: string
       description: Duration string for JWKS caching (e.g., "5m"). If omitted a default is used.
+      default: "5m"
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.jwkscachettl}"
 
     jwksFetchTimeout:
       type: string
       description: Timeout for HTTP fetch of JWKS, e.g., "5s".
+      default: "5s"
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.jwksfetchtimeout}"
 
     jwksFetchRetryCount:
       type: integer
       description: Number of retries for JWKS fetch on transient failures.
+      default: 3
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.jwksfetchretrycount}"
 
     jwksFetchRetryInterval:
       type: string
       description: Interval between JWKS fetch retries, e.g., "2s".
+      default: "2s"
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.jwksfetchretryinterval}"
 
     allowedAlgorithms:
@@ -147,11 +163,13 @@ systemParameters:
       description: Allowed JWT signing algorithms (e.g., ["RS256","ES256"]).
       items:
         type: string
+      default: ["RS256", "ES256"]
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.allowedalgorithms}"
 
     leeway:
       type: string
       description: Clock skew allowance for exp/nbf checks, e.g., "30s".
+      default: "30s"
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.leeway}"
 
     authHeaderScheme:
@@ -181,11 +199,13 @@ systemParameters:
     errorMessage:
       type: string
       description: Custom error message to include in the response body on authentication failure.
+      default: "Authentication failed"
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.errormessage}"
 
     validateIssuer:
       type: boolean
       description: Whether to validate the token's issuer claim against configured key managers.
+      default: true
       "wso2/defaultValue": "${config.policy_configurations.jwtauth_v0.validateissuer}"
 
   required: ["keyManagers"]

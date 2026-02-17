@@ -1,9 +1,8 @@
 name: basic-ratelimit
-version: v0.2.0
+version: v0.3.0
 description: |
-  Simple request rate limiting policy that limits the number of requests per time window.
-  Uses route name as the rate limit key. For advanced rate limiting with multi-dimensional
-  quotas, weighted costs, and custom key extraction, use the full 'ratelimit' policy.
+  Limits request rates by restricting the number of requests allowed within one
+  or more defined time windows.
 
 parameters:
   type: object
@@ -13,26 +12,26 @@ parameters:
     limits:
       type: array
       description: |
-        Array of rate limits. Multiple limits can be specified to enforce different
-        time windows (e.g., 10/second AND 1000/hour). All limits are evaluated,
-        and the most restrictive limit is enforced.
+        Specifies one or more rate limits. All limits are evaluated, and the
+        most restrictive result is enforced.
       minItems: 1
       maxItems: 10
       items:
         type: object
         additionalProperties: false
-        required: ["limit", "duration"]
+        required: ["requests", "duration"]
         properties:
-          limit:
+          requests:
             type: integer
-            description: Maximum number of requests allowed in the duration
+            description: Specifies the maximum number of requests allowed during
+              the configured duration.
             minimum: 1
             maximum: 1000000000
           duration:
             type: string
             description: |
-              Time window for the limit (Go duration string format).
-              Examples: "1s" (1 second), "1m" (1 minute), "1h" (1 hour), "24h" (1 day)
+              Specifies the time window for the limit using Go duration format,
+              for example "1s", "1m", "1h", or "24h".
             pattern: "^[0-9]+(ns|us|µs|ms|s|m|h)$"
 
 systemParameters:
