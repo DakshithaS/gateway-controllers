@@ -1,5 +1,5 @@
 name: azure-content-safety-content-moderation
-version: v0.2.1
+version: v0.3.0
 description: |
   Validates request and response content with Azure Content Safety moderation
   checks. Supports configurable category thresholds, optional JSONPath
@@ -10,112 +10,131 @@ parameters:
   properties:
     request:
       type: object
+      x-wso2-policy-advanced-param: false
       description: Specifies content moderation settings for request payloads.
       properties:
         jsonPath:
           type: string
+          x-wso2-policy-advanced-param: true
           description: |
             Specifies the JSONPath used to extract content for moderation. When
             empty, the entire payload is evaluated as plain text.
           default: ""
         passthroughOnError:
           type: boolean
+          x-wso2-policy-advanced-param: true
           description: |
             Specifies whether requests continue when the Azure Content Safety
             API call fails. True allows passthrough; false blocks on API errors.
           default: false
         showAssessment:
           type: boolean
+          x-wso2-policy-advanced-param: true
           description: |
             Specifies whether blocked responses include detailed moderation
             assessment information.
           default: false
-        hateCategory:
+        hateSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the hate category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        sexualCategory:
+          default: 4
+        sexualSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the sexual category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        selfHarmCategory:
+          default: 5
+        selfHarmSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the self-harm category severity threshold (0-7). Use -1
             to disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        violenceCategory:
+          default: 3
+        violenceSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the violence category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
+          default: 4
     response:
       type: object
+      x-wso2-policy-advanced-param: false
       description: Specifies content moderation settings for response payloads.
       properties:
         jsonPath:
           type: string
+          x-wso2-policy-advanced-param: true
           description: |
             Specifies the JSONPath used to extract content for moderation. When
             empty, the entire payload is evaluated as plain text.
           default: ""
         passthroughOnError:
           type: boolean
+          x-wso2-policy-advanced-param: true
           description: |
             Specifies whether responses continue when the Azure Content Safety
             API call fails. True allows passthrough; false blocks on API errors.
           default: false
         showAssessment:
           type: boolean
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies whether blocked responses include detailed moderation
             assessment information.
           default: false
-        hateCategory:
+        hateSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the hate category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        sexualCategory:
+          default: 4
+        sexualSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the sexual category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        selfHarmCategory:
+          default: 5
+        selfHarmSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the self-harm category severity threshold (0-7). Use -1
             to disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
-        violenceCategory:
+          default: 3
+        violenceSeverityThreshold:
           type: integer
+          x-wso2-policy-advanced-param: false
           description: |
             Specifies the violence category severity threshold (0-7). Use -1 to
             disable this category. Content at or above the threshold is blocked.
           minimum: -1
           maximum: 7
-          default: -1
+          default: 4
+  anyOf:
+    - required: [ request ]
+    - required: [ response ]
 
 systemParameters:
   type: object
