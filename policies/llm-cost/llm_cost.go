@@ -130,6 +130,10 @@ func (p *LLMCostPolicy) OnResponse(ctx *policy.ResponseContext, _ map[string]int
 
 	// Select provider calculator.
 	calc := selectCalculator(pricing.Provider)
+	if calc == nil {
+		slog.Warn("llm-cost: unsupported provider, skipping cost calculation", "provider", pricing.Provider, "model", modelName)
+		return setCostMetadata(ctx, 0.0, costStatusNotCalculated)
+	}
 
 	// Get buffered request body (may be nil for providers that don't need it).
 	var requestBody []byte
