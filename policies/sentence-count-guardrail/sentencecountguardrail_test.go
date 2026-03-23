@@ -265,6 +265,24 @@ func TestDisabledFlow_GetPolicyAndHandlers_NoRequiredParams(t *testing.T) {
 	})
 }
 
+func TestParseParams_DisabledFlow_IgnoresProvidedMinMax(t *testing.T) {
+	for _, isResponse := range []bool{false, true} {
+		got, err := parseParams(map[string]interface{}{
+			"enabled":        false,
+			"min":            0,
+			"max":            0,
+			"invert":         false,
+			"showAssessment": false,
+		}, isResponse)
+		if err != nil {
+			t.Fatalf("expected disabled flow with zero min/max to parse for isResponse=%v, got error: %v", isResponse, err)
+		}
+		if got.Enabled {
+			t.Fatalf("expected enabled=false for isResponse=%v, got true", isResponse)
+		}
+	}
+}
+
 func TestGetPolicy_EmptyFlowObject_IsIgnored(t *testing.T) {
 	t.Run("request configured with empty response object", func(t *testing.T) {
 		pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{

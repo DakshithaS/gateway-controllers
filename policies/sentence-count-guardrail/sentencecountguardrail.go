@@ -150,32 +150,32 @@ func parseParams(params map[string]interface{}, isResponse bool) (SentenceCountG
 		if !hasMax {
 			return result, fmt.Errorf("'max' parameter is required")
 		}
-	}
 
-	if hasMin {
-		min, err := extractInt(minRaw)
-		if err != nil {
-			return result, fmt.Errorf("'min' must be a number: %w", err)
+		if hasMin {
+			min, err := extractInt(minRaw)
+			if err != nil {
+				return result, fmt.Errorf("'min' must be a number: %w", err)
+			}
+			if min < 0 {
+				return result, fmt.Errorf("'min' cannot be negative")
+			}
+			result.Min = min
 		}
-		if min < 0 {
-			return result, fmt.Errorf("'min' cannot be negative")
-		}
-		result.Min = min
-	}
 
-	if hasMax {
-		max, err := extractInt(maxRaw)
-		if err != nil {
-			return result, fmt.Errorf("'max' must be a number: %w", err)
+		if hasMax {
+			max, err := extractInt(maxRaw)
+			if err != nil {
+				return result, fmt.Errorf("'max' must be a number: %w", err)
+			}
+			if max <= 0 {
+				return result, fmt.Errorf("'max' must be greater than 0")
+			}
+			result.Max = max
 		}
-		if max <= 0 {
-			return result, fmt.Errorf("'max' must be greater than 0")
-		}
-		result.Max = max
-	}
 
-	if hasMin && hasMax && result.Min > result.Max {
-		return result, fmt.Errorf("'min' cannot be greater than 'max'")
+		if hasMin && hasMax && result.Min > result.Max {
+			return result, fmt.Errorf("'min' cannot be greater than 'max'")
+		}
 	}
 
 	// Extract optional jsonPath parameter

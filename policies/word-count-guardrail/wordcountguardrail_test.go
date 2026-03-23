@@ -265,6 +265,94 @@ func TestDisabledFlow_GetPolicyAndHandlers_NoRequiredParams(t *testing.T) {
 	})
 }
 
+func TestParseParams_DisabledFlow_IgnoresProvidedMinMax(t *testing.T) {
+	for _, isResponse := range []bool{false, true} {
+		got, err := parseParams(map[string]interface{}{
+			"enabled":        false,
+			"min":            0,
+			"max":            0,
+			"invert":         false,
+			"showAssessment": false,
+		}, isResponse)
+		if err != nil {
+			t.Fatalf("expected disabled flow with zero min/max to parse for isResponse=%v, got error: %v", isResponse, err)
+		}
+		if got.Enabled {
+			t.Fatalf("expected enabled=false for isResponse=%v, got true", isResponse)
+		}
+	}
+}
+
+func TestGetPolicy_DisabledResponseWithZeroMinMax_IsAccepted(t *testing.T) {
+	pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"request": map[string]interface{}{
+			"enabled":        true,
+			"min":            2,
+			"max":            3,
+			"jsonPath":       "$.messages[-1].content",
+			"invert":         false,
+			"showAssessment": true,
+		},
+		"response": map[string]interface{}{
+			"enabled":        false,
+			"min":            0,
+			"max":            0,
+			"jsonPath":       "$.choices[0].message.content",
+			"invert":         false,
+			"showAssessment": false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected disabled response with zero min/max to be accepted, got %v", err)
+	}
+
+	p, ok := pRaw.(*WordCountGuardrailPolicy)
+	if !ok {
+		t.Fatalf("expected *WordCountGuardrailPolicy, got %T", pRaw)
+	}
+	if !p.hasRequestParams {
+		t.Fatalf("expected request params to be present")
+	}
+	if !p.hasResponseParams || p.responseParams.Enabled {
+		t.Fatalf("expected response params present and disabled, got hasResponse=%v enabled=%v", p.hasResponseParams, p.responseParams.Enabled)
+	}
+}
+
+func TestGetPolicy_DisabledRequestWithZeroMinMax_IsAccepted(t *testing.T) {
+	pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"request": map[string]interface{}{
+			"enabled":        false,
+			"min":            0,
+			"max":            0,
+			"jsonPath":       "$.messages[-1].content",
+			"invert":         false,
+			"showAssessment": false,
+		},
+		"response": map[string]interface{}{
+			"enabled":        true,
+			"min":            2,
+			"max":            3,
+			"jsonPath":       "$.choices[0].message.content",
+			"invert":         false,
+			"showAssessment": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected disabled request with zero min/max to be accepted, got %v", err)
+	}
+
+	p, ok := pRaw.(*WordCountGuardrailPolicy)
+	if !ok {
+		t.Fatalf("expected *WordCountGuardrailPolicy, got %T", pRaw)
+	}
+	if !p.hasRequestParams || p.requestParams.Enabled {
+		t.Fatalf("expected request params present and disabled, got hasRequest=%v enabled=%v", p.hasRequestParams, p.requestParams.Enabled)
+	}
+	if !p.hasResponseParams {
+		t.Fatalf("expected response params to be present")
+	}
+}
+
 func TestGetPolicy_EmptyFlowObject_IsIgnored(t *testing.T) {
 	t.Run("request configured with empty response object", func(t *testing.T) {
 		pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
