@@ -24,9 +24,9 @@ import (
 	"fmt"
 	"strings"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
-
 
 const (
 	AuthType = "basic"
@@ -188,6 +188,119 @@ func (p *BasicAuthPolicy) handleAuthFailure(ctx *policy.RequestContext, allowUna
 	})
 
 	return policy.ImmediateResponse{
+		StatusCode: 401,
+		Headers:    headers,
+		Body:       body,
+	}
+}
+
+// OnRequestHeaders performs Basic Authentication in the request header phase.
+func (p *BasicAuthPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, params map[string]interface{}) policyv1alpha2.RequestHeaderAction {
+	expectedUsername, ok := params["username"].(string)
+	if !ok || expectedUsername == "" {
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Internal Server Error",
+			"message": "Invalid policy configuration: username must be a non-empty string",
+		})
+		return policyv1alpha2.ImmediateResponse{
+			StatusCode: 500,
+			Headers:    map[string]string{"content-type": "application/json"},
+			Body:       errBody,
+		}
+	}
+
+	expectedPassword, ok := params["password"].(string)
+	if !ok || expectedPassword == "" {
+		errBody, _ := json.Marshal(map[string]string{
+			"error":   "Internal Server Error",
+			"message": "Invalid policy configuration: password must be a non-empty string",
+		})
+		return policyv1alpha2.ImmediateResponse{
+			StatusCode: 500,
+			Headers:    map[string]string{"content-type": "application/json"},
+			Body:       errBody,
+		}
+	}
+
+	allowUnauthenticated := false
+	if allowUnauthRaw, ok := params["allowUnauthenticated"]; ok {
+		if allowUnauthBool, ok := allowUnauthRaw.(bool); ok {
+			allowUnauthenticated = allowUnauthBool
+		}
+	}
+
+	realm := "Restricted"
+	if realmRaw, ok := params["realm"]; ok {
+		if realmStr, ok := realmRaw.(string); ok && realmStr != "" {
+			realm = realmStr
+		}
+	}
+
+	authHeaders := ctx.Headers.Get("authorization")
+	if len(authHeaders) == 0 {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, allowUnauthenticated, realm)
+	}
+
+	authHeader := authHeaders[0]
+	if !strings.HasPrefix(authHeader, "Basic ") {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, allowUnauthenticated, realm)
+	}
+
+	encodedCredentials := strings.TrimPrefix(authHeader, "Basic ")
+	decodedBytes, err := base64.StdEncoding.DecodeString(encodedCredentials)
+	if err != nil {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, allowUnauthenticated, realm)
+	}
+
+	credentials := string(decodedBytes)
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, allowUnauthenticated, realm)
+	}
+
+	providedUsername := parts[0]
+	providedPassword := parts[1]
+
+	usernameMatch := subtle.ConstantTimeCompare([]byte(providedUsername), []byte(expectedUsername)) == 1
+	passwordMatch := subtle.ConstantTimeCompare([]byte(providedPassword), []byte(expectedPassword)) == 1
+
+	if !usernameMatch || !passwordMatch {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, allowUnauthenticated, realm)
+	}
+
+	ctx.SharedContext.AuthContext = &policyv1alpha2.AuthContext{
+		Authenticated: true,
+		AuthType:      AuthType,
+		Subject:       providedUsername,
+		Previous:      ctx.SharedContext.AuthContext,
+	}
+	return policyv1alpha2.UpstreamRequestHeaderModifications{}
+}
+
+// handleAuthFailureHeaders handles authentication failure in the header phase.
+func (p *BasicAuthPolicy) handleAuthFailureHeaders(shared *policyv1alpha2.SharedContext, allowUnauthenticated bool, realm string) policyv1alpha2.RequestHeaderAction {
+	shared.AuthContext = &policyv1alpha2.AuthContext{
+		Authenticated: false,
+		AuthType:      AuthType,
+		Previous:      shared.AuthContext,
+	}
+
+	if allowUnauthenticated {
+		return policyv1alpha2.UpstreamRequestHeaderModifications{}
+	}
+
+	escapedRealm := strings.ReplaceAll(strings.ReplaceAll(realm, "\\", "\\\\"), "\"", "\\\"")
+	headers := map[string]string{
+		"www-authenticate": fmt.Sprintf("Basic realm=\"%s\"", escapedRealm),
+		"content-type":     "application/json",
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"error":   "Unauthorized",
+		"message": "Authentication required",
+	})
+
+	return policyv1alpha2.ImmediateResponse{
 		StatusCode: 401,
 		Headers:    headers,
 		Body:       body,

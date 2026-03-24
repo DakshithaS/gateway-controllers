@@ -5,6 +5,7 @@ package dynamicendpoint
 import (
 	"log/slog"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
@@ -56,4 +57,20 @@ func (p *DynamicEndpointPolicy) OnRequest(ctx *policy.RequestContext, params map
 // OnResponse is not used by this policy.
 func (p *DynamicEndpointPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
 	return policy.UpstreamResponseModifications{}
+}
+
+// OnRequestHeaders routes the request to the configured upstream.
+func (p *DynamicEndpointPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, params map[string]interface{}) policyv1alpha2.RequestHeaderAction {
+	slog.Info("[Dynamic Endpoint]: OnRequestHeaders called", "targetUpstream", p.targetUpstream)
+
+	if p.targetUpstream == "" {
+		slog.Warn("[Dynamic Endpoint]: No target upstream configured, passing through")
+		return policyv1alpha2.UpstreamRequestHeaderModifications{}
+	}
+
+	// Use UpstreamName to route the request to the target upstream definition.
+	// The upstream name must match an entry in the API's upstreamDefinitions.
+	return policyv1alpha2.UpstreamRequestHeaderModifications{
+		UpstreamName: &p.targetUpstream,
+	}
 }

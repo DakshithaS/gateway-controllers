@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
@@ -1624,4 +1625,258 @@ func parsePublicKeyFromString(pemData string) (*rsa.PublicKey, error) {
 
 	slog.Debug("JWT Auth Policy: Parsed key is not RSA")
 	return nil, fmt.Errorf("certificate data does not contain an RSA public key")
+}
+
+// OnRequestHeaders performs JWT validation in the request header phase.
+func (p *JwtAuthPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, params map[string]interface{}) policyv1alpha2.RequestHeaderAction {
+	headerName := getStringParam(params, "headerName", "Authorization")
+	authHeaderScheme := getStringParam(params, "authHeaderScheme", "Bearer")
+	onFailureStatusCode := getIntParam(params, "onFailureStatusCode", 401)
+	errorMessageFormat := getStringParam(params, "errorMessageFormat", "json")
+	errorMessage := getStringParam(params, "errorMessage", "Authentication failed")
+	leewayStr := getStringParam(params, "leeway", "30s")
+	allowedAlgorithms := getStringArrayParam(params, "allowedAlgorithms", []string{"RS256", "ES256"})
+	jwksCacheTtlStr := getStringParam(params, "jwksCacheTtl", "5m")
+	jwksFetchTimeoutStr := getStringParam(params, "jwksFetchTimeout", "5s")
+	jwksFetchRetryCount := getIntParam(params, "jwksFetchRetryCount", 3)
+	jwksFetchRetryIntervalStr := getStringParam(params, "jwksFetchRetryInterval", "2s")
+	validateIssuer := getBoolParam(params, "validateIssuer", true)
+
+	leeway, err := time.ParseDuration(leewayStr)
+	if err != nil {
+		leeway = 30 * time.Second
+	}
+	jwksCacheTtl, err := time.ParseDuration(jwksCacheTtlStr)
+	if err != nil {
+		jwksCacheTtl = 5 * time.Minute
+	}
+	jwksFetchTimeout, err := time.ParseDuration(jwksFetchTimeoutStr)
+	if err != nil {
+		jwksFetchTimeout = 5 * time.Second
+	}
+	jwksFetchRetryInterval, err := time.ParseDuration(jwksFetchRetryIntervalStr)
+	if err != nil {
+		jwksFetchRetryInterval = 2 * time.Second
+	}
+
+	keyManagersRaw, ok := params["keyManagers"]
+	if !ok {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "key managers not configured")
+	}
+
+	keyManagers := make(map[string]*KeyManager)
+	keyManagersList, ok := keyManagersRaw.([]interface{})
+	if ok {
+		for _, km := range keyManagersList {
+			if kmMap, ok := km.(map[string]interface{}); ok {
+				name := getString(kmMap["name"])
+				issuer := getString(kmMap["issuer"])
+				if name == "" {
+					continue
+				}
+				keyManager := &KeyManager{Name: name, Issuer: issuer}
+				if jwksRaw, ok := kmMap["jwks"].(map[string]interface{}); ok {
+					jwksConfig := &JWKSConfig{}
+					if remoteRaw, ok := jwksRaw["remote"].(map[string]interface{}); ok {
+						uri := getString(remoteRaw["uri"])
+						certPath := getString(remoteRaw["certificatePath"])
+						skipTlsVerify := getBool(remoteRaw["skipTlsVerify"])
+						if uri != "" {
+							remoteJWKS := &RemoteJWKS{URI: uri, CertificatePath: certPath, SkipTlsVerify: skipTlsVerify}
+							if certPath != "" {
+								tlsConfig, err := loadTLSConfig(certPath)
+								if err != nil {
+									continue
+								}
+								remoteJWKS.tlsConfig = tlsConfig
+							} else if skipTlsVerify {
+								remoteJWKS.tlsConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
+							}
+							jwksConfig.Remote = remoteJWKS
+						}
+					}
+					if localRaw, ok := jwksRaw["local"].(map[string]interface{}); ok {
+						inline := getString(localRaw["inline"])
+						certPath := getString(localRaw["certificatePath"])
+						if inline != "" || certPath != "" {
+							localCert := &LocalCert{Inline: inline, CertificatePath: certPath}
+							var publicKey *rsa.PublicKey
+							if inline != "" {
+								publicKey, err = parsePublicKeyFromString(inline)
+							} else if certPath != "" {
+								publicKey, err = loadPublicKeyFromCertificate(certPath)
+							}
+							if err != nil {
+								continue
+							}
+							localCert.PublicKey = publicKey
+							jwksConfig.Local = localCert
+						}
+					}
+					if jwksConfig.Remote != nil || jwksConfig.Local != nil {
+						keyManager.JWKS = jwksConfig
+						keyManagers[name] = keyManager
+					}
+				}
+			}
+		}
+	}
+
+	if len(keyManagers) == 0 {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "no key managers configured")
+	}
+
+	userIssuers := getStringArrayParam(params, "issuers", []string{})
+	userAudiences := getStringArrayParam(params, "audiences", []string{})
+	userRequiredScopes := getStringArrayParam(params, "requiredScopes", []string{})
+	userRequiredClaims := getStringMapParam(params, "requiredClaims", map[string]string{})
+	userClaimMappings := getStringMapParam(params, "claimMappings", map[string]string{})
+	userIdClaim := getStringParam(params, "userIdClaim", "sub")
+	userAuthHeaderPrefix := getStringParam(params, "authHeaderPrefix", "")
+	if userAuthHeaderPrefix != "" {
+		authHeaderScheme = userAuthHeaderPrefix
+	}
+
+	authHeaders := ctx.Headers.Get(strings.ToLower(headerName))
+	if len(authHeaders) == 0 {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "missing authorization header")
+	}
+
+	token := extractToken(authHeaders[0], authHeaderScheme)
+	if token == "" {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "invalid authorization header format")
+	}
+
+	unverifiedToken, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err != nil {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "invalid token format")
+	}
+
+	claims, err := p.validateTokenWithSignature(token, unverifiedToken, keyManagers, userIssuers, validateIssuer,
+		allowedAlgorithms, leeway, jwksCacheTtl, jwksFetchTimeout, jwksFetchRetryCount, jwksFetchRetryInterval)
+	if err != nil {
+		return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("token validation failed: %v", err))
+	}
+
+	if len(userAudiences) > 0 {
+		aud := parseAudience(claims["aud"])
+		found := false
+		for _, userAud := range userAudiences {
+			for _, tokenAud := range aud {
+				if tokenAud == userAud {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "no valid audience found in token")
+		}
+	}
+
+	if len(userRequiredScopes) > 0 {
+		scopes := parseScopes(claims["scope"], claims["scp"])
+		for _, requiredScope := range userRequiredScopes {
+			found := false
+			for _, tokenScope := range scopes {
+				if tokenScope == requiredScope {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("required scope '%s' not found", requiredScope))
+			}
+		}
+	}
+
+	for claimName, expectedValue := range userRequiredClaims {
+		if getString(claims[claimName]) != expectedValue {
+			return p.handleAuthFailureHeaders(ctx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("claim '%s' validation failed", claimName))
+		}
+	}
+
+	return p.handleAuthSuccessHeaders(ctx.SharedContext, claims, userClaimMappings, userIdClaim)
+}
+
+// handleAuthSuccessHeaders handles successful JWT authentication in the header phase.
+func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policyv1alpha2.SharedContext, claims jwt.MapClaims, claimMappings map[string]string, userIdClaim string) policyv1alpha2.RequestHeaderAction {
+	sub, _ := claims["sub"].(string)
+	iss, _ := claims["iss"].(string)
+
+	subject := sub
+	if userIdClaim != "" && userIdClaim != "sub" {
+		if v, ok := claims[userIdClaim]; ok {
+			candidate := strings.TrimSpace(claimValueToString(v))
+			if candidate != "" && candidate != "null" {
+				subject = candidate
+			}
+		}
+	}
+
+	shared.AuthContext = &policyv1alpha2.AuthContext{
+		Authenticated: true,
+		AuthType:      AuthType,
+		Subject:       subject,
+		Issuer:        iss,
+		Audience:      parseAudience(claims["aud"]),
+		Scopes:        buildScopesMap(claims),
+		Properties:    buildProperties(claims),
+		Previous:      shared.AuthContext,
+	}
+
+	modifications := policyv1alpha2.UpstreamRequestHeaderModifications{
+		HeadersToSet: make(map[string]string),
+	}
+
+	for claimName, headerName := range claimMappings {
+		if claimValue, ok := claims[claimName]; ok {
+			modifications.HeadersToSet[headerName] = claimValueToString(claimValue)
+		}
+	}
+
+	return modifications
+}
+
+// handleAuthFailureHeaders handles JWT authentication failure in the header phase.
+func (p *JwtAuthPolicy) handleAuthFailureHeaders(shared *policyv1alpha2.SharedContext, statusCode int, errorFormat, errorMessage, reason string) policyv1alpha2.RequestHeaderAction {
+	slog.Debug("JWT Auth Policy: handleAuthFailureHeaders called",
+		"statusCode", statusCode,
+		"reason", reason,
+	)
+
+	shared.AuthContext = &policyv1alpha2.AuthContext{
+		Authenticated: false,
+		AuthType:      AuthType,
+		Previous:      shared.AuthContext,
+	}
+
+	headers := map[string]string{
+		"content-type": "application/json",
+	}
+
+	var body string
+	switch errorFormat {
+	case "plain":
+		body = errorMessage
+		headers["content-type"] = "text/plain"
+	case "minimal":
+		body = "Unauthorized"
+	default:
+		errResponse := map[string]interface{}{
+			"error":   "Unauthorized",
+			"message": errorMessage,
+		}
+		bodyBytes, _ := json.Marshal(errResponse)
+		body = string(bodyBytes)
+	}
+
+	return policyv1alpha2.ImmediateResponse{
+		StatusCode: statusCode,
+		Headers:    headers,
+		Body:       []byte(body),
+	}
 }

@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
@@ -345,4 +346,181 @@ func getStringArrayParam(params map[string]any, key string, defaultValue []strin
 		}
 	}
 	return defaultValue
+}
+
+// OnRequestHeaders handles CORS in the request header phase.
+func (p *CorsPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, params map[string]any) policyv1alpha2.RequestHeaderAction {
+	if strings.EqualFold(ctx.Method, "options") {
+		slog.Debug("CORS: Preflight request detected in header phase; handling preflight")
+		return p.handlePreflightHeaders(ctx.Headers)
+	}
+	corsHeaders, ok := p.handleNonPreflightHeaders(ctx.Headers)
+	if ok {
+		slog.Debug("CORS: Adding CORS headers to non-preflight request")
+		ctx.Metadata["cors_headers"] = corsHeaders
+	} else {
+		slog.Debug("CORS: No CORS headers to add for non-preflight request")
+		if ctx.Headers.Has("Origin") {
+			ctx.Metadata["cors_strip"] = true
+		}
+	}
+	return policyv1alpha2.UpstreamRequestHeaderModifications{}
+}
+
+// OnResponseHeaders sets CORS headers on the response in the header phase.
+func (p *CorsPolicy) OnResponseHeaders(ctx *policyv1alpha2.ResponseHeaderContext, params map[string]any) policyv1alpha2.ResponseHeaderAction {
+	corsHeaders, ok := ctx.Metadata["cors_headers"].(map[string]string)
+	if ok {
+		slog.Debug("CORS: Adding CORS headers to response in header phase")
+		return policyv1alpha2.DownstreamResponseHeaderModifications{
+			HeadersToSet: corsHeaders,
+		}
+	}
+	if _, strip := ctx.Metadata["cors_strip"]; strip {
+		slog.Debug("CORS: Stripping upstream CORS headers for disallowed origin in header phase")
+		return policyv1alpha2.DownstreamResponseHeaderModifications{
+			HeadersToRemove: []string{
+				"Access-Control-Allow-Origin",
+				"Access-Control-Allow-Credentials",
+				"Access-Control-Expose-Headers",
+			},
+		}
+	}
+	slog.Debug("CORS: No CORS headers to add to response in header phase")
+	return policyv1alpha2.DownstreamResponseHeaderModifications{}
+}
+
+// handlePreflightHeaders processes CORS preflight (OPTIONS) requests using raw headers.
+func (p *CorsPolicy) handlePreflightHeaders(requestHeaders *policyv1alpha2.Headers) policyv1alpha2.RequestHeaderAction {
+	origin := requestHeaders.Get("Origin")
+
+	isCorsFailure := false
+	headers := make(map[string]string)
+
+	requestedMethod := requestHeaders.Get("Access-Control-Request-Method")
+	requestedHeaders := requestHeaders.Get("Access-Control-Request-Headers")
+
+	originAllowed := false
+	if len(p.AllowedOrigins) > 0 {
+		if p.AllowedOrigins[0] == "*" {
+			headers["Access-Control-Allow-Origin"] = "*"
+			originAllowed = true
+		} else if len(origin) > 0 {
+			for _, regex := range p.CompiledAllowedOrigins {
+				if regex.MatchString(origin[0]) {
+					headers["Access-Control-Allow-Origin"] = origin[0]
+					originAllowed = true
+					break
+				}
+			}
+		}
+	}
+	if !originAllowed {
+		isCorsFailure = true
+	}
+
+	methodAllowed := false
+	if len(p.AllowedMethods) > 0 {
+		if p.AllowedMethods[0] == "*" {
+			headers["Access-Control-Allow-Methods"] = "*"
+			methodAllowed = true
+		} else if len(requestedMethod) > 0 {
+			if slices.Contains(p.AllowedMethods, requestedMethod[0]) {
+				headers["Access-Control-Allow-Methods"] = strings.Join(p.AllowedMethods, ",")
+				methodAllowed = true
+			}
+		}
+	}
+	if !methodAllowed {
+		isCorsFailure = true
+	}
+
+	headersAllowed := false
+	if len(p.AllowedHeaders) > 0 {
+		if p.AllowedHeaders[0] == "*" {
+			if len(requestedHeaders) > 0 {
+				headers["Access-Control-Allow-Headers"] = requestedHeaders[0]
+			}
+			headersAllowed = true
+		} else if len(requestedHeaders) > 0 {
+			var checkedHeaders []string
+			requestedList := strings.Split(requestedHeaders[0], ",")
+			allowedCount := 0
+			for _, allowedHeader := range p.AllowedHeaders {
+				for _, requestedHeader := range requestedList {
+					if strings.EqualFold(strings.TrimSpace(allowedHeader), strings.TrimSpace(requestedHeader)) {
+						checkedHeaders = append(checkedHeaders, allowedHeader)
+						allowedCount++
+					}
+				}
+			}
+			if len(requestedList) == allowedCount {
+				headers["Access-Control-Allow-Headers"] = strings.Join(checkedHeaders, ",")
+				headersAllowed = true
+			}
+		}
+	}
+
+	if !headersAllowed && len(requestedHeaders) > 0 {
+		isCorsFailure = true
+	}
+
+	if p.MaxAge != nil {
+		headers["Access-Control-Max-Age"] = fmt.Sprintf("%d", *p.MaxAge)
+	}
+
+	if p.AllowCredentials != nil {
+		headers["Access-Control-Allow-Credentials"] = fmt.Sprintf("%t", *p.AllowCredentials)
+	}
+
+	if isCorsFailure {
+		headers = make(map[string]string)
+		if p.ForwardPreflight {
+			return policyv1alpha2.UpstreamRequestHeaderModifications{}
+		}
+	}
+
+	return policyv1alpha2.ImmediateResponse{
+		StatusCode: 204,
+		Headers:    headers,
+		Body:       nil,
+	}
+}
+
+// handleNonPreflightHeaders adds CORS headers for actual (non-preflight) requests using raw headers.
+func (p *CorsPolicy) handleNonPreflightHeaders(requestHeaders *policyv1alpha2.Headers) (map[string]string, bool) {
+	headersToInclude := make(map[string]string)
+
+	origin := requestHeaders.Get("Origin")
+
+	originAllowed := false
+	if len(p.AllowedOrigins) > 0 {
+		if p.AllowedOrigins[0] == "*" {
+			headersToInclude["Access-Control-Allow-Origin"] = "*"
+			originAllowed = true
+		} else if len(origin) > 0 {
+			for _, regex := range p.CompiledAllowedOrigins {
+				if regex.MatchString(origin[0]) {
+					headersToInclude["Access-Control-Allow-Origin"] = origin[0]
+					headersToInclude["Vary"] = "Origin"
+					originAllowed = true
+					break
+				}
+			}
+		}
+	}
+
+	if !originAllowed {
+		return nil, false
+	}
+
+	if len(p.ExposedHeaders) > 0 {
+		headersToInclude["Access-Control-Expose-Headers"] = strings.Join(p.ExposedHeaders, ",")
+	}
+
+	if p.AllowCredentials != nil {
+		headersToInclude["Access-Control-Allow-Credentials"] = fmt.Sprintf("%t", *p.AllowCredentials)
+	}
+
+	return headersToInclude, true
 }
