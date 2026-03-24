@@ -110,6 +110,10 @@ func parseParams(params map[string]interface{}, defaultJSONPath string, defaultE
 		return result, fmt.Errorf("'schema' parameter is required")
 	}
 
+	if enabledExplicitlyFalse {
+		hasSchema = false
+	}
+
 	if hasSchema {
 		schema, ok := schemaRaw.(string)
 		if !ok {

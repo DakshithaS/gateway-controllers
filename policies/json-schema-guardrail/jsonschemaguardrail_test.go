@@ -135,16 +135,25 @@ func TestParseParams(t *testing.T) {
 func TestParseParams_DisabledFlow_DoesNotRequireSchema(t *testing.T) {
 	tests := []struct {
 		name            string
+		input           map[string]interface{}
 		defaultJSONPath string
 		defaultEnabled  bool
 	}{
 		{
 			name:            "request flow disabled",
+			input:           map[string]interface{}{"enabled": false},
 			defaultJSONPath: DefaultRequestJSONPath,
 			defaultEnabled:  RequestFlowEnabledByDefault,
 		},
 		{
 			name:            "response flow disabled",
+			input:           map[string]interface{}{"enabled": false},
+			defaultJSONPath: DefaultResponseJSONPath,
+			defaultEnabled:  ResponseFlowEnabledByDefault,
+		},
+		{
+			name:            "disabled flow ignores empty schema",
+			input:           map[string]interface{}{"enabled": false, "schema": ""},
 			defaultJSONPath: DefaultResponseJSONPath,
 			defaultEnabled:  ResponseFlowEnabledByDefault,
 		},
@@ -152,7 +161,7 @@ func TestParseParams_DisabledFlow_DoesNotRequireSchema(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseParams(map[string]interface{}{"enabled": false}, tc.defaultJSONPath, tc.defaultEnabled)
+			got, err := parseParams(tc.input, tc.defaultJSONPath, tc.defaultEnabled)
 			if err != nil {
 				t.Fatalf("expected disabled flow params to parse without schema, got error: %v", err)
 			}
@@ -207,6 +216,25 @@ func TestDisabledFlow_GetPolicyAndHandlers_NoRequiredParams(t *testing.T) {
 		}, nil)
 		if _, ok := action.(policy.UpstreamResponseModifications); !ok {
 			t.Fatalf("expected response no-op when response.enabled=false, got %T", action)
+		}
+	})
+
+	t.Run("disabled flow accepts empty schema", func(t *testing.T) {
+		pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+			"request": map[string]interface{}{
+				"enabled": false,
+				"schema":  "",
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected disabled request flow with empty schema to be accepted, got %v", err)
+		}
+		p, ok := pRaw.(*JSONSchemaGuardrailPolicy)
+		if !ok {
+			t.Fatalf("expected *JSONSchemaGuardrailPolicy, got %T", pRaw)
+		}
+		if p.requestParams.Schema != "" {
+			t.Fatalf("expected empty schema to be ignored for disabled flow, got %q", p.requestParams.Schema)
 		}
 	})
 }
