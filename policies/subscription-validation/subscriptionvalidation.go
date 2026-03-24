@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 	policyenginev1 "github.com/wso2/api-platform/sdk/gateway/policyengine/v1"
 )
@@ -21,14 +22,14 @@ const (
 	forbiddenMessage             = "Subscription required for this API"
 
 	// Eviction TTL: entries not seen in this duration are removed to prevent unbounded growth.
-	rateLimitEvictionTTL    = 2 * time.Hour
+	rateLimitEvictionTTL     = 2 * time.Hour
 	rateLimitCleanupInterval = 10 * time.Minute
 )
 
 // PolicyConfig holds the resolved configuration for the subscriptionValidation policy.
 type PolicyConfig struct {
-	SubscriptionKeyHeader  string
-	SubscriptionKeyCookie  string
+	SubscriptionKeyHeader string
+	SubscriptionKeyCookie string
 }
 
 // rateLimitEntry tracks per-token request counts within a time window.
@@ -365,15 +366,15 @@ func (p *SubscriptionValidationPolicy) rateLimitResponse(limit, remaining int, r
 			"Content-Type": "application/json",
 			// X-RateLimit-* (de facto standard)
 			"X-RateLimit-Limit":            strconv.Itoa(limit),
-			"X-RateLimit-Remaining":       strconv.Itoa(remaining),
-			"X-RateLimit-Reset":           strconv.FormatInt(resetUnix, 10),
+			"X-RateLimit-Remaining":        strconv.Itoa(remaining),
+			"X-RateLimit-Reset":            strconv.FormatInt(resetUnix, 10),
 			"X-RateLimit-Full-Quota-Reset": strconv.FormatInt(resetUnix, 10),
 			// RateLimit-* (IETF draft)
-			"RateLimit-Limit":              strconv.Itoa(limit),
-			"RateLimit-Remaining":         strconv.Itoa(remaining),
-			"RateLimit-Reset":             strconv.FormatInt(resetSeconds, 10),
-			"RateLimit-Full-Quota-Reset":  strconv.FormatInt(resetSeconds, 10),
-			"RateLimit-Policy":            policyValue,
+			"RateLimit-Limit":            strconv.Itoa(limit),
+			"RateLimit-Remaining":        strconv.Itoa(remaining),
+			"RateLimit-Reset":            strconv.FormatInt(resetSeconds, 10),
+			"RateLimit-Full-Quota-Reset": strconv.FormatInt(resetSeconds, 10),
+			"RateLimit-Policy":           policyValue,
 			// RFC 7231
 			"Retry-After": strconv.FormatInt(retryAfterSeconds, 10),
 		},
@@ -393,5 +394,245 @@ func entryThrottleUnitString(window time.Duration) string {
 		return "Day"
 	default:
 		return window.String()
+	}
+}
+
+// OnRequestHeaders validates the subscription in the request header phase.
+func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, params map[string]interface{}) policyv1alpha2.RequestHeaderAction {
+	if ctx == nil || ctx.SharedContext == nil {
+		return p.forbiddenResponseV2("request context is missing").(policyv1alpha2.ImmediateResponse)
+	}
+
+	apiID := ctx.SharedContext.APIId
+	if strings.TrimSpace(apiID) == "" {
+		slog.Error("subscriptionValidation: APIId is empty in SharedContext; failing validation")
+		return p.forbiddenResponseV2("API id is missing").(policyv1alpha2.ImmediateResponse)
+	}
+
+	if p.store == nil {
+		slog.Error("subscriptionValidation: subscription store is not initialized")
+		return p.forbiddenResponseV2("subscription store is not available").(policyv1alpha2.ImmediateResponse)
+	}
+
+	if ctx.Headers != nil {
+		headerValues := ctx.Headers.Get(p.cfg.SubscriptionKeyHeader)
+		if len(headerValues) > 0 {
+			token := strings.TrimSpace(headerValues[0])
+			if token != "" {
+				result := p.validateByTokenV2(apiID, token)
+				if result == nil {
+					return policyv1alpha2.UpstreamRequestHeaderModifications{}
+				}
+				return result.(policyv1alpha2.ImmediateResponse)
+			}
+		}
+		if p.cfg.SubscriptionKeyCookie != "" {
+			if token := getCookieValueV2(ctx.Headers, p.cfg.SubscriptionKeyCookie); token != "" {
+				result := p.validateByTokenV2(apiID, token)
+				if result == nil {
+					return policyv1alpha2.UpstreamRequestHeaderModifications{}
+				}
+				return result.(policyv1alpha2.ImmediateResponse)
+			}
+		}
+	}
+
+	metadata := ctx.SharedContext.Metadata
+	if metadata != nil {
+		if rawAppID, ok := metadata[applicationIDMetadataKey]; ok {
+			appID := strings.TrimSpace(fmt.Sprint(rawAppID))
+			if appID != "" {
+				result := p.validateByApplicationV2(apiID, appID)
+				if result == nil {
+					return policyv1alpha2.UpstreamRequestHeaderModifications{}
+				}
+				return result.(policyv1alpha2.ImmediateResponse)
+			}
+		}
+	}
+
+	return p.forbiddenResponseV2("no subscription token or application identity provided").(policyv1alpha2.ImmediateResponse)
+}
+
+// forbiddenResponse constructs an ImmediateResponse with status 403.
+func (p *SubscriptionValidationPolicy) forbiddenResponseV2(detail string) policyv1alpha2.RequestAction {
+	message := forbiddenMessage
+	if detail != "" {
+		message = fmt.Sprintf("%s: %s", message, detail)
+	}
+
+	payload := map[string]string{
+		"error":   "forbidden",
+		"message": message,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(`{"error":"forbidden","message":"subscription validation failed"}`)
+	}
+
+	return policyv1alpha2.ImmediateResponse{
+		StatusCode: forbiddenStatusCode,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: body,
+	}
+}
+
+// validateByToken checks the token against the store, then enforces rate limits.
+// The store uses hashed tokens; we hash the incoming token before lookup.
+func (p *SubscriptionValidationPolicy) validateByTokenV2(apiID, token string) policyv1alpha2.RequestAction {
+	hashedToken := policyenginev1.HashSubscriptionToken(token)
+	active, entry := p.store.IsActiveByToken(apiID, hashedToken)
+	if !active {
+		slog.Info("subscriptionValidation: no active subscription found (token)",
+			"apiId", apiID)
+		return p.forbiddenResponseV2("")
+	}
+
+	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
+		if blocked := p.checkRateLimitV2(apiID, token, entry); blocked != nil {
+			return blocked
+		}
+	}
+
+	return nil
+}
+
+// checkRateLimit enforces the plan's throttle limit for the given token.
+func (p *SubscriptionValidationPolicy) checkRateLimitV2(apiID, token string, entry *policyenginev1.SubscriptionEntry) policyv1alpha2.RequestAction {
+	window := windowDuration(entry.ThrottleLimitUnit)
+	if window == 0 {
+		return nil
+	}
+
+	key := apiID + ":" + token
+	now := time.Now()
+
+	p.rateLimitMu.Lock()
+	rl, exists := p.rateLimits[key]
+	if !exists || now.Sub(rl.windowStart) >= window {
+		p.rateLimits[key] = &rateLimitEntry{windowStart: now, count: 1, lastSeen: now}
+		p.rateLimitMu.Unlock()
+		return nil
+	}
+
+	rl.count++
+	rl.lastSeen = now
+	exceeded := rl.count > entry.ThrottleLimitCount
+	resetAt := rl.windowStart.Add(window)
+	limit := entry.ThrottleLimitCount
+	remaining := limit - rl.count
+	if remaining < 0 {
+		remaining = 0
+	}
+	p.rateLimitMu.Unlock()
+
+	if exceeded {
+		if entry.StopOnQuotaReach {
+			return p.rateLimitResponseV2(limit, remaining, resetAt, window)
+		}
+		slog.Warn("subscriptionValidation: quota exceeded but stopOnQuotaReach is false, allowing",
+			"apiId", apiID)
+	}
+
+	return nil
+}
+
+// validateByApplication checks the application ID against the store, then enforces rate limits.
+// This is the legacy path; it now recovers quota/throttle metadata from the store.
+func (p *SubscriptionValidationPolicy) validateByApplicationV2(apiID, appID string) policyv1alpha2.RequestAction {
+	active, entry := p.store.IsActiveByApplication(apiID, appID)
+	if !active {
+		slog.Info("subscriptionValidation: no active subscription found (appId fallback)",
+			"apiId", apiID,
+			"applicationId", appID)
+		return p.forbiddenResponseV2("")
+	}
+
+	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
+		if blocked := p.checkRateLimitV2(apiID, appID, entry); blocked != nil {
+			return blocked
+		}
+	}
+
+	return nil
+}
+
+// getCookieValue parses the Cookie header and returns the value for the given cookie name.
+// Returns empty string if the cookie is not found or Cookie header is missing.
+func getCookieValueV2(headers *policyv1alpha2.Headers, name string) string {
+	if headers == nil || name == "" {
+		return ""
+	}
+	vals := headers.Get("Cookie")
+	if len(vals) == 0 {
+		return ""
+	}
+	// Cookie header format: "name1=value1; name2=value2"
+	for _, raw := range vals {
+		for _, part := range strings.Split(raw, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			idx := strings.Index(part, "=")
+			if idx < 0 {
+				continue
+			}
+			cookieName := strings.TrimSpace(part[:idx])
+			if strings.EqualFold(cookieName, name) {
+				return strings.TrimSpace(part[idx+1:])
+			}
+		}
+	}
+	return ""
+}
+
+// rateLimitResponse constructs a 429 Too Many Requests response.
+func (p *SubscriptionValidationPolicy) rateLimitResponseV2(limit, remaining int, resetAt time.Time, window time.Duration) policyv1alpha2.RequestAction {
+	payload := map[string]interface{}{
+		"error":   "rate_limit_exceeded",
+		"message": fmt.Sprintf("Subscription quota exceeded: %d requests per %s", limit, entryThrottleUnitString(window)),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(`{"error":"rate_limit_exceeded","message":"subscription quota exceeded"}`)
+	}
+
+	resetUnix := resetAt.Unix()
+	resetSeconds := int64(time.Until(resetAt).Seconds())
+	if resetSeconds < 0 {
+		resetSeconds = 0
+	}
+	retryAfterSeconds := resetSeconds
+	if retryAfterSeconds < 1 {
+		retryAfterSeconds = 1
+	}
+	windowSeconds := int64(window.Seconds())
+	if windowSeconds < 1 {
+		windowSeconds = 1
+	}
+	policyValue := fmt.Sprintf("%d;w=%d", limit, windowSeconds)
+
+	return policyv1alpha2.ImmediateResponse{
+		StatusCode: 429,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+			// X-RateLimit-* (de facto standard)
+			"X-RateLimit-Limit":            strconv.Itoa(limit),
+			"X-RateLimit-Remaining":        strconv.Itoa(remaining),
+			"X-RateLimit-Reset":            strconv.FormatInt(resetUnix, 10),
+			"X-RateLimit-Full-Quota-Reset": strconv.FormatInt(resetUnix, 10),
+			// RateLimit-* (IETF draft)
+			"RateLimit-Limit":            strconv.Itoa(limit),
+			"RateLimit-Remaining":        strconv.Itoa(remaining),
+			"RateLimit-Reset":            strconv.FormatInt(resetSeconds, 10),
+			"RateLimit-Full-Quota-Reset": strconv.FormatInt(resetSeconds, 10),
+			"RateLimit-Policy":           policyValue,
+			// RFC 7231
+			"Retry-After": strconv.FormatInt(retryAfterSeconds, 10),
+		},
+		Body: body,
 	}
 }
