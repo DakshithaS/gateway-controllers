@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 	utils "github.com/wso2/api-platform/sdk/utils"
 )
@@ -408,6 +409,88 @@ func (p *PromptTemplatePolicy) buildErrorResponse(reason string, validationError
 	}
 
 	return policy.ImmediateResponse{
+		StatusCode: 500,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: bodyBytes,
+	}
+}
+
+// OnRequestBody applies the configured template to the request body.
+func (p *PromptTemplatePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map[string]interface{}) policyv1alpha2.RequestAction {
+	var content []byte
+	if ctx.Body != nil {
+		content = ctx.Body.Content
+	}
+
+	if len(content) == 0 {
+		return policyv1alpha2.UpstreamRequestModifications{}
+	}
+
+	// If jsonPath is empty, resolve template references across the whole payload
+	// string (legacy behavior).
+	if p.params.JsonPath == "" {
+		updatedContent, err := p.resolveTemplatesInText(string(content), true)
+		if err != nil {
+			return p.buildErrorResponseV2("Error resolving templates", err)
+		}
+		if updatedContent == string(content) {
+			return policyv1alpha2.UpstreamRequestModifications{}
+		}
+		return policyv1alpha2.UpstreamRequestModifications{
+			Body: []byte(updatedContent),
+		}
+	}
+
+	// jsonPath configured: resolve template references in the extracted string only.
+	var payloadData map[string]interface{}
+	if err := json.Unmarshal(content, &payloadData); err != nil {
+		return p.buildErrorResponseV2("Error parsing JSON payload", err)
+	}
+
+	extractedValue, err := p.extractStringAtPath(content, p.params.JsonPath)
+	if err != nil {
+		return p.buildErrorResponseV2("Error extracting value from JSONPath", err)
+	}
+
+	updatedValue, err := p.resolveTemplatesInText(extractedValue, false)
+	if err != nil {
+		return p.buildErrorResponseV2("Error resolving templates", err)
+	}
+	if updatedValue == extractedValue {
+		return policyv1alpha2.UpstreamRequestModifications{}
+	}
+
+	if err := utils.SetValueAtJSONPath(payloadData, p.params.JsonPath, updatedValue); err != nil {
+		return p.buildErrorResponseV2("Error updating JSONPath", err)
+	}
+
+	updatedPayload, err := json.Marshal(payloadData)
+	if err != nil {
+		return p.buildErrorResponseV2("Error marshaling updated JSON payload", err)
+	}
+
+	return policyv1alpha2.UpstreamRequestModifications{
+		Body: updatedPayload,
+	}
+}
+
+// buildV1ErrorResponse builds an error response for the v1alpha OnRequest method.
+func (p *PromptTemplatePolicy) buildErrorResponseV2(reason string, validationError error) policyv1alpha2.RequestAction {
+	errorMessage := reason
+	if validationError != nil {
+		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)
+	}
+	responseBody := map[string]interface{}{
+		"type":    "PROMPT_TEMPLATE_ERROR",
+		"message": errorMessage,
+	}
+	bodyBytes, err := json.Marshal(responseBody)
+	if err != nil {
+		bodyBytes = []byte(`{"type":"PROMPT_TEMPLATE_ERROR","message":"Internal error"}`)
+	}
+	return policyv1alpha2.ImmediateResponse{
 		StatusCode: 500,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
