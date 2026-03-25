@@ -879,6 +879,10 @@ func (p *AWSBedrockGuardrailPolicy) updatePayloadWithMaskedContent(originalPaylo
 // buildErrorResponse builds an error response for both request and response phases
 func (p *AWSBedrockGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, output interface{}) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, output)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "AWS Bedrock Guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "AWS_BEDROCK_GUARDRAIL",
@@ -893,8 +897,9 @@ func (p *AWSBedrockGuardrailPolicy) buildErrorResponse(reason string, validation
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policy.UpstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			SetHeaders: map[string]string{
 				"Content-Type": "application/json",
 			},
@@ -902,7 +907,8 @@ func (p *AWSBedrockGuardrailPolicy) buildErrorResponse(reason string, validation
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},

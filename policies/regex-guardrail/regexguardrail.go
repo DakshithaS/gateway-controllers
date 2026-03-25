@@ -279,6 +279,10 @@ func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuard
 // buildErrorResponse builds an error response for both request and response phases
 func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "regex-guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "REGEX_GUARDRAIL",
@@ -293,8 +297,9 @@ func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policy.UpstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			SetHeaders: map[string]string{
 				"Content-Type": "application/json",
 			},
@@ -302,7 +307,8 @@ func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},

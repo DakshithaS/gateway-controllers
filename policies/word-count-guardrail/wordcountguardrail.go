@@ -424,6 +424,10 @@ func normalizeExtractedValue(value interface{}) (string, error) {
 // buildErrorResponse builds an error response for both request and response phases
 func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "word-count-guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "WORD_COUNT_GUARDRAIL",
@@ -438,8 +442,9 @@ func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationE
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policy.UpstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			SetHeaders: map[string]string{
 				"Content-Type": "application/json",
 			},
@@ -447,7 +452,8 @@ func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationE
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},

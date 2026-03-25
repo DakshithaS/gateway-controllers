@@ -436,6 +436,10 @@ func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params Seman
 // buildErrorResponse builds an error response for request phase
 func (p *SemanticPromptGuardPolicy) buildErrorResponse(reason string, validationError error, showAssessment bool) policy.RequestAction {
 	assessment := p.buildAssessmentObject(reason, validationError, showAssessment)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "SemanticPromptGuard",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "SEMANTIC_PROMPT_GUARD",
@@ -448,7 +452,8 @@ func (p *SemanticPromptGuardPolicy) buildErrorResponse(reason string, validation
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},

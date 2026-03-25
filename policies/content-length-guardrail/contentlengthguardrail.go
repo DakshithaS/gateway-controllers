@@ -328,6 +328,10 @@ func (p *ContentLengthGuardrailPolicy) validatePayload(payload []byte, params Co
 // buildErrorResponse builds an error response for both request and response phases
 func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "content-length-guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "CONTENT_LENGTH_GUARDRAIL",
@@ -342,8 +346,9 @@ func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validat
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policy.UpstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			SetHeaders: map[string]string{
 				"Content-Type": "application/json",
 			},
@@ -351,7 +356,8 @@ func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validat
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
