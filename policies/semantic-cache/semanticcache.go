@@ -94,13 +94,17 @@ func GetPolicyV2(
 	metadata policyv1alpha2.PolicyMetadata,
 	params map[string]interface{},
 ) (policyv1alpha2.Policy, error) {
-	return GetPolicy(policy.PolicyMetadata{
+	p, err := GetPolicy(policy.PolicyMetadata{
 		RouteName:  metadata.RouteName,
 		APIId:      metadata.APIId,
 		APIName:    metadata.APIName,
 		APIVersion: metadata.APIVersion,
 		AttachedTo: policy.Level(metadata.AttachedTo),
 	}, params)
+	if err != nil {
+		return nil, err
+	}
+	return p.(*SemanticCachePolicy), nil
 }
 
 // parseParams parses and validates parameters from the params map
@@ -316,17 +320,17 @@ func createVectorDBProvider(config vectordbproviders.VectorDBProviderConfig) (ve
 }
 
 // Mode returns the processing mode for this policy
-func (p *SemanticCachePolicy) Mode() policyv1alpha2.ProcessingMode {
-	return policyv1alpha2.ProcessingMode{
-		RequestHeaderMode:  policyv1alpha2.HeaderModeSkip,
-		RequestBodyMode:    policyv1alpha2.BodyModeBuffer,
-		ResponseHeaderMode: policyv1alpha2.HeaderModeSkip,
-		ResponseBodyMode:   policyv1alpha2.BodyModeBuffer,
+func (p *SemanticCachePolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }
 
-// OnRequest handles request body processing for semantic caching
-func (p *SemanticCachePolicy) OnRequest(ctx *policyv1alpha2.RequestContext, params map[string]interface{}) policyv1alpha2.RequestAction {
+// OnRequest handles request body processing for semantic caching (v1alpha interface)
+func (p *SemanticCachePolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	var content []byte
 	if ctx.Body != nil {
 		content = ctx.Body.Content
@@ -345,7 +349,7 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policyv1alpha2.RequestContext, para
 
 	// If no content to embed, continue to upstream
 	if len(textToEmbed) == 0 {
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Generate embedding
@@ -353,7 +357,7 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policyv1alpha2.RequestContext, para
 	if err != nil {
 		slog.Debug("SemanticCache: Error generating embedding", "error", err)
 		// Log error but don't block request
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Store embedding in metadata for response phase
@@ -380,7 +384,7 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policyv1alpha2.RequestContext, para
 	if err != nil {
 		slog.Debug("SemanticCache: Cache retrieval error", "error", err, "apiID", apiID)
 		// Cache miss or error - continue to upstream
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Check if we got a valid cache response
@@ -388,17 +392,17 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policyv1alpha2.RequestContext, para
 	if cacheResponse.ResponsePayload == nil || len(cacheResponse.ResponsePayload) == 0 {
 		slog.Debug("SemanticCache: Cache miss", "apiID", apiID, "threshold", p.threshold)
 		// Cache miss - continue to upstream
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Cache hit - return cached response immediately
 	slog.Debug("SemanticCache: Cache hit", "apiID", apiID)
 	responseBytes, err := json.Marshal(cacheResponse.ResponsePayload)
 	if err != nil {
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
-	return policyv1alpha2.ImmediateResponse{
+	return policy.ImmediateResponse{
 		StatusCode: 200,
 		Headers: map[string]string{
 			"Content-Type":   "application/json",
@@ -491,12 +495,12 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, 
 	}
 }
 
-// OnResponse handles response body processing for semantic caching
-func (p *SemanticCachePolicy) OnResponse(ctx *policyv1alpha2.ResponseContext, params map[string]interface{}) policyv1alpha2.ResponseAction {
+// OnResponse handles response body processing for semantic caching (v1alpha interface)
+func (p *SemanticCachePolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
 	// Only cache successful responses (200 status code)
 	if ctx.ResponseStatus != 200 {
 		slog.Debug("SemanticCache: Skipping cache for non-200 response", "statusCode", ctx.ResponseStatus)
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	var content []byte
@@ -505,26 +509,26 @@ func (p *SemanticCachePolicy) OnResponse(ctx *policyv1alpha2.ResponseContext, pa
 	}
 
 	if len(content) == 0 {
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	// Retrieve embedding from metadata (stored in request phase)
 	embeddingStr, ok := ctx.Metadata[MetadataKeyEmbedding].(string)
 	if !ok || embeddingStr == "" {
 		slog.Debug("SemanticCache: No embedding found in metadata, skipping cache storage")
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	// Deserialize embedding
 	var embedding []float32
 	if err := json.Unmarshal([]byte(embeddingStr), &embedding); err != nil {
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	// Parse response body
 	var responseData map[string]interface{}
 	if err := json.Unmarshal(content, &responseData); err != nil {
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	// Get API ID from context (use APIName and APIVersion to create unique ID)
@@ -549,16 +553,15 @@ func (p *SemanticCachePolicy) OnResponse(ctx *policyv1alpha2.ResponseContext, pa
 	if err := p.vectorStoreProvider.Store(embedding, cacheResponse, cacheFilter); err != nil {
 		slog.Debug("SemanticCache: Error storing in cache", "error", err, "apiID", apiID)
 		// Log error but don't modify response
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.UpstreamResponseModifications{}
 	}
 
 	slog.Debug("SemanticCache: Response cached successfully", "apiID", apiID)
-	return policyv1alpha2.DownstreamResponseModifications{}
+	return policy.UpstreamResponseModifications{}
 }
 
-// buildErrorResponse builds an error response for JSONPath extraction failures
-
-func (p *SemanticCachePolicy) buildErrorResponse(message string, err error) policyv1alpha2.RequestAction {
+// buildErrorResponse builds an error response for JSONPath extraction failures (v1alpha)
+func (p *SemanticCachePolicy) buildErrorResponse(message string, err error) policy.RequestAction {
 	errorMsg := message
 	if err != nil {
 		errorMsg = fmt.Sprintf("%s: %v", message, err)
@@ -574,7 +577,7 @@ func (p *SemanticCachePolicy) buildErrorResponse(message string, err error) poli
 		bodyBytes = []byte(`{"type":"SEMANTIC_CACHE","message":"Internal error"}`)
 	}
 
-	return policyv1alpha2.ImmediateResponse{
+	return policy.ImmediateResponse{
 		StatusCode: 400,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
