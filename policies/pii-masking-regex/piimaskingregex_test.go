@@ -282,7 +282,7 @@ func TestPIIMaskingRegexPolicy_OnResponse_RestoreMaskedPII(t *testing.T) {
 	action := p.OnResponseBody(ctx, nil)
 	mods, ok := action.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", action)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", action)
 	}
 	if !strings.Contains(string(mods.Body), "a.user@example.com") {
 		t.Fatalf("expected placeholder to be restored, got %s", string(mods.Body))
@@ -307,7 +307,7 @@ func TestPIIMaskingRegexPolicy_OnResponse_NoOpCases(t *testing.T) {
 	}
 	a1 := p.OnResponseBody(ctx1, nil)
 	if _, ok := a1.(policyv1alpha2.DownstreamResponseModifications); !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", a1)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", a1)
 	}
 
 	// Redact mode always no-op for response restoration
@@ -329,7 +329,7 @@ func TestPIIMaskingRegexPolicy_OnResponse_NoOpCases(t *testing.T) {
 	}
 	a2 := pRedact.OnResponseBody(ctx2, nil)
 	if _, ok := a2.(policyv1alpha2.DownstreamResponseModifications); !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", a2)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", a2)
 	}
 }
 

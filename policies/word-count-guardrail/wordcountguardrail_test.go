@@ -591,13 +591,13 @@ func TestValidatePayload_ResponsePaths(t *testing.T) {
 
 	pass := p.validatePayloadV2([]byte(`{"messages":"hello world"}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, true)
 	if _, ok := pass.(policyv1alpha2.DownstreamResponseModifications); !ok {
-		t.Fatalf("expected UpstreamResponseModifications on valid response payload, got %T", pass)
+		t.Fatalf("expected DownstreamResponseModifications on valid response payload, got %T", pass)
 	}
 
 	fail := p.validatePayloadV2([]byte(`{"messages":""}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: false}, true)
 	resp, ok := fail.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications on invalid response payload, got %T", fail)
+		t.Fatalf("expected DownstreamResponseModifications on invalid response payload, got %T", fail)
 	}
 	if resp.StatusCode == nil || *resp.StatusCode != GuardrailErrorCode {
 		t.Fatalf("expected response status %d, got %#v", GuardrailErrorCode, resp.StatusCode)
@@ -720,7 +720,7 @@ func TestOnRequestBodyAndOnResponseBody(t *testing.T) {
 	respFail := p.OnResponseBody(&policyv1alpha2.ResponseContext{ResponseBody: nil}, nil)
 	respMod, ok := respFail.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications for response nil-body validation failure, got %T", respFail)
+		t.Fatalf("expected DownstreamResponseModifications for response nil-body validation failure, got %T", respFail)
 	}
 	if respMod.StatusCode == nil || *respMod.StatusCode != GuardrailErrorCode {
 		t.Fatalf("expected status code %d, got %#v", GuardrailErrorCode, respMod.StatusCode)

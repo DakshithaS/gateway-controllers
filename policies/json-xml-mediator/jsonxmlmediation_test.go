@@ -208,7 +208,7 @@ func TestOnResponse_XMLToJSON_Success(t *testing.T) {
 	result := p.OnResponseBody(ctx, nil)
 	mods, ok := result.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", result)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", result)
 	}
 	if mods.Body == nil {
 		t.Fatalf("expected transformed JSON response body")
@@ -232,7 +232,7 @@ func TestOnResponse_JSONToXML_Success(t *testing.T) {
 	result := p.OnResponseBody(ctx, nil)
 	mods, ok := result.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", result)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", result)
 	}
 	if mods.Body == nil || !strings.Contains(string(mods.Body), "<status>ok</status>") {
 		t.Fatalf("expected transformed XML response body, got: %s", string(mods.Body))
@@ -345,7 +345,7 @@ func TestNoBodyPassThrough(t *testing.T) {
 	respResult := p.OnResponseBody(respCtx, nil)
 	respMods, ok := respResult.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", respResult)
+		t.Fatalf("expected DownstreamResponseModifications, got %T", respResult)
 	}
 	if respMods.Body != nil {
 		t.Fatalf("expected nil body for response pass-through, got %s", string(respMods.Body))
