@@ -49,16 +49,18 @@ func TestGetPolicy(t *testing.T) {
 func TestMode(t *testing.T) {
 	p := &McpAuthPolicy{}
 	mode := p.Mode()
-	if mode.RequestHeaderMode != policyv1alpha2.HeaderModeProcess {
-		t.Errorf("Expected RequestHeaderMode to be HeaderModeProcess, got %v", mode.RequestHeaderMode)
+	if mode.RequestHeaderMode != policyv1alpha2.HeaderModeSkip {
+		t.Errorf("Expected RequestHeaderMode to be HeaderModeSkip, got %v", mode.RequestHeaderMode)
 	}
-	if mode.RequestBodyMode != policyv1alpha2.BodyModeSkip {
-		t.Errorf("Expected RequestBodyMode to be BodyModeSkip, got %v", mode.RequestBodyMode)
+	if mode.RequestBodyMode != policyv1alpha2.BodyModeBuffer {
+		t.Errorf("Expected RequestBodyMode to be BodyModeBuffer, got %v", mode.RequestBodyMode)
 	}
 }
 
 func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+		"requiredScopes": []any{"scope1", "scope2"},
+	})
 	ctx := createMockRequestHeaderContext(map[string][]string{
 		McpSessionHeader: {"session-123"},
 	})
@@ -72,7 +74,6 @@ func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 				"issuer": "https://issuer1.com",
 			},
 		},
-		"requiredScopes": []any{"scope1", "scope2"},
 	}
 
 	action := p.OnRequestHeaders(ctx, params)
@@ -110,7 +111,7 @@ func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_NoKeyManagers(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
@@ -126,14 +127,15 @@ func TestOnRequestHeaders_WellKnown_NoKeyManagers(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_NoKeyManagers_WithForbiddenStatus(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := &McpAuthPolicy{
+		OnFailureStatusCode: 403,
+		ErrorMessageFormat:  "json",
+	}
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
 
-	action := p.OnRequestHeaders(ctx, map[string]any{
-		"onFailureStatusCode": 403,
-	})
+	action := p.OnRequestHeaders(ctx, map[string]any{})
 	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
@@ -144,7 +146,9 @@ func TestOnRequestHeaders_WellKnown_NoKeyManagers_WithForbiddenStatus(t *testing
 }
 
 func TestOnRequestHeaders_WellKnown_FilteredIssuers(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+		"issuers": []any{"km2"}, // Only allow km2
+	})
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
@@ -160,7 +164,6 @@ func TestOnRequestHeaders_WellKnown_FilteredIssuers(t *testing.T) {
 				"issuer": "https://issuer2.com",
 			},
 		},
-		"issuers": []any{"km2"}, // Only allow km2
 	}
 
 	action := p.OnRequestHeaders(ctx, params)
@@ -181,7 +184,7 @@ func TestOnRequestHeaders_WellKnown_FilteredIssuers(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_WithVhost(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(map[string][]string{
 		McpSessionHeader: {"session-456"},
 	})
@@ -224,7 +227,7 @@ func TestOnRequestHeaders_WellKnown_WithVhost(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_WithVhost_StandardPort(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
@@ -261,7 +264,7 @@ func TestOnRequestHeaders_WellKnown_WithVhost_StandardPort(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_WithVhost_AndAPIContext(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
@@ -299,17 +302,33 @@ func TestOnRequestHeaders_WellKnown_WithVhost_AndAPIContext(t *testing.T) {
 }
 
 func TestOnRequestHeaders_Delegation_Failure(t *testing.T) {
-	p := &McpAuthPolicy{}
+	_, publicKey := generateRSATestKeys(t)
+	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(map[string][]string{
 		McpSessionHeader: {"session-123"},
 	})
-	ctx.Method = "GET"
-	ctx.Path = "/api/resource"
+	ctx.Method = "POST"
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	ctx.Body = &policy.Body{Content: []byte(`{"method":"tools/list"}`)}
 
-	// We provide params but no valid JWT token in headers.
-	// JWT Auth policy should fail.
+	// Pass keyManagers but no valid JWT token - JWT Auth should fail with 401
 	params := map[string]any{
 		"gatewayHost": "gateway.com",
+		"keyManagers": []any{
+			map[string]any{
+				"name":   "test-km",
+				"issuer": "https://issuer.example.com",
+				"jwks": map[string]any{
+					"remote": map[string]any{
+						"uri": jwksServer.URL + "/jwks.json",
+					},
+				},
+			},
+		},
 	}
 
 	action := p.OnRequestHeaders(ctx, params)
@@ -376,7 +395,7 @@ func TestOnRequestHeaders_InvalidErrorMessageFormat(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_PathWithPrefix_Success(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/mcp/v1/.well-known/oauth-protected-resource"
@@ -400,10 +419,11 @@ func TestOnRequestHeaders_WellKnown_PathWithPrefix_Success(t *testing.T) {
 }
 
 func TestOnRequestHeaders_WellKnown_FalsePositivePathDoesNotMatch(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.Method = "GET"
 	ctx.Path = "/api/.well-known/oauth-protected-resource-extra"
+	ctx.OperationPath = "/api/.well-known/oauth-protected-resource-extra"
 
 	action := p.OnRequestHeaders(ctx, map[string]any{})
 
@@ -443,14 +463,14 @@ func TestOnRequestHeaders_WellKnown_MissingIssuerInKeyManagerConfig(t *testing.T
 }
 
 func TestOnRequestHeaders_InitializesNilMetadata(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
+	p.GatewayHost = "gateway.example.com"
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.SharedContext.Metadata = nil
 	ctx.Method = "GET"
 	ctx.Path = "/.well-known/oauth-protected-resource"
 
 	action := p.OnRequestHeaders(ctx, map[string]any{
-		"gatewayHost": "gateway.example.com",
 		"keyManagers": []any{
 			map[string]any{
 				"name":   "km1",
@@ -475,7 +495,9 @@ func TestOnRequestHeaders_InitializesNilMetadata(t *testing.T) {
 }
 
 func TestOnRequestHeaders_HandleAuthFailureWithNilMetadata(t *testing.T) {
-	p := &McpAuthPolicy{}
+	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+		"issuers": []any{"unknown-km"},
+	})
 	ctx := createMockRequestHeaderContext(nil)
 	ctx.SharedContext.Metadata = nil
 	ctx.Method = "GET"
@@ -488,7 +510,6 @@ func TestOnRequestHeaders_HandleAuthFailureWithNilMetadata(t *testing.T) {
 				"issuer": "https://issuer1.com",
 			},
 		},
-		"issuers": []any{"unknown-km"},
 	})
 
 	resp, ok := action.(policyv1alpha2.ImmediateResponse)
@@ -509,17 +530,57 @@ func TestOnRequestHeaders_HandleAuthFailureWithNilMetadata(t *testing.T) {
 	}
 }
 
-func TestOnRequestHeaders_Delegation_Failure_SetsAuthContext(t *testing.T) {
-	p := &McpAuthPolicy{}
-	ctx := createMockRequestHeaderContext(map[string][]string{
+func createMockRequestContext(headers map[string][]string) *policy.RequestContext {
+	return &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "test-request-id",
+			Metadata:  make(map[string]any),
+		},
+		Headers: policy.NewHeaders(headers),
+		Body:    nil,
+		Path:    "/api/test",
+		Method:  "GET",
+		Scheme:  "http",
+	}
+}
+
+// createTestPolicy creates an McpAuthPolicy with valid default configuration for testing
+func createTestPolicy() *McpAuthPolicy {
+	return &McpAuthPolicy{
+		OnFailureStatusCode: 401,
+		ErrorMessageFormat:  "json",
+		AuthConfig:          GetMcpAuthConfig(map[string]any{}),
+	}
+}
+
+func TestOnRequest_Delegation_Failure_SetsAuthContext(t *testing.T) {
+	_, publicKey := generateRSATestKeys(t)
+	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	p := createTestPolicy()
+	ctx := createMockRequestContext(map[string][]string{
 		McpSessionHeader: {"session-123"},
 	})
-	ctx.Method = "GET"
-	ctx.Path = "/api/resource"
+	ctx.Method = "POST"
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	ctx.Body = &policy.Body{Content: []byte(`{"method":"tools/list"}`)}
 
 	// No valid JWT token — JWT auth should fail, mcp-auth wraps and takes ownership
 	params := map[string]any{
 		"gatewayHost": "gateway.com",
+		"keyManagers": []any{
+			map[string]any{
+				"name":   "test-km",
+				"issuer": "https://issuer.example.com",
+				"jwks": map[string]any{
+					"remote": map[string]any{
+						"uri": jwksServer.URL + "/jwks.json",
+					},
+				},
+			},
+		},
 	}
 
 	action := p.OnRequestHeaders(ctx, params)
@@ -591,12 +652,14 @@ func TestOnRequestHeaders_Delegation_Success_SetsAuthContextAuthType(t *testing.
 		"scope": "read write",
 	})
 
-	p := &McpAuthPolicy{}
+	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 	ctx.Method = "POST"
-	ctx.Path = "/api/resource"
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	ctx.Body = &policy.Body{Content: []byte(`{"method":"tools/list"}`)}
 
 	params := map[string]any{
 		"headerName":          "Authorization",
@@ -722,4 +785,137 @@ func createMcpTestJWKSServer(t *testing.T, publicKey *rsa.PublicKey, kid string)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(jwksJSON)
 	}))
+}
+
+func TestGetSecurityConfigParam_Defaults(t *testing.T) {
+	params := map[string]interface{}{}
+
+	config := getSecurityConfigParam(params, "tools")
+
+	if !config.Enabled {
+		t.Error("Expected Enabled to default to true")
+	}
+	if len(config.Exceptions) != 0 {
+		t.Errorf("Expected empty exceptions, got %v", config.Exceptions)
+	}
+}
+
+func TestGetSecurityConfigParam_WithValues(t *testing.T) {
+	params := map[string]interface{}{
+		"tools": map[string]interface{}{
+			"enabled":    false,
+			"exceptions": []interface{}{"tool1", "tool2"},
+		},
+	}
+
+	config := getSecurityConfigParam(params, "tools")
+
+	if config.Enabled {
+		t.Error("Expected Enabled to be false")
+	}
+	if len(config.Exceptions) != 2 {
+		t.Errorf("Expected 2 exceptions, got %d", len(config.Exceptions))
+	}
+	if config.Exceptions[0] != "tool1" || config.Exceptions[1] != "tool2" {
+		t.Errorf("Unexpected exceptions: %v", config.Exceptions)
+	}
+}
+
+func TestGetMcpAuthConfig_AllFields(t *testing.T) {
+	params := map[string]interface{}{
+		"tools": map[string]interface{}{
+			"enabled":    true,
+			"exceptions": []interface{}{"public-tool"},
+		},
+		"resources": map[string]interface{}{
+			"enabled":    false,
+			"exceptions": []interface{}{"public-resource"},
+		},
+		"prompts": map[string]interface{}{
+			"enabled":    true,
+			"exceptions": []interface{}{},
+		},
+		"methods": map[string]interface{}{
+			"enabled":    false,
+			"exceptions": []interface{}{"initialize", "ping"},
+		},
+	}
+
+	config := GetMcpAuthConfig(params)
+
+	// Check tools
+	if !config.Tools.Enabled {
+		t.Error("Expected Tools.Enabled to be true")
+	}
+	if len(config.Tools.Exceptions) != 1 || config.Tools.Exceptions[0] != "public-tool" {
+		t.Errorf("Unexpected Tools.Exceptions: %v", config.Tools.Exceptions)
+	}
+
+	// Check resources
+	if config.Resources.Enabled {
+		t.Error("Expected Resources.Enabled to be false")
+	}
+	if len(config.Resources.Exceptions) != 1 || config.Resources.Exceptions[0] != "public-resource" {
+		t.Errorf("Unexpected Resources.Exceptions: %v", config.Resources.Exceptions)
+	}
+
+	// Check prompts
+	if !config.Prompts.Enabled {
+		t.Error("Expected Prompts.Enabled to be true")
+	}
+	if len(config.Prompts.Exceptions) != 0 {
+		t.Errorf("Expected empty Prompts.Exceptions, got %v", config.Prompts.Exceptions)
+	}
+
+	// Check methods
+	if config.Methods.Enabled {
+		t.Error("Expected Methods.Enabled to be false")
+	}
+	if len(config.Methods.Exceptions) != 2 {
+		t.Errorf("Expected 2 Methods.Exceptions, got %d", len(config.Methods.Exceptions))
+	}
+}
+
+func TestGetMcpAuthConfig_EmptyParams(t *testing.T) {
+	params := map[string]interface{}{}
+
+	config := GetMcpAuthConfig(params)
+
+	// All should have defaults
+	if !config.Tools.Enabled || !config.Resources.Enabled || !config.Prompts.Enabled || !config.Methods.Enabled {
+		t.Error("Expected all security configs to default to enabled=true")
+	}
+}
+
+func TestGetMcpAuthPolicy_WithIssuersAndScopes(t *testing.T) {
+	params := map[string]interface{}{
+		"tools": map[string]interface{}{
+			"enabled":    true,
+			"exceptions": []interface{}{"public-tool"},
+		},
+		"issuers":        []interface{}{"issuer1", "issuer2"},
+		"requiredScopes": []interface{}{"read", "write"},
+	}
+
+	policy, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("GetPolicy returned error: %v", err)
+	}
+
+	mcpPolicy := policy.(*McpAuthPolicy)
+
+	// Check issuers
+	if len(mcpPolicy.Issuers) != 2 {
+		t.Errorf("Expected 2 issuers, got %d", len(mcpPolicy.Issuers))
+	}
+
+	// Check scopes
+	if len(mcpPolicy.RequiredScopes) != 2 {
+		t.Errorf("Expected 2 scopes, got %d", len(mcpPolicy.RequiredScopes))
+	}
+
+	// Check that AuthConfig was also set
+	if !mcpPolicy.AuthConfig.Tools.Enabled {
+		t.Error("Expected AuthConfig.Tools.Enabled to be true")
+	}
 }

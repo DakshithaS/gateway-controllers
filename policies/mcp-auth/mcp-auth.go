@@ -41,7 +41,14 @@ const (
 	MetadataKeyAuthMethod  = "auth.method"
 )
 
-type McpAuthPolicy struct{}
+type McpAuthPolicy struct {
+	AuthConfig          McpAuthConfig `json:"authConfig"`
+	Issuers             []string      `json:"issuers"`
+	RequiredScopes      []string      `json:"requiredScopes"`
+	OnFailureStatusCode int           `json:"onFailureStatusCode"`
+	ErrorMessageFormat  string        `json:"errorMessageFormat"`
+	GatewayHost         string        `json:"gatewayHost"`
+}
 
 type ProtectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
@@ -49,7 +56,36 @@ type ProtectedResourceMetadata struct {
 	ScopesSupported      []string `json:"scopes_supported"`
 }
 
-var ins = &McpAuthPolicy{}
+// SecurityConfig represents the configuration for tools, resources, prompts, or methods
+type SecurityConfig struct {
+	Enabled    bool     `json:"enabled"`
+	Exceptions []string `json:"exceptions"`
+}
+
+// McpAuthConfig holds the parsed MCP auth configuration
+type McpAuthConfig struct {
+	Tools     SecurityConfig
+	Resources SecurityConfig
+	Prompts   SecurityConfig
+	Methods   SecurityConfig
+}
+
+// MCPRequest represents the JSON-RPC MCP request structure
+type MCPRequest struct {
+	Method string           `json:"method"`
+	Params MCPRequestParams `json:"params"`
+}
+
+// MCPRequestParams represents the params section of an MCP request
+// Different MCP methods use different param structures:
+// - tools/call: uses "name" (tool name) and "arguments"
+// - resources/read: uses "uri" (resource URI)
+// - prompts/get: uses "name" (prompt name)
+type MCPRequestParams struct {
+	Name      string         `json:"name"` // For tools/call, prompts/get
+	Arguments map[string]any `json:"arguments"`
+	URI       string         `json:"uri"` // For resources/read
+}
 
 // GetPolicy is the v1alpha factory entry point (loaded by v1alpha kernels).
 // The returned concrete type also satisfies policyv1alpha2 phase interfaces
@@ -60,6 +96,15 @@ func GetPolicy(
 	params map[string]any,
 ) (policy.Policy, error) {
 	slog.Debug("MCP Auth Policy: GetPolicy called")
+	ins := &McpAuthPolicy{
+		AuthConfig: GetMcpAuthConfig(params),
+	}
+	ins.Issuers = getStringArrayParam(params, "issuers", []string{})
+	ins.RequiredScopes = getStringArrayParam(params, "requiredScopes", []string{})
+	ins.OnFailureStatusCode = getIntParam(params, "onFailureStatusCode", 401)
+	ins.ErrorMessageFormat = getStringParam(params, "errorMessageFormat", "json")
+	ins.GatewayHost = getStringParam(params, "gatewayHost", "")
+
 	return ins, nil
 }
 
@@ -73,26 +118,21 @@ func GetPolicyV2(
 
 func (p *McpAuthPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeSkip,
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeSkip,
 		ResponseBodyMode:   policy.BodyModeSkip,
 	}
 }
 
 func (p *McpAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[string]any) policy.RequestAction {
-	userIssuers := getStringArrayParam(params, "issuers", []string{})
-	onFailureStatusCode := getIntParam(params, "onFailureStatusCode", 401)
-	errorMessageFormat := getStringParam(params, "errorMessageFormat", "json")
-	userRequiredScopes := getStringArrayParam(params, "requiredScopes", []string{})
-	if err := validateAuthFailureConfig(onFailureStatusCode, errorMessageFormat); err != nil {
+	if err := validateAuthFailureConfig(p.OnFailureStatusCode, p.ErrorMessageFormat); err != nil {
 		return buildInvalidConfigResponse(err.Error())
 	}
 
-	gatewayHost := getStringParam(params, "gatewayHost", "")
-	if gatewayHost != "" {
+	if p.GatewayHost != "" {
 		ensureRequestMetadata(ctx)
-		ctx.Metadata["gatewayHost"] = gatewayHost
+		ctx.Metadata["gatewayHost"] = p.GatewayHost
 	}
 	// Check for GET /.well-known/oauth-protected-resource
 	if ctx.Method == "GET" && isWellKnownEndpointRequest(ctx.Path) {
@@ -107,7 +147,7 @@ func (p *McpAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[string]
 		keyManagersRaw, ok := params["keyManagers"]
 		if !ok {
 			slog.Debug("MCP Auth Policy: Key managers not configured in params")
-			return p.handleAuthFailure(ctx, onFailureStatusCode, errorMessageFormat, "key managers not configured")
+			return p.handleAuthFailure(ctx, p.OnFailureStatusCode, p.ErrorMessageFormat, "key managers not configured")
 		}
 
 		slog.Debug("MCP Auth Policy: Starting to parse key managers configuration")
@@ -117,12 +157,12 @@ func (p *McpAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[string]
 			return buildInvalidConfigResponse(err.Error())
 		}
 		if len(issuers) == 0 {
-			return p.handleAuthFailure(ctx, onFailureStatusCode, errorMessageFormat, "no valid key managers found")
+			return p.handleAuthFailure(ctx, p.OnFailureStatusCode, p.ErrorMessageFormat, "no valid key managers found")
 		}
 
-		if len(userIssuers) > 0 {
+		if len(p.Issuers) > 0 {
 			filteredIssuers := []string{}
-			for _, ui := range userIssuers {
+			for _, ui := range p.Issuers {
 				if issuer, ok := kms[ui]; ok {
 					filteredIssuers = append(filteredIssuers, issuer)
 					slog.Debug("MCP Auth Policy: Added issuer from user configuration", "issuer", issuer)
@@ -132,14 +172,14 @@ func (p *McpAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[string]
 		}
 
 		if len(issuers) == 0 {
-			return p.handleAuthFailure(ctx, onFailureStatusCode, errorMessageFormat, "no matching issuers found")
+			return p.handleAuthFailure(ctx, p.OnFailureStatusCode, p.ErrorMessageFormat, "no matching issuers found")
 		}
 
 		// todo: mcp auth flow
 		prm := ProtectedResourceMetadata{
 			Resource:             generateResourcePath(ctx, params, "mcp"),
 			AuthorizationServers: issuers,
-			ScopesSupported:      userRequiredScopes,
+			ScopesSupported:      p.RequiredScopes,
 		}
 		jsonOut, _ := json.Marshal(prm)
 		return policy.ImmediateResponse{
@@ -150,8 +190,30 @@ func (p *McpAuthPolicy) OnRequest(ctx *policy.RequestContext, params map[string]
 			},
 			Body: jsonOut,
 		}
+	} else if ctx.Method == "POST" && strings.Contains(ctx.OperationPath, "mcp") {
+		// Parse MCP request to extract method and name
+		var mcpReq MCPRequest
+		if err := json.Unmarshal(ctx.Body.Content, &mcpReq); err != nil {
+			slog.Debug("MCP Auth Policy: Body:", "content", string(ctx.Body.Content))
+			slog.Debug("MCP Auth Policy: Failed to parse MCP request", "error", err)
+			return p.handleAuthFailure(ctx, p.OnFailureStatusCode, p.ErrorMessageFormat, "Invalid MCP request format")
+		}
+
+		slog.Debug("MCP Auth Policy: Extracted MCP attributes",
+			"method", mcpReq.Method,
+			"name", mcpReq.Params.Name,
+			"uri", mcpReq.Params.URI)
+
+		// Check if authentication is required for this request
+		if !p.isAuthRequired(mcpReq) {
+			slog.Debug("MCP Auth Policy: Skipping authentication for exempt request", "method", mcpReq.Method)
+			return nil
+		}
+
+		return p.handleAuth(ctx, params, p.RequiredScopes)
 	}
-	return p.handleAuth(ctx, params, userRequiredScopes)
+
+	return nil
 }
 
 func (p *McpAuthPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]any) policy.ResponseAction {
@@ -167,6 +229,7 @@ func (p *McpAuthPolicy) handleAuth(ctx *policy.RequestContext, params map[string
 	}
 
 	slog.Debug("MCP Auth Policy: Delegating authentication to JWT Auth Policy")
+	// Avoid passing scopes to JWT policy as the authorization will be handled separately in MCP AuthZ policy.
 	jwtPolicy, _ := jwtauth.GetPolicy(policy.PolicyMetadata{}, params)
 	reqAction := jwtPolicy.OnRequest(ctx, params)
 	if _, ok := reqAction.(policy.ImmediateResponse); ok {
@@ -354,6 +417,102 @@ func getStringArrayParam(params map[string]interface{}, key string, defaultValue
 		}
 	}
 	return defaultValue
+}
+
+// getSecurityConfigParam parses a security configuration object (tools, resources, prompts, methods)
+// with enabled (default: true) and exceptions (default: empty array) fields.
+func getSecurityConfigParam(params map[string]any, key string) SecurityConfig {
+	config := SecurityConfig{
+		Enabled:    true, // default value per policy definition
+		Exceptions: []string{},
+	}
+
+	if v, ok := params[key]; ok {
+		if configMap, ok := v.(map[string]any); ok {
+			// Parse enabled field
+			if enabled, ok := configMap["enabled"]; ok {
+				if b, ok := enabled.(bool); ok {
+					config.Enabled = b
+					slog.Debug("MCP Auth Policy", "key", key, "enabled", b)
+				}
+			}
+			// Parse exceptions field
+			if exceptions, ok := configMap["exceptions"]; ok {
+				if arr, ok := exceptions.([]any); ok {
+					for _, item := range arr {
+						if s, ok := item.(string); ok {
+							config.Exceptions = append(config.Exceptions, s)
+						}
+					}
+					slog.Debug("MCP Auth Policy", "key", key, "exceptions", len(config.Exceptions))
+				}
+			}
+		}
+	} else {
+		slog.Debug("MCP Auth Policy: No configuration found for key", "key", key)
+	}
+
+	return config
+}
+
+// GetMcpAuthConfig parses all MCP auth configuration parameters into a structured format.
+func GetMcpAuthConfig(params map[string]any) McpAuthConfig {
+	return McpAuthConfig{
+		Tools:     getSecurityConfigParam(params, "tools"),
+		Resources: getSecurityConfigParam(params, "resources"),
+		Prompts:   getSecurityConfigParam(params, "prompts"),
+		Methods:   getSecurityConfigParam(params, "methods"),
+	}
+}
+
+// isAuthRequired determines if authentication is required for the given MCP request.
+// It returns true if auth is required, false if the request is exempt based on configuration.
+func (p *McpAuthPolicy) isAuthRequired(mcpReq MCPRequest) bool {
+	var config SecurityConfig
+	var name string
+
+	switch mcpReq.Method {
+	case "tools/call":
+		config = p.AuthConfig.Tools
+		name = mcpReq.Params.Name
+	case "resources/read":
+		config = p.AuthConfig.Resources
+		name = mcpReq.Params.URI
+	case "prompts/get":
+		config = p.AuthConfig.Prompts
+		name = mcpReq.Params.Name
+	default:
+		// For any other methods (e.g., "initialize", "ping", "tools/list", etc.)
+		// Check if the method is in the methods exceptions list
+		config = p.AuthConfig.Methods
+		name = mcpReq.Method
+	}
+
+	if config.Enabled {
+		if len(config.Exceptions) == 0 {
+			return true
+		} else {
+			for _, exception := range config.Exceptions {
+				if exception == name {
+					slog.Debug("MCP Auth Policy: Auth not required - item in exceptions list", "method", mcpReq.Method, "name", name)
+					return false
+				}
+			}
+			return true
+		}
+	} else {
+		if len(config.Exceptions) == 0 {
+			return false
+		} else {
+			for _, exception := range config.Exceptions {
+				if exception == name {
+					slog.Debug("MCP Auth Policy: Auth required - item in exceptions list", "method", mcpReq.Method, "name", name)
+					return true
+				}
+			}
+			return false
+		}
+	}
 }
 
 // Helper functions for type assertions
