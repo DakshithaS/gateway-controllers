@@ -7,37 +7,22 @@ import (
 	"sync"
 	"testing"
 
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 func TestPromptDecoratorPolicy_Mode(t *testing.T) {
 	p := &PromptDecoratorPolicy{}
 
 	got := p.Mode()
-	want := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeSkip,
+	want := policyv1alpha2.ProcessingMode{
+		RequestHeaderMode:  policyv1alpha2.HeaderModeSkip,
+		RequestBodyMode:    policyv1alpha2.BodyModeBuffer,
+		ResponseHeaderMode: policyv1alpha2.HeaderModeSkip,
+		ResponseBodyMode:   policyv1alpha2.BodyModeSkip,
 	}
 
 	if got != want {
 		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
-	}
-}
-
-func TestPromptDecoratorPolicy_OnResponse_NoOp(t *testing.T) {
-	p := &PromptDecoratorPolicy{}
-	ctx := &policy.ResponseContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "test-request-id",
-			Metadata:  map[string]interface{}{},
-		},
-	}
-
-	action := p.OnResponse(ctx, nil)
-	if _, ok := action.(policy.UpstreamResponseModifications); !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", action)
 	}
 }
 
@@ -212,7 +197,7 @@ func TestPromptDecoratorPolicy_GetPolicy_InvalidParams(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := GetPolicy(policy.PolicyMetadata{}, tt.params)
+			_, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, tt.params)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -236,7 +221,7 @@ func TestPromptDecoratorPolicy_OnRequest_TextDefaultPath_Prepend(t *testing.T) {
 			{"role":"user","content":"Summarize this text"}
 		]
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -256,7 +241,7 @@ func TestPromptDecoratorPolicy_OnRequest_TextDefaultPath_Append(t *testing.T) {
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[{"role":"user","content":"Explain TCP"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -278,7 +263,7 @@ func TestPromptDecoratorPolicy_OnRequest_TextCustomPath(t *testing.T) {
 		"input":{"prompt":"Create a plan"},
 		"messages":[{"role":"user","content":"unchanged"}]
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -307,7 +292,7 @@ func TestPromptDecoratorPolicy_OnRequest_MessagesDefaultPath_Prepend(t *testing.
 			{"role":"assistant","content":"Hi"}
 		]
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -337,7 +322,7 @@ func TestPromptDecoratorPolicy_OnRequest_MessagesDefaultPath_Append(t *testing.T
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[{"role":"user","content":"hello"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -367,7 +352,7 @@ func TestPromptDecoratorPolicy_OnRequest_MessagesCustomPath(t *testing.T) {
 		"conversation":{"history":[{"role":"user","content":"hello"}]},
 		"messages":[{"role":"user","content":"keep me"}]
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -394,12 +379,12 @@ func TestPromptDecoratorPolicy_OnRequest_EmptyBodyReturnsError(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ctx  *policy.RequestContext
+		ctx  *policyv1alpha2.RequestContext
 	}{
 		{
 			name: "nil body",
-			ctx: &policy.RequestContext{
-				SharedContext: &policy.SharedContext{
+			ctx: &policyv1alpha2.RequestContext{
+				SharedContext: &policyv1alpha2.SharedContext{
 					RequestID: "test-request-id",
 					Metadata:  map[string]interface{}{},
 				},
@@ -408,12 +393,12 @@ func TestPromptDecoratorPolicy_OnRequest_EmptyBodyReturnsError(t *testing.T) {
 		},
 		{
 			name: "empty body content",
-			ctx: &policy.RequestContext{
-				SharedContext: &policy.SharedContext{
+			ctx: &policyv1alpha2.RequestContext{
+				SharedContext: &policyv1alpha2.SharedContext{
 					RequestID: "test-request-id",
 					Metadata:  map[string]interface{}{},
 				},
-				Body: &policy.Body{
+				Body: &policyv1alpha2.Body{
 					Content: []byte{},
 					Present: false,
 				},
@@ -423,7 +408,7 @@ func TestPromptDecoratorPolicy_OnRequest_EmptyBodyReturnsError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			action := p.OnRequest(tt.ctx, nil)
+			action := p.OnRequestBody(tt.ctx, nil)
 			assertDecoratorError(t, action, "Empty request body")
 		})
 	}
@@ -437,7 +422,7 @@ func TestPromptDecoratorPolicy_OnRequest_InvalidJSONReturnsError(t *testing.T) {
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Error parsing JSON payload")
 }
 
@@ -450,7 +435,7 @@ func TestPromptDecoratorPolicy_OnRequest_JSONPathNotFoundReturnsError(t *testing
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[{"role":"user","content":"hello"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Error extracting value from JSONPath")
 }
 
@@ -465,7 +450,7 @@ func TestPromptDecoratorPolicy_OnRequest_TargetTypeMismatch_StringPathWithMessag
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[{"role":"user","content":"hello"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Invalid configuration for string target")
 }
 
@@ -478,7 +463,7 @@ func TestPromptDecoratorPolicy_OnRequest_TargetTypeMismatch_ArrayPathWithTextCon
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[{"role":"user","content":"hello"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Invalid configuration for messages target")
 }
 
@@ -493,7 +478,7 @@ func TestPromptDecoratorPolicy_OnRequest_ArrayContainsNonMapElementReturnsError(
 	})
 
 	ctx := newRequestContextWithBody(`{"messages":[1,{"role":"user","content":"hello"}]}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Array contains non-map elements")
 }
 
@@ -506,7 +491,7 @@ func TestPromptDecoratorPolicy_OnRequest_ExtractedValueWrongTypeReturnsError(t *
 	})
 
 	ctx := newRequestContextWithBody(`{"temperature":0.7}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Extracted value must be a string or an array of message objects")
 }
 
@@ -524,7 +509,7 @@ func TestPromptDecoratorPolicy_OnRequest_JSONPathWithArrayIndex_TextTarget(t *te
 			{"role":"assistant","content":"second"}
 		]
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	mods := mustRequestMods(t, action)
 
 	payload := decodeJSONMap(t, mods.Body)
@@ -550,7 +535,7 @@ func TestPromptDecoratorPolicy_OnRequest_JSONPathNavigationFailure(t *testing.T)
 	ctx := newRequestContextWithBody(`{
 		"messages":{"0":{"content":"hello"}}
 	}`)
-	action := p.OnRequest(ctx, nil)
+	action := p.OnRequestBody(ctx, nil)
 	assertDecoratorError(t, action, "Error extracting value from JSONPath")
 }
 
@@ -595,8 +580,8 @@ func TestPromptDecoratorPolicy_OnRequest_ConcurrentAccess(t *testing.T) {
 			msg := fmt.Sprintf("prompt-%d", i)
 			ctx := newRequestContextWithBody(fmt.Sprintf(`{"messages":[{"role":"user","content":"%s"}]}`, msg))
 
-			action := p.OnRequest(ctx, nil)
-			mods, ok := action.(policy.UpstreamRequestModifications)
+			action := p.OnRequestBody(ctx, nil)
+			mods, ok := action.(policyv1alpha2.UpstreamRequestModifications)
 			if !ok {
 				errCh <- fmt.Errorf("expected UpstreamRequestModifications, got %T", action)
 				return
@@ -629,7 +614,7 @@ func TestPromptDecoratorPolicy_OnRequest_ConcurrentAccess(t *testing.T) {
 func mustGetPromptDecoratorPolicy(t *testing.T, params map[string]interface{}) *PromptDecoratorPolicy {
 	t.Helper()
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("failed to create policy: %v", err)
 	}
@@ -640,20 +625,20 @@ func mustGetPromptDecoratorPolicy(t *testing.T, params map[string]interface{}) *
 	return policyImpl
 }
 
-func mustRequestMods(t *testing.T, action policy.RequestAction) policy.UpstreamRequestModifications {
+func mustRequestMods(t *testing.T, action policyv1alpha2.RequestAction) policyv1alpha2.UpstreamRequestModifications {
 	t.Helper()
 
-	mods, ok := action.(policy.UpstreamRequestModifications)
+	mods, ok := action.(policyv1alpha2.UpstreamRequestModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
 	}
 	return mods
 }
 
-func assertDecoratorError(t *testing.T, action policy.RequestAction, wantMessagePrefix string) policy.ImmediateResponse {
+func assertDecoratorError(t *testing.T, action policyv1alpha2.RequestAction, wantMessagePrefix string) policyv1alpha2.ImmediateResponse {
 	t.Helper()
 
-	resp, ok := action.(policy.ImmediateResponse)
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", action)
 	}
@@ -721,13 +706,13 @@ func mustMessagesNoFail(v interface{}) []map[string]interface{} {
 	return out
 }
 
-func newRequestContextWithBody(body string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+func newRequestContextWithBody(body string) *policyv1alpha2.RequestContext {
+	return &policyv1alpha2.RequestContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			RequestID: "test-request-id",
 			Metadata:  map[string]interface{}{},
 		},
-		Body: &policy.Body{
+		Body: &policyv1alpha2.Body{
 			Content: []byte(body),
 			Present: body != "",
 		},

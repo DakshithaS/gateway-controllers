@@ -1051,6 +1051,10 @@ func (p *AWSBedrockGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.RequestCon
 		return policyv1alpha2.UpstreamRequestModifications{}
 	}
 
+	if ctx.Metadata == nil {
+		ctx.Metadata = make(map[string]interface{})
+	}
+
 	var content []byte
 	if ctx.Body != nil {
 		content = ctx.Body.Content

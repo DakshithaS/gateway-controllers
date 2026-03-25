@@ -5,7 +5,7 @@ go 1.25.7
 require (
 	github.com/wso2/api-platform/sdk v0.3.8
 	github.com/wso2/api-platform/sdk/core v0.1.0
-	github.com/wso2/gateway-controllers/policies/advanced-ratelimit v0.3.2
+	github.com/wso2/gateway-controllers/policies/advanced-ratelimit v0.3.2 //upgrade
 	golang.org/x/sync v0.19.0
 )
 

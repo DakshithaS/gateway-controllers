@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policyenginev1 "github.com/wso2/api-platform/sdk/gateway/policyengine/v1"
 )
 
@@ -20,7 +20,7 @@ func newStore(entries []policyenginev1.SubscriptionData) *policyenginev1.Subscri
 func newPolicy(cfg PolicyConfig, store *policyenginev1.SubscriptionStore) *SubscriptionValidationPolicy {
 	return &SubscriptionValidationPolicy{
 		cfg:         cfg,
-		store:      store,
+		store:       store,
 		rateLimitMu: sharedRateLimitMu,
 		rateLimits:  make(map[string]*rateLimitEntry),
 	}
@@ -33,43 +33,55 @@ func defaultCfg() PolicyConfig {
 	}
 }
 
-func ctxWithToken(apiID, token, headerName string) *policy.RequestContext {
+func headerCtxWithToken(apiID, token, headerName string) *policyv1alpha2.RequestHeaderContext {
 	if headerName == "" {
 		headerName = defaultSubscriptionKeyHeader
 	}
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	return &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId:    apiID,
 			Metadata: map[string]interface{}{},
 		},
-		Headers: policy.NewHeaders(map[string][]string{
+		Headers: policyv1alpha2.NewHeaders(map[string][]string{
 			headerName: {token},
 		}),
 	}
 }
 
-func ctxWithAppID(apiID, appID string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+func headerCtxWithAppID(apiID, appID string) *policyv1alpha2.RequestHeaderContext {
+	return &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId: apiID,
 			Metadata: map[string]interface{}{
 				applicationIDMetadataKey: appID,
 			},
 		},
-		Headers: policy.NewHeaders(nil),
+		Headers: policyv1alpha2.NewHeaders(nil),
 	}
 }
 
-func assertNil(t *testing.T, action policy.RequestAction) {
-	t.Helper()
-	if action != nil {
-		t.Fatalf("expected nil action, got %#v", action)
+func headerCtxWithCookie(apiID, token, cookieName string) *policyv1alpha2.RequestHeaderContext {
+	return &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			APIId:    apiID,
+			Metadata: map[string]interface{}{},
+		},
+		Headers: policyv1alpha2.NewHeaders(map[string][]string{
+			"Cookie": {cookieName + "=" + token},
+		}),
 	}
 }
 
-func assertImmediate(t *testing.T, action policy.RequestAction, wantStatus int, wantErrorKey string) {
+func assertSuccess(t *testing.T, action policyv1alpha2.RequestHeaderAction) {
 	t.Helper()
-	resp, ok := action.(policy.ImmediateResponse)
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications (allow), got %#v", action)
+	}
+}
+
+func assertImmediate(t *testing.T, action policyv1alpha2.RequestHeaderAction, wantStatus int, wantErrorKey string) {
+	t.Helper()
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", action)
 	}
@@ -85,7 +97,7 @@ func assertImmediate(t *testing.T, action policy.RequestAction, wantStatus int, 
 	}
 }
 
-func assertRateLimitHeaders(t *testing.T, resp policy.ImmediateResponse, wantLimit, wantRemaining int) {
+func assertRateLimitHeaders(t *testing.T, resp policyv1alpha2.ImmediateResponse, wantLimit, wantRemaining int) {
 	t.Helper()
 	if resp.Headers == nil {
 		t.Fatalf("expected headers to be set")
@@ -172,34 +184,34 @@ func TestMergeConfig_Overrides(t *testing.T) {
 
 // --- token path (primary) ----------------------------------------------------
 
-func TestOnRequest_AllowsValidToken(t *testing.T) {
+func TestOnRequestHeaders_AllowsValidToken(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
-	ctx := ctxWithToken("api-1", "tok-1", "")
-	assertNil(t, p.OnRequest(ctx, nil))
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
-func TestOnRequest_DeniesInvalidToken(t *testing.T) {
+func TestOnRequestHeaders_DeniesInvalidToken(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
-	ctx := ctxWithToken("api-1", "wrong-token", "")
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	ctx := headerCtxWithToken("api-1", "wrong-token", "")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
-func TestOnRequest_DeniesInactiveToken(t *testing.T) {
+func TestOnRequestHeaders_DeniesInactiveToken(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "INACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
-	ctx := ctxWithToken("api-1", "tok-1", "")
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
-func TestOnRequest_CustomHeaderName(t *testing.T) {
+func TestOnRequestHeaders_CustomHeaderName(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
@@ -207,84 +219,72 @@ func TestOnRequest_CustomHeaderName(t *testing.T) {
 	cfg.SubscriptionKeyHeader = "X-Custom-Sub"
 	p := newPolicy(cfg, store)
 
-	ctx := ctxWithToken("api-1", "tok-1", "X-Custom-Sub")
-	assertNil(t, p.OnRequest(ctx, nil))
+	ctx := headerCtxWithToken("api-1", "tok-1", "X-Custom-Sub")
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
 // --- cookie path -------------------------------------------------------------
 
-func ctxWithCookie(apiID, token, cookieName string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
-			APIId:    apiID,
-			Metadata: map[string]interface{}{},
-		},
-		Headers: policy.NewHeaders(map[string][]string{
-			"Cookie": {cookieName + "=" + token},
-		}),
-	}
-}
-
-func TestOnRequest_AllowsValidTokenFromCookie(t *testing.T) {
+func TestOnRequestHeaders_AllowsValidTokenFromCookie(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	cfg := defaultCfg()
 	cfg.SubscriptionKeyCookie = "sub-key"
 	p := newPolicy(cfg, store)
-	ctx := ctxWithCookie("api-1", "tok-1", "sub-key")
-	assertNil(t, p.OnRequest(ctx, nil))
+	ctx := headerCtxWithCookie("api-1", "tok-1", "sub-key")
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
-func TestOnRequest_CookieDeniesInvalidToken(t *testing.T) {
+func TestOnRequestHeaders_CookieDeniesInvalidToken(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	cfg := defaultCfg()
 	cfg.SubscriptionKeyCookie = "sub-key"
 	p := newPolicy(cfg, store)
-	ctx := ctxWithCookie("api-1", "wrong-token", "sub-key")
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	ctx := headerCtxWithCookie("api-1", "wrong-token", "sub-key")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
-func TestOnRequest_HeaderTakesPrecedenceOverCookie(t *testing.T) {
+func TestOnRequestHeaders_HeaderTakesPrecedenceOverCookie(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	cfg := defaultCfg()
 	cfg.SubscriptionKeyCookie = "sub-key"
 	p := newPolicy(cfg, store)
-	ctx := &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId:    "api-1",
 			Metadata: map[string]interface{}{},
 		},
-		Headers: policy.NewHeaders(map[string][]string{
+		Headers: policyv1alpha2.NewHeaders(map[string][]string{
 			defaultSubscriptionKeyHeader: {"tok-1"},
 			"Cookie":                    {"sub-key=wrong-token"},
 		}),
 	}
 	// Header value should be used; tok-1 is valid
-	assertNil(t, p.OnRequest(ctx, nil))
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
-func TestOnRequest_CookieUsedWhenHeaderMissing(t *testing.T) {
+func TestOnRequestHeaders_CookieUsedWhenHeaderMissing(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	cfg := defaultCfg()
 	cfg.SubscriptionKeyCookie = "sub-key"
 	p := newPolicy(cfg, store)
-	ctx := ctxWithCookie("api-1", "tok-1", "sub-key")
-	assertNil(t, p.OnRequest(ctx, nil))
+	ctx := headerCtxWithCookie("api-1", "tok-1", "sub-key")
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
-func TestGetCookieValue(t *testing.T) {
+func TestGetCookieValueV2(t *testing.T) {
 	tests := []struct {
-		name     string
-		headers  map[string][]string
-		cookie   string
-		want     string
+		name    string
+		headers map[string][]string
+		cookie  string
+		want    string
 	}{
 		{"single cookie", map[string][]string{"Cookie": {"sub-key=tok-1"}}, "sub-key", "tok-1"},
 		{"multiple cookies", map[string][]string{"Cookie": {"a=1; sub-key=tok-1; b=2"}}, "sub-key", "tok-1"},
@@ -294,10 +294,10 @@ func TestGetCookieValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := policy.NewHeaders(tt.headers)
-			got := getCookieValue(h, tt.cookie)
+			h := policyv1alpha2.NewHeaders(tt.headers)
+			got := getCookieValueV2(h, tt.cookie)
 			if got != tt.want {
-				t.Fatalf("getCookieValue(%q) = %q, want %q", tt.cookie, got, tt.want)
+				t.Fatalf("getCookieValueV2(%q) = %q, want %q", tt.cookie, got, tt.want)
 			}
 		})
 	}
@@ -305,57 +305,57 @@ func TestGetCookieValue(t *testing.T) {
 
 // --- appId fallback (legacy) -------------------------------------------------
 
-func TestOnRequest_FallbackAppIdAllows(t *testing.T) {
+func TestOnRequestHeaders_FallbackAppIdAllows(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", ApplicationId: "app-1", Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
-	ctx := ctxWithAppID("api-1", "app-1")
-	assertNil(t, p.OnRequest(ctx, nil))
+	ctx := headerCtxWithAppID("api-1", "app-1")
+	assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 }
 
-func TestOnRequest_FallbackAppIdDenies(t *testing.T) {
+func TestOnRequestHeaders_FallbackAppIdDenies(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", ApplicationId: "app-1", Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
-	ctx := ctxWithAppID("api-1", "app-wrong")
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	ctx := headerCtxWithAppID("api-1", "app-wrong")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
 // --- no identity at all ------------------------------------------------------
 
-func TestOnRequest_DeniesWhenNoIdentity(t *testing.T) {
+func TestOnRequestHeaders_DeniesWhenNoIdentity(t *testing.T) {
 	store := newStore(nil)
 	p := newPolicy(defaultCfg(), store)
-	ctx := &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId:    "api-1",
 			Metadata: map[string]interface{}{},
 		},
-		Headers: policy.NewHeaders(nil),
+		Headers: policyv1alpha2.NewHeaders(nil),
 	}
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
 // --- missing apiId fails closed ----------------------------------------------
 
-func TestOnRequest_FailsClosedWhenAPIIdMissing(t *testing.T) {
+func TestOnRequestHeaders_FailsClosedWhenAPIIdMissing(t *testing.T) {
 	store := newStore(nil)
 	p := newPolicy(defaultCfg(), store)
-	ctx := &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId:    "",
 			Metadata: map[string]interface{}{},
 		},
-		Headers: policy.NewHeaders(nil),
+		Headers: policyv1alpha2.NewHeaders(nil),
 	}
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
 // --- rate limiting -----------------------------------------------------------
 
-func TestOnRequest_RateLimitEnforced(t *testing.T) {
+func TestOnRequestHeaders_RateLimitEnforced(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{
 			APIId:              "api-1",
@@ -369,16 +369,13 @@ func TestOnRequest_RateLimitEnforced(t *testing.T) {
 	p := newPolicy(defaultCfg(), store)
 
 	for i := 0; i < 3; i++ {
-		ctx := ctxWithToken("api-1", "tok-1", "")
-		action := p.OnRequest(ctx, nil)
-		if action != nil {
-			t.Fatalf("request %d should be allowed, got %#v", i+1, action)
-		}
+		ctx := headerCtxWithToken("api-1", "tok-1", "")
+		assertSuccess(t, p.OnRequestHeaders(ctx, nil))
 	}
 
-	ctx := ctxWithToken("api-1", "tok-1", "")
-	action := p.OnRequest(ctx, nil)
-	resp, ok := action.(policy.ImmediateResponse)
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	action := p.OnRequestHeaders(ctx, nil)
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", action)
 	}
@@ -395,7 +392,7 @@ func TestOnRequest_RateLimitEnforced(t *testing.T) {
 	assertRateLimitHeaders(t, resp, 3, 0)
 }
 
-func TestOnRequest_RateLimitNotEnforcedWhenStopOnQuotaFalse(t *testing.T) {
+func TestOnRequestHeaders_RateLimitNotEnforcedWhenStopOnQuotaFalse(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{
 			APIId:              "api-1",
@@ -409,24 +406,24 @@ func TestOnRequest_RateLimitNotEnforcedWhenStopOnQuotaFalse(t *testing.T) {
 	p := newPolicy(defaultCfg(), store)
 
 	for i := 0; i < 5; i++ {
-		ctx := ctxWithToken("api-1", "tok-1", "")
-		action := p.OnRequest(ctx, nil)
-		if action != nil {
+		ctx := headerCtxWithToken("api-1", "tok-1", "")
+		action := p.OnRequestHeaders(ctx, nil)
+		if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
 			t.Fatalf("request %d should be allowed (stopOnQuotaReach=false), got %#v", i+1, action)
 		}
 	}
 }
 
-func TestOnRequest_NoRateLimitWithoutPlan(t *testing.T) {
+func TestOnRequestHeaders_NoRateLimitWithoutPlan(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
 
 	for i := 0; i < 100; i++ {
-		ctx := ctxWithToken("api-1", "tok-1", "")
-		action := p.OnRequest(ctx, nil)
-		if action != nil {
+		ctx := headerCtxWithToken("api-1", "tok-1", "")
+		action := p.OnRequestHeaders(ctx, nil)
+		if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
 			t.Fatalf("request %d should be allowed (no throttle plan), got %#v", i+1, action)
 		}
 	}
@@ -434,38 +431,38 @@ func TestOnRequest_NoRateLimitWithoutPlan(t *testing.T) {
 
 // --- token takes precedence over appId ---------------------------------------
 
-func TestOnRequest_TokenTakesPrecedenceOverAppId(t *testing.T) {
+func TestOnRequestHeaders_TokenTakesPrecedenceOverAppId(t *testing.T) {
 	store := newStore([]policyenginev1.SubscriptionData{
 		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
 		{APIId: "api-1", ApplicationId: "app-1", Status: "ACTIVE"},
 	})
 	p := newPolicy(defaultCfg(), store)
 
-	ctx := &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			APIId: "api-1",
 			Metadata: map[string]interface{}{
 				applicationIDMetadataKey: "app-1",
 			},
 		},
-		Headers: policy.NewHeaders(map[string][]string{
+		Headers: policyv1alpha2.NewHeaders(map[string][]string{
 			defaultSubscriptionKeyHeader: {"wrong-token"},
 		}),
 	}
 	// Token path should be tried first and should fail (wrong token),
 	// even though appId path would succeed.
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }
 
 // --- nil context / nil store guards ------------------------------------------
 
-func TestOnRequest_NilContext(t *testing.T) {
+func TestOnRequestHeaders_NilContext(t *testing.T) {
 	p := newPolicy(defaultCfg(), policyenginev1.NewSubscriptionStore())
-	assertImmediate(t, p.OnRequest(nil, nil), 403, "forbidden")
+	assertImmediate(t, p.OnRequestHeaders(nil, nil), 403, "forbidden")
 }
 
-func TestOnRequest_NilStore(t *testing.T) {
+func TestOnRequestHeaders_NilStore(t *testing.T) {
 	p := newPolicy(defaultCfg(), nil)
-	ctx := ctxWithToken("api-1", "tok-1", "")
-	assertImmediate(t, p.OnRequest(ctx, nil), 403, "forbidden")
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	assertImmediate(t, p.OnRequestHeaders(ctx, nil), 403, "forbidden")
 }

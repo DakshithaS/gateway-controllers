@@ -349,12 +349,7 @@ func (p *APIKeyPolicy) authenticate(
 			"missing or invalid 'in' configuration")
 	}
 
-	issuer, ok := params["issuer"].(string)
-	if !ok || issuer == "" {
-		slog.Debug("API Key Auth Policy: Missing or invalid 'issuer' configuration")
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
-			"missing or invalid 'issuer' configuration")
-	}
+	issuer, _ := params["issuer"].(string)
 
 	slog.Debug("API Key Auth Policy: Configuration loaded", "keyName", keyName, "location", location)
 

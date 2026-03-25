@@ -21,27 +21,27 @@ import (
 	"strings"
 	"testing"
 
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 // Helper function to create test headers
-func createTestHeaders(headers map[string]string) *policy.Headers {
+func createTestHeaders(headers map[string]string) *policyv1alpha2.Headers {
 	headerMap := make(map[string][]string)
 	for k, v := range headers {
 		headerMap[k] = []string{v}
 	}
-	return policy.NewHeaders(headerMap)
+	return policyv1alpha2.NewHeaders(headerMap)
 }
 
 func TestRemoveHeadersPolicy_Mode(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
 	mode := p.Mode()
 
-	expectedMode := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeSkip,
-		ResponseHeaderMode: policy.HeaderModeProcess,
-		ResponseBodyMode:   policy.BodyModeSkip,
+	expectedMode := policyv1alpha2.ProcessingMode{
+		RequestHeaderMode:  policyv1alpha2.HeaderModeProcess,
+		RequestBodyMode:    policyv1alpha2.BodyModeSkip,
+		ResponseHeaderMode: policyv1alpha2.HeaderModeProcess,
+		ResponseBodyMode:   policyv1alpha2.BodyModeSkip,
 	}
 
 	if mode != expectedMode {
@@ -50,10 +50,10 @@ func TestRemoveHeadersPolicy_Mode(t *testing.T) {
 }
 
 func TestGetPolicy(t *testing.T) {
-	metadata := policy.PolicyMetadata{}
+	metadata := policyv1alpha2.PolicyMetadata{}
 	params := map[string]interface{}{}
 
-	p, err := GetPolicy(metadata, params)
+	p, err := GetPolicyV2(metadata, params)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -67,9 +67,13 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
-func TestRemoveHeadersPolicy_OnRequest_NoHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnRequestHeaders_NoHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type":  "application/json",
 			"authorization": "Bearer token123",
@@ -78,22 +82,26 @@ func TestRemoveHeadersPolicy_OnRequest_NoHeaders(t *testing.T) {
 
 	// No requestHeaders parameter
 	params := map[string]interface{}{}
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
 	// Should return empty modifications
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 0 {
-		t.Errorf("Expected no headers to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 0 {
+		t.Errorf("Expected no headers to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 }
 
-func TestRemoveHeadersPolicy_OnRequest_SingleHeader(t *testing.T) {
+func TestRemoveHeadersPolicy_OnRequestHeaders_SingleHeader(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type":    "application/json",
 			"authorization":   "Bearer token123",
@@ -109,27 +117,31 @@ func TestRemoveHeadersPolicy_OnRequest_SingleHeader(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 1 {
-		t.Errorf("Expected 1 header to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 1 {
+		t.Errorf("Expected 1 header to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 
 	expectedHeaderName := "x-custom-header" // Should be normalized to lowercase
-	if mods.RemoveHeaders[0] != expectedHeaderName {
+	if mods.HeadersToRemove[0] != expectedHeaderName {
 		t.Errorf("Expected header '%s' to be removed, got '%s'",
-			expectedHeaderName, mods.RemoveHeaders[0])
+			expectedHeaderName, mods.HeadersToRemove[0])
 	}
 }
 
-func TestRemoveHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnRequestHeaders_MultipleHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type":  "application/json",
 			"authorization": "Bearer token123",
@@ -153,15 +165,15 @@ func TestRemoveHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 3 {
-		t.Errorf("Expected 3 headers to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 3 {
+		t.Errorf("Expected 3 headers to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 
 	expectedHeaders := []string{"authorization", "x-api-key", "x-debug-info"}
@@ -169,7 +181,7 @@ func TestRemoveHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
 	// Check that all expected headers are in the removal list
 	for _, expectedHeader := range expectedHeaders {
 		found := false
-		for _, actualHeader := range mods.RemoveHeaders {
+		for _, actualHeader := range mods.HeadersToRemove {
 			if actualHeader == expectedHeader {
 				found = true
 				break
@@ -177,14 +189,18 @@ func TestRemoveHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("Expected header '%s' to be in removal list, got %v",
-				expectedHeader, mods.RemoveHeaders)
+				expectedHeader, mods.HeadersToRemove)
 		}
 	}
 }
 
-func TestRemoveHeadersPolicy_OnRequest_HeaderNameNormalization(t *testing.T) {
+func TestRemoveHeadersPolicy_OnRequestHeaders_HeaderNameNormalization(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"x-upper-case": "test-value",
 		}),
@@ -198,23 +214,27 @@ func TestRemoveHeadersPolicy_OnRequest_HeaderNameNormalization(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	expectedHeaderName := "x-upper-case" // Should be trimmed and lowercase
-	if len(mods.RemoveHeaders) != 1 || mods.RemoveHeaders[0] != expectedHeaderName {
+	if len(mods.HeadersToRemove) != 1 || mods.HeadersToRemove[0] != expectedHeaderName {
 		t.Errorf("Expected header '%s' to be normalized and removed, got %v",
-			expectedHeaderName, mods.RemoveHeaders)
+			expectedHeaderName, mods.HeadersToRemove)
 	}
 }
 
-func TestRemoveHeadersPolicy_OnResponse_NoHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnResponseHeaders_NoHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 			"server":       "nginx/1.21.0",
@@ -223,22 +243,26 @@ func TestRemoveHeadersPolicy_OnResponse_NoHeaders(t *testing.T) {
 
 	// No responseHeaders parameter
 	params := map[string]interface{}{}
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
 	// Should return empty modifications
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 0 {
-		t.Errorf("Expected no headers to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 0 {
+		t.Errorf("Expected no headers to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 }
 
-func TestRemoveHeadersPolicy_OnResponse_SingleHeader(t *testing.T) {
+func TestRemoveHeadersPolicy_OnResponseHeaders_SingleHeader(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 			"server":       "nginx/1.21.0",
@@ -254,27 +278,31 @@ func TestRemoveHeadersPolicy_OnResponse_SingleHeader(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 1 {
-		t.Errorf("Expected 1 header to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 1 {
+		t.Errorf("Expected 1 header to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 
 	expectedHeaderName := "x-powered-by" // Should be normalized to lowercase
-	if mods.RemoveHeaders[0] != expectedHeaderName {
+	if mods.HeadersToRemove[0] != expectedHeaderName {
 		t.Errorf("Expected header '%s' to be removed, got '%s'",
-			expectedHeaderName, mods.RemoveHeaders[0])
+			expectedHeaderName, mods.HeadersToRemove[0])
 	}
 }
 
-func TestRemoveHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnResponseHeaders_MultipleHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type":    "application/json",
 			"server":          "nginx/1.21.0",
@@ -298,15 +326,15 @@ func TestRemoveHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 3 {
-		t.Errorf("Expected 3 headers to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 3 {
+		t.Errorf("Expected 3 headers to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 
 	expectedHeaders := []string{"server", "x-powered-by", "x-debug-trace"}
@@ -314,7 +342,7 @@ func TestRemoveHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
 	// Check that all expected headers are in the removal list
 	for _, expectedHeader := range expectedHeaders {
 		found := false
-		for _, actualHeader := range mods.RemoveHeaders {
+		for _, actualHeader := range mods.HeadersToRemove {
 			if actualHeader == expectedHeader {
 				found = true
 				break
@@ -322,7 +350,7 @@ func TestRemoveHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("Expected header '%s' to be in removal list, got %v",
-				expectedHeader, mods.RemoveHeaders)
+				expectedHeader, mods.HeadersToRemove)
 		}
 	}
 }
@@ -331,7 +359,11 @@ func TestRemoveHeadersPolicy_BothRequestAndResponse(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
 
 	// Test request phase
-	reqCtx := &policy.RequestContext{
+	reqCtx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"authorization": "Bearer token123",
 		}),
@@ -350,37 +382,45 @@ func TestRemoveHeadersPolicy_BothRequestAndResponse(t *testing.T) {
 		},
 	}
 
-	reqResult := p.OnRequest(reqCtx, params)
-	reqMods, ok := reqResult.(policy.UpstreamRequestModifications)
+	reqResult := p.OnRequestHeaders(reqCtx, params)
+	reqMods, ok := reqResult.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", reqResult)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", reqResult)
 	}
 
-	if len(reqMods.RemoveHeaders) != 1 || reqMods.RemoveHeaders[0] != "authorization" {
-		t.Errorf("Expected request header 'authorization' to be removed, got %v", reqMods.RemoveHeaders)
+	if len(reqMods.HeadersToRemove) != 1 || reqMods.HeadersToRemove[0] != "authorization" {
+		t.Errorf("Expected request header 'authorization' to be removed, got %v", reqMods.HeadersToRemove)
 	}
 
 	// Test response phase
-	respCtx := &policy.ResponseContext{
+	respCtx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"server": "nginx/1.21.0",
 		}),
 	}
 
-	respResult := p.OnResponse(respCtx, params)
-	respMods, ok := respResult.(policy.UpstreamResponseModifications)
+	respResult := p.OnResponseHeaders(respCtx, params)
+	respMods, ok := respResult.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", respResult)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", respResult)
 	}
 
-	if len(respMods.RemoveHeaders) != 1 || respMods.RemoveHeaders[0] != "server" {
-		t.Errorf("Expected response header 'server' to be removed, got %v", respMods.RemoveHeaders)
+	if len(respMods.HeadersToRemove) != 1 || respMods.HeadersToRemove[0] != "server" {
+		t.Errorf("Expected response header 'server' to be removed, got %v", respMods.HeadersToRemove)
 	}
 }
 
 func TestRemoveHeadersPolicy_EmptyHeadersList(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -388,21 +428,25 @@ func TestRemoveHeadersPolicy_EmptyHeadersList(t *testing.T) {
 		"requestHeaders": []interface{}{}, // Empty array
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 0 {
-		t.Errorf("Expected no headers to be removed for empty array, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 0 {
+		t.Errorf("Expected no headers to be removed for empty array, got %d headers", len(mods.HeadersToRemove))
 	}
 }
 
 func TestRemoveHeadersPolicy_InvalidHeadersType(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -410,21 +454,25 @@ func TestRemoveHeadersPolicy_InvalidHeadersType(t *testing.T) {
 		"requestHeaders": "not-an-array", // Invalid type
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 0 {
-		t.Errorf("Expected no headers to be removed for invalid type, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 0 {
+		t.Errorf("Expected no headers to be removed for invalid type, got %d headers", len(mods.HeadersToRemove))
 	}
 }
 
 func TestRemoveHeadersPolicy_InvalidHeaderEntry(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -437,26 +485,30 @@ func TestRemoveHeadersPolicy_InvalidHeaderEntry(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	// Should only process valid entries
-	if len(mods.RemoveHeaders) != 1 {
-		t.Errorf("Expected 1 valid header to be removed, got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 1 {
+		t.Errorf("Expected 1 valid header to be removed, got %d headers", len(mods.HeadersToRemove))
 	}
 
-	if mods.RemoveHeaders[0] != "valid-header" {
-		t.Errorf("Expected valid header to be processed correctly, got '%s'", mods.RemoveHeaders[0])
+	if mods.HeadersToRemove[0] != "valid-header" {
+		t.Errorf("Expected valid header to be processed correctly, got '%s'", mods.HeadersToRemove[0])
 	}
 }
 
 func TestRemoveHeadersPolicy_DuplicateHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -474,22 +526,22 @@ func TestRemoveHeadersPolicy_DuplicateHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 3 {
-		t.Errorf("Expected 3 headers in removal list (including duplicates), got %d headers", len(mods.RemoveHeaders))
+	if len(mods.HeadersToRemove) != 3 {
+		t.Errorf("Expected 3 headers in removal list (including duplicates), got %d headers", len(mods.HeadersToRemove))
 	}
 
 	// Check that duplicates are preserved in the removal list
 	expectedHeaders := []string{"x-custom-header", "x-custom-header", "authorization"}
 	for i, expected := range expectedHeaders {
-		if i < len(mods.RemoveHeaders) && mods.RemoveHeaders[i] != expected {
-			t.Errorf("Expected header at index %d to be '%s', got '%s'", i, expected, mods.RemoveHeaders[i])
+		if i < len(mods.HeadersToRemove) && mods.HeadersToRemove[i] != expected {
+			t.Errorf("Expected header at index %d to be '%s', got '%s'", i, expected, mods.HeadersToRemove[i])
 		}
 	}
 }
@@ -643,9 +695,13 @@ func TestRemoveHeadersPolicy_Validate_MissingNameField(t *testing.T) {
 	}
 }
 
-func TestRemoveHeadersPolicy_OnRequest_NestedHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnRequestHeaders_NestedHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"x-nested-request": "remove-me",
 		}),
@@ -661,20 +717,24 @@ func TestRemoveHeadersPolicy_OnRequest_NestedHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	result := p.OnRequestHeaders(ctx, params)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 1 || mods.RemoveHeaders[0] != "x-nested-request" {
-		t.Errorf("Expected nested request header to be removed, got %v", mods.RemoveHeaders)
+	if len(mods.HeadersToRemove) != 1 || mods.HeadersToRemove[0] != "x-nested-request" {
+		t.Errorf("Expected nested request header to be removed, got %v", mods.HeadersToRemove)
 	}
 }
 
-func TestRemoveHeadersPolicy_OnResponse_NestedHeaders(t *testing.T) {
+func TestRemoveHeadersPolicy_OnResponseHeaders_NestedHeaders(t *testing.T) {
 	p := &RemoveHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"x-nested-response": "remove-me",
 		}),
@@ -690,14 +750,14 @@ func TestRemoveHeadersPolicy_OnResponse_NestedHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	result := p.OnResponseHeaders(ctx, params)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.RemoveHeaders) != 1 || mods.RemoveHeaders[0] != "x-nested-response" {
-		t.Errorf("Expected nested response header to be removed, got %v", mods.RemoveHeaders)
+	if len(mods.HeadersToRemove) != 1 || mods.HeadersToRemove[0] != "x-nested-response" {
+		t.Errorf("Expected nested response header to be removed, got %v", mods.HeadersToRemove)
 	}
 }
 

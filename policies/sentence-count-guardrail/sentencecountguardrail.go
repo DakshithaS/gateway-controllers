@@ -690,6 +690,9 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 		return policyv1alpha2.ResponseChunkAction{}
 	}
 	chunkStr := string(chunk.Chunk)
+	if ctx.Metadata == nil {
+		ctx.Metadata = make(map[string]interface{})
+	}
 	if !isSSEChunk(chunkStr) {
 		// Plain JSON via chunked transfer (e.g. OpenAI stream:false with Transfer-Encoding: chunked).
 		// Accumulate all chunks and validate the complete body at end of stream.

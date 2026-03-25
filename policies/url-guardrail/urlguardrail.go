@@ -622,6 +622,9 @@ func (p *URLGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.ResponseStr
 	if !isSSEChunk(chunkStr) {
 		// Plain JSON via chunked transfer (e.g. OpenAI stream:false with Transfer-Encoding: chunked).
 		// Accumulate all chunks and validate the complete body at end of stream.
+		if ctx.Metadata == nil {
+			ctx.Metadata = make(map[string]interface{})
+		}
 		prev, _ := ctx.Metadata[metaKeyAccJsonBody].(string)
 		full := prev + chunkStr
 		ctx.Metadata[metaKeyAccJsonBody] = full

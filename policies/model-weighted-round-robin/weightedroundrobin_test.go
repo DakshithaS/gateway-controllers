@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 func TestModelWeightedRoundRobinPolicy_Mode(t *testing.T) {
 	p := &ModelWeightedRoundRobinPolicy{}
 	got := p.Mode()
-	want := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeProcess,
-		ResponseBodyMode:   policy.BodyModeBuffer,
+	want := policyv1alpha2.ProcessingMode{
+		RequestHeaderMode:  policyv1alpha2.HeaderModeProcess,
+		RequestBodyMode:    policyv1alpha2.BodyModeBuffer,
+		ResponseHeaderMode: policyv1alpha2.HeaderModeProcess,
+		ResponseBodyMode:   policyv1alpha2.BodyModeBuffer,
 	}
 	if got != want {
 		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
@@ -105,7 +105,7 @@ func TestModelWeightedRoundRobinPolicy_GetPolicy_ParseErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := GetPolicy(policy.PolicyMetadata{}, tt.params)
+			_, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, tt.params)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -152,7 +152,7 @@ func TestModelWeightedRoundRobinPolicy_BuildWeightedSequence(t *testing.T) {
 	}
 }
 
-func TestModelWeightedRoundRobinPolicy_OnRequest_PayloadWeightedSelection(t *testing.T) {
+func TestModelWeightedRoundRobinPolicy_OnRequestBody_PayloadWeightedSelection(t *testing.T) {
 	p := mustGetWeightedPolicy(t, map[string]interface{}{
 		"models": baseWeightedModels(),
 		"requestModel": map[string]interface{}{
@@ -162,24 +162,48 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_PayloadWeightedSelection(t *tes
 	})
 
 	// weight distribution: gpt-4, gpt-4, gpt-35, ...
-	ctx1 := weightedRequestContextWithBody(`{"model":"orig"}`)
-	a1 := p.OnRequest(ctx1, nil)
+	// Request 1
+	shared1 := weightedSharedContext()
+	headerCtx1 := &policyv1alpha2.RequestHeaderContext{SharedContext: shared1}
+	p.OnRequestHeaders(headerCtx1, nil)
+
+	bodyCtx1 := &policyv1alpha2.RequestContext{
+		SharedContext: shared1,
+		Body:          &policyv1alpha2.Body{Content: []byte(`{"model":"orig"}`), Present: true},
+	}
+	a1 := p.OnRequestBody(bodyCtx1, nil)
 	m1 := mustWeightedRequestMods(t, a1)
 	j1 := decodeJSONMapWeighted(t, m1.Body)
 	if j1["model"] != "gpt-4" {
 		t.Fatalf("expected first model gpt-4, got %v", j1["model"])
 	}
 
-	ctx2 := weightedRequestContextWithBody(`{"model":"orig2"}`)
-	a2 := p.OnRequest(ctx2, nil)
+	// Request 2
+	shared2 := weightedSharedContext()
+	headerCtx2 := &policyv1alpha2.RequestHeaderContext{SharedContext: shared2}
+	p.OnRequestHeaders(headerCtx2, nil)
+
+	bodyCtx2 := &policyv1alpha2.RequestContext{
+		SharedContext: shared2,
+		Body:          &policyv1alpha2.Body{Content: []byte(`{"model":"orig2"}`), Present: true},
+	}
+	a2 := p.OnRequestBody(bodyCtx2, nil)
 	m2 := mustWeightedRequestMods(t, a2)
 	j2 := decodeJSONMapWeighted(t, m2.Body)
 	if j2["model"] != "gpt-4" {
 		t.Fatalf("expected second model gpt-4, got %v", j2["model"])
 	}
 
-	ctx3 := weightedRequestContextWithBody(`{"model":"orig3"}`)
-	a3 := p.OnRequest(ctx3, nil)
+	// Request 3
+	shared3 := weightedSharedContext()
+	headerCtx3 := &policyv1alpha2.RequestHeaderContext{SharedContext: shared3}
+	p.OnRequestHeaders(headerCtx3, nil)
+
+	bodyCtx3 := &policyv1alpha2.RequestContext{
+		SharedContext: shared3,
+		Body:          &policyv1alpha2.Body{Content: []byte(`{"model":"orig3"}`), Present: true},
+	}
+	a3 := p.OnRequestBody(bodyCtx3, nil)
 	m3 := mustWeightedRequestMods(t, a3)
 	j3 := decodeJSONMapWeighted(t, m3.Body)
 	if j3["model"] != "gpt-35" {
@@ -187,7 +211,7 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_PayloadWeightedSelection(t *tes
 	}
 }
 
-func TestModelWeightedRoundRobinPolicy_OnRequest_QueryAndPathMutation(t *testing.T) {
+func TestModelWeightedRoundRobinPolicy_OnRequestHeaders_QueryAndPathMutation(t *testing.T) {
 	pQuery := mustGetWeightedPolicy(t, map[string]interface{}{
 		"models": baseWeightedModels(),
 		"requestModel": map[string]interface{}{
@@ -195,10 +219,13 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_QueryAndPathMutation(t *testing
 			"identifier": "model",
 		},
 	})
-	queryCtx := weightedRequestContextWithPath("/v1/chat?model=old")
-	queryAction := pQuery.OnRequest(queryCtx, nil)
-	queryMods := mustWeightedRequestMods(t, queryAction)
-	if got := queryMods.SetHeaders[":path"]; !strings.Contains(got, "model=gpt-4") {
+	queryCtx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: weightedSharedContext(),
+		Path:          "/v1/chat?model=old",
+	}
+	queryAction := pQuery.OnRequestHeaders(queryCtx, nil)
+	queryMods := mustWeightedRequestHeaderMods(t, queryAction)
+	if got := queryMods.HeadersToSet[":path"]; !strings.Contains(got, "model=gpt-4") {
 		t.Fatalf("expected query path to include new model, got %q", got)
 	}
 
@@ -209,15 +236,18 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_QueryAndPathMutation(t *testing
 			"identifier": `/models/([^/]+)`,
 		},
 	})
-	pathCtx := weightedRequestContextWithPath("/v1/models/old/completions")
-	pathAction := pPath.OnRequest(pathCtx, nil)
-	pathMods := mustWeightedRequestMods(t, pathAction)
-	if got := pathMods.SetHeaders[":path"]; !strings.Contains(got, "/models/gpt-4/") {
+	pathCtx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: weightedSharedContext(),
+		Path:          "/v1/models/old/completions",
+	}
+	pathAction := pPath.OnRequestHeaders(pathCtx, nil)
+	pathMods := mustWeightedRequestHeaderMods(t, pathAction)
+	if got := pathMods.HeadersToSet[":path"]; !strings.Contains(got, "/models/gpt-4/") {
 		t.Fatalf("expected path to include new model, got %q", got)
 	}
 }
 
-func TestModelWeightedRoundRobinPolicy_OnRequest_AllModelsSuspended(t *testing.T) {
+func TestModelWeightedRoundRobinPolicy_OnRequestHeaders_AllModelsSuspended(t *testing.T) {
 	p := mustGetWeightedPolicy(t, map[string]interface{}{
 		"models": baseWeightedModels(),
 		"requestModel": map[string]interface{}{
@@ -230,8 +260,12 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_AllModelsSuspended(t *testing.T
 	p.suspendedModels["gpt-4"] = until
 	p.suspendedModels["gpt-35"] = until
 
-	action := p.OnRequest(weightedRequestContextWithHeaders(map[string][]string{"x-model": {"orig"}}), nil)
-	resp, ok := action.(policy.ImmediateResponse)
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: weightedSharedContext(),
+		Headers:       policyv1alpha2.NewHeaders(map[string][]string{"x-model": {"orig"}}),
+	}
+	action := p.OnRequestHeaders(ctx, nil)
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse when all models suspended, got %T", action)
 	}
@@ -240,7 +274,7 @@ func TestModelWeightedRoundRobinPolicy_OnRequest_AllModelsSuspended(t *testing.T
 	}
 }
 
-func TestModelWeightedRoundRobinPolicy_OnResponse_SuspendsSelectedModel(t *testing.T) {
+func TestModelWeightedRoundRobinPolicy_OnResponseHeaders_SuspendsSelectedModel(t *testing.T) {
 	p := mustGetWeightedPolicy(t, map[string]interface{}{
 		"models":          baseWeightedModels(),
 		"suspendDuration": 30,
@@ -250,18 +284,19 @@ func TestModelWeightedRoundRobinPolicy_OnResponse_SuspendsSelectedModel(t *testi
 		},
 	})
 
-	ctx := &policy.ResponseContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "id",
-			Metadata: map[string]interface{}{
-				MetadataKeySelectedModel: "gpt-4",
-			},
+	sharedCtx := &policyv1alpha2.SharedContext{
+		RequestID: "id",
+		Metadata: map[string]interface{}{
+			MetadataKeySelectedModel: "gpt-4",
 		},
+	}
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext:  sharedCtx,
 		ResponseStatus: 429,
 	}
-	action := p.OnResponse(ctx, nil)
-	if _, ok := action.(policy.UpstreamResponseModifications); !ok {
-		t.Fatalf("expected UpstreamResponseModifications, got %T", action)
+	action := p.OnResponseHeaders(ctx, nil)
+	if _, ok := action.(policyv1alpha2.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected DownstreamResponseHeaderModifications, got %T", action)
 	}
 	if until, exists := p.suspendedModels["gpt-4"]; !exists || !until.After(time.Now()) {
 		t.Fatalf("expected selected model to be suspended")
@@ -287,7 +322,7 @@ func TestModelWeightedRoundRobinPolicy_SelectNextAvailable_SkipsSuspended(t *tes
 
 func mustGetWeightedPolicy(t *testing.T, params map[string]interface{}) *ModelWeightedRoundRobinPolicy {
 	t.Helper()
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("failed to create policy: %v", err)
 	}
@@ -298,9 +333,18 @@ func mustGetWeightedPolicy(t *testing.T, params map[string]interface{}) *ModelWe
 	return wp
 }
 
-func mustWeightedRequestMods(t *testing.T, action policy.RequestAction) policy.UpstreamRequestModifications {
+func mustWeightedRequestHeaderMods(t *testing.T, action policyv1alpha2.RequestHeaderAction) policyv1alpha2.UpstreamRequestHeaderModifications {
 	t.Helper()
-	mods, ok := action.(policy.UpstreamRequestModifications)
+	mods, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	return mods
+}
+
+func mustWeightedRequestMods(t *testing.T, action policyv1alpha2.RequestAction) policyv1alpha2.UpstreamRequestModifications {
+	t.Helper()
+	mods, ok := action.(policyv1alpha2.UpstreamRequestModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
 	}
@@ -316,36 +360,10 @@ func decodeJSONMapWeighted(t *testing.T, body []byte) map[string]interface{} {
 	return m
 }
 
-func weightedRequestContextWithBody(body string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "req-id",
-			Metadata:  map[string]interface{}{},
-		},
-		Body: &policy.Body{
-			Content: []byte(body),
-			Present: body != "",
-		},
-	}
-}
-
-func weightedRequestContextWithPath(path string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "req-id",
-			Metadata:  map[string]interface{}{},
-		},
-		Path: path,
-	}
-}
-
-func weightedRequestContextWithHeaders(headers map[string][]string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "req-id",
-			Metadata:  map[string]interface{}{},
-		},
-		Headers: policy.NewHeaders(headers),
+func weightedSharedContext() *policyv1alpha2.SharedContext {
+	return &policyv1alpha2.SharedContext{
+		RequestID: "req-id",
+		Metadata:  map[string]interface{}{},
 	}
 }
 

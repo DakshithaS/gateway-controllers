@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	apikeycommon "github.com/wso2/api-platform/common/apikey"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
@@ -13,11 +14,11 @@ import (
 func TestAPIKeyPolicy_Mode(t *testing.T) {
 	p := &APIKeyPolicy{}
 	got := p.Mode()
-	want := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeSkip,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeSkip,
+	want := policyv1alpha2.ProcessingMode{
+		RequestHeaderMode:  policyv1alpha2.HeaderModeProcess,
+		RequestBodyMode:    policyv1alpha2.BodyModeSkip,
+		ResponseHeaderMode: policyv1alpha2.HeaderModeSkip,
+		ResponseBodyMode:   policyv1alpha2.BodyModeSkip,
 	}
 
 	if got != want {
@@ -26,29 +27,29 @@ func TestAPIKeyPolicy_Mode(t *testing.T) {
 }
 
 func TestGetPolicy_ReturnsSingleton(t *testing.T) {
-	p1, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{})
+	p1, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, map[string]interface{}{})
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
-	p2, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{})
+	p2, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, map[string]interface{}{})
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 	if p1 != p2 {
 		t.Fatalf("expected singleton policy instance")
 	}
 }
 
-func TestAPIKeyPolicy_OnRequest_SuccessFromHeader(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_SuccessFromHeader(t *testing.T) {
 	resetAPIKeyStore(t)
 	seedExternalAPIKey(t, "api-1", "header-secret", `["GET /orders"]`)
 
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders", map[string][]string{
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
 		http.CanonicalHeaderKey("x-api-key"): {"header-secret"},
 	}, "api-1", "OrdersAPI", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x-api-key",
 		"in":  "header",
 	})
@@ -59,19 +60,19 @@ func TestAPIKeyPolicy_OnRequest_SuccessFromHeader(t *testing.T) {
 	if ctx.SharedContext.AuthContext.AuthType != "apikey" {
 		t.Fatalf("expected AuthType='apikey', got %q", ctx.SharedContext.AuthContext.AuthType)
 	}
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
-func TestAPIKeyPolicy_OnRequest_SuccessFromQuery(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_SuccessFromQuery(t *testing.T) {
 	resetAPIKeyStore(t)
 	seedExternalAPIKey(t, "api-2", "query-secret", `["GET /orders"]`)
 
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders?x_api_key=query-secret", nil, "api-2", "OrdersAPI", "v1", "/orders")
+	ctx := newRequestHeaderContext(t, "GET", "/orders?x_api_key=query-secret", nil, "api-2", "OrdersAPI", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x_api_key",
 		"in":  "query",
 	})
@@ -79,12 +80,12 @@ func TestAPIKeyPolicy_OnRequest_SuccessFromQuery(t *testing.T) {
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("expected AuthContext.Authenticated=true")
 	}
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
-func TestAPIKeyPolicy_OnRequest_MissingOrInvalidConfig(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_MissingOrInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name   string
 		params map[string]interface{}
@@ -114,11 +115,11 @@ func TestAPIKeyPolicy_OnRequest_MissingOrInvalidConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resetAPIKeyStore(t)
 			p := &APIKeyPolicy{}
-			ctx := newRequestContext(t, "GET", "/orders", map[string][]string{
+			ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
 				"x-api-key": {"header-secret"},
 			}, "api-1", "OrdersAPI", "v1", "/orders")
 
-			action := p.OnRequest(ctx, tt.params)
+			action := p.OnRequestHeaders(ctx, tt.params)
 			assertUnauthorizedJSON(t, action)
 
 			if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
@@ -128,12 +129,12 @@ func TestAPIKeyPolicy_OnRequest_MissingOrInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestAPIKeyPolicy_OnRequest_FailsWhenAPIKeyMissing(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_FailsWhenAPIKeyMissing(t *testing.T) {
 	resetAPIKeyStore(t)
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders?foo=bar", nil, "api-1", "OrdersAPI", "v1", "/orders")
+	ctx := newRequestHeaderContext(t, "GET", "/orders?foo=bar", nil, "api-1", "OrdersAPI", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x_api_key",
 		"in":  "query",
 	})
@@ -141,14 +142,14 @@ func TestAPIKeyPolicy_OnRequest_FailsWhenAPIKeyMissing(t *testing.T) {
 	assertUnauthorizedJSON(t, action)
 }
 
-func TestAPIKeyPolicy_OnRequest_FailsWhenAPIDetailsMissing(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_FailsWhenAPIDetailsMissing(t *testing.T) {
 	resetAPIKeyStore(t)
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders", map[string][]string{
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
 		"x-api-key": {"header-secret"},
 	}, "api-1", "", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x-api-key",
 		"in":  "header",
 	})
@@ -156,16 +157,16 @@ func TestAPIKeyPolicy_OnRequest_FailsWhenAPIDetailsMissing(t *testing.T) {
 	assertUnauthorizedJSON(t, action)
 }
 
-func TestAPIKeyPolicy_OnRequest_FailsWhenValidationReturnsFalse(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_FailsWhenValidationReturnsFalse(t *testing.T) {
 	resetAPIKeyStore(t)
 	seedExternalAPIKey(t, "api-1", "different-secret", `["GET /orders"]`)
 
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders", map[string][]string{
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
 		"x-api-key": {"wrong-secret"},
 	}, "api-1", "OrdersAPI", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x-api-key",
 		"in":  "header",
 	})
@@ -173,16 +174,16 @@ func TestAPIKeyPolicy_OnRequest_FailsWhenValidationReturnsFalse(t *testing.T) {
 	assertUnauthorizedJSON(t, action)
 }
 
-func TestAPIKeyPolicy_OnRequest_FailsWhenValidationErrors(t *testing.T) {
+func TestAPIKeyPolicy_OnRequestHeaders_FailsWhenValidationErrors(t *testing.T) {
 	resetAPIKeyStore(t)
 	seedExternalAPIKey(t, "api-1", "bad-ops-secret", `not-json`)
 
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders", map[string][]string{
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
 		"x-api-key": {"bad-ops-secret"},
 	}, "api-1", "OrdersAPI", "v1", "/orders")
 
-	action := p.OnRequest(ctx, map[string]interface{}{
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
 		"key": "x-api-key",
 		"in":  "header",
 	})
@@ -190,17 +191,20 @@ func TestAPIKeyPolicy_OnRequest_FailsWhenValidationErrors(t *testing.T) {
 	assertUnauthorizedJSON(t, action)
 }
 
-func TestAPIKeyPolicy_OnResponse_NoOp(t *testing.T) {
-	p := &APIKeyPolicy{}
-	action := p.OnResponse(&policy.ResponseContext{}, nil)
-	if action != nil {
-		t.Fatalf("expected nil response action, got %T", action)
-	}
-}
-
 func TestAPIKeyPolicy_HandleAuthFailure_PlainFormat(t *testing.T) {
 	p := &APIKeyPolicy{}
-	ctx := newRequestContext(t, "GET", "/orders", nil, "api-1", "OrdersAPI", "v1", "/orders")
+	// handleAuthFailure uses v1alpha RequestContext
+	ctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+			APIId:     "api-1",
+			APIName:   "OrdersAPI",
+		},
+		Headers: policy.NewHeaders(nil),
+		Method:  "GET",
+		Path:    "/orders",
+	}
 
 	action := p.handleAuthFailure(ctx, 401, "plain", "Auth failed", "test failure")
 	resp, ok := action.(policy.ImmediateResponse)
@@ -264,13 +268,13 @@ func TestExtractQueryParam(t *testing.T) {
 	}
 }
 
-func newRequestContext(t *testing.T, method, path string, headers map[string][]string, apiID, apiName, apiVersion, opPath string) *policy.RequestContext {
+func newRequestHeaderContext(t *testing.T, method, path string, headers map[string][]string, apiID, apiName, apiVersion, opPath string) *policyv1alpha2.RequestHeaderContext {
 	t.Helper()
 	if headers == nil {
 		headers = map[string][]string{}
 	}
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
+	return &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
 			RequestID:     "req-1",
 			Metadata:      map[string]interface{}{},
 			APIId:         apiID,
@@ -278,15 +282,15 @@ func newRequestContext(t *testing.T, method, path string, headers map[string][]s
 			APIVersion:    apiVersion,
 			OperationPath: opPath,
 		},
-		Headers: policy.NewHeaders(headers),
+		Headers: policyv1alpha2.NewHeaders(headers),
 		Method:  method,
 		Path:    path,
 	}
 }
 
-func assertUnauthorizedJSON(t *testing.T, action policy.RequestAction) {
+func assertUnauthorizedJSON(t *testing.T, action policyv1alpha2.RequestHeaderAction) {
 	t.Helper()
-	resp, ok := action.(policy.ImmediateResponse)
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", action)
 	}
@@ -343,7 +347,20 @@ func sanitizeTestName(v string) string {
 func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
 	p := &APIKeyPolicy{}
 	prior := &policy.AuthContext{Authenticated: true, AuthType: "other"}
-	ctx := newRequestContext(t, "GET", "/orders", nil, "api-1", "OrdersAPI", "v1", "/orders")
+	// handleAuthSuccess uses v1alpha RequestContext
+	ctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:     "req-1",
+			Metadata:      map[string]interface{}{},
+			APIId:         "api-1",
+			APIName:       "OrdersAPI",
+			APIVersion:    "v1",
+			OperationPath: "/orders",
+		},
+		Headers: policy.NewHeaders(nil),
+		Method:  "GET",
+		Path:    "/orders",
+	}
 	ctx.SharedContext.AuthContext = prior
 
 	p.handleAuthSuccess(ctx)
@@ -359,7 +376,20 @@ func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
 func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnFailure(t *testing.T) {
 	p := &APIKeyPolicy{}
 	prior := &policy.AuthContext{Authenticated: true, AuthType: "other"}
-	ctx := newRequestContext(t, "GET", "/orders", nil, "api-1", "OrdersAPI", "v1", "/orders")
+	// handleAuthFailure uses v1alpha RequestContext
+	ctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:     "req-1",
+			Metadata:      map[string]interface{}{},
+			APIId:         "api-1",
+			APIName:       "OrdersAPI",
+			APIVersion:    "v1",
+			OperationPath: "/orders",
+		},
+		Headers: policy.NewHeaders(nil),
+		Method:  "GET",
+		Path:    "/orders",
+	}
 	ctx.SharedContext.AuthContext = prior
 
 	p.handleAuthFailure(ctx, 401, "json", "Valid API key required", "invalid API key")

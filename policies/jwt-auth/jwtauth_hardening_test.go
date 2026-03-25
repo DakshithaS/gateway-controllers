@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 func TestJWTAuthPolicy_HappyPath_RemoteJWKS_IssuerNameAudienceScope(t *testing.T) {
@@ -38,7 +38,7 @@ func TestJWTAuthPolicy_HappyPath_RemoteJWKS_IssuerNameAudienceScope(t *testing.T
 	params["audiences"] = []interface{}{"api-audience"}
 	params["requiredScopes"] = []interface{}{"read"}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -60,7 +60,7 @@ func TestJWTAuthPolicy_HappyPath_AudienceArray_AndScpArray(t *testing.T) {
 	params["audiences"] = []interface{}{"api-audience"}
 	params["requiredScopes"] = []interface{}{"write"}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -80,7 +80,7 @@ func TestJWTAuthPolicy_HappyPath_CustomHeaderName_AndPrefix(t *testing.T) {
 	params["headerName"] = "X-Auth-Token"
 	params["authHeaderPrefix"] = "JWT"
 
-	ctx, action := executeOnRequest(t, params, authHeader("X-Auth-Token", "JWT", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("X-Auth-Token", "JWT", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -112,14 +112,14 @@ func TestJWTAuthPolicy_HappyPath_LocalCert_WithClaimMappings_AndUserIdClaim(t *t
 	}
 	params["userIdClaim"] = "username"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 
-	mods, ok := action.(policy.UpstreamRequestModifications)
+	mods, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
-	if mods.SetHeaders["X-User-Email"] != "alice@example.com" {
+	if mods.HeadersToSet["X-User-Email"] != "alice@example.com" {
 		t.Fatalf("expected X-User-Email header to be set")
 	}
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Subject != "alice" {
@@ -135,10 +135,10 @@ func TestJWTAuthPolicy_Negative_MissingAuthorizationHeader(t *testing.T) {
 	params["errorMessageFormat"] = "plain"
 	params["errorMessage"] = "missing auth"
 
-	ctx, action := executeOnRequest(t, params, map[string][]string{})
+	ctx, action := executeOnRequestHeaders(t, params, map[string][]string{})
 	assertAuthFailure(t, ctx, action, 403)
 
-	resp := action.(policy.ImmediateResponse)
+	resp := action.(policyv1alpha2.ImmediateResponse)
 	if string(resp.Body) != "missing auth" {
 		t.Fatalf("expected plain error body")
 	}
@@ -159,7 +159,7 @@ func TestJWTAuthPolicy_Negative_WrongAuthorizationScheme(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["authHeaderScheme"] = "Bearer"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "JWT", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "JWT", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -167,7 +167,7 @@ func TestJWTAuthPolicy_Negative_MalformedJWT(t *testing.T) {
 	resetJWTAuthSingletonCache(t)
 
 	params := newRemoteParams("http://localhost:8080/jwks.json")
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", "not.a.jwt"))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", "not.a.jwt"))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -184,7 +184,7 @@ func TestJWTAuthPolicy_Negative_MissingAlgHeader(t *testing.T) {
 	}, "test-kid")
 
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -203,7 +203,7 @@ func TestJWTAuthPolicy_Negative_DisallowedAlgorithm(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["allowedAlgorithms"] = []interface{}{"ES256"}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -220,7 +220,7 @@ func TestJWTAuthPolicy_Negative_KidNotFoundInJWKS(t *testing.T) {
 	}, "missing-kid")
 
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -240,7 +240,7 @@ func TestJWTAuthPolicy_Edge_ExpWithinLeeway_Accepts(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["leeway"] = "30s"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -260,7 +260,7 @@ func TestJWTAuthPolicy_Edge_ExpBeyondLeeway_Rejects(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["leeway"] = "30s"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -280,7 +280,7 @@ func TestJWTAuthPolicy_Edge_NbfWithinLeeway_Accepts(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["leeway"] = "30s"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -300,7 +300,7 @@ func TestJWTAuthPolicy_Edge_NbfBeyondLeeway_Rejects(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["leeway"] = "30s"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -322,18 +322,18 @@ func TestJWTAuthPolicy_Edge_NegativeRetryCount_NoPanic(t *testing.T) {
 	params["jwksFetchRetryInterval"] = "1ms"
 
 	var (
-		ctx    *policy.RequestContext
-		action policy.RequestAction
+		ctx    *policyv1alpha2.RequestHeaderContext
+		action policyv1alpha2.RequestHeaderAction
 	)
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("OnRequest must not panic for invalid retry count: %v", recovered)
+			t.Fatalf("OnRequestHeaders must not panic for invalid retry count: %v", recovered)
 		}
 		assertAuthFailure(t, ctx, action, 401)
 	}()
 
-	ctx, action = executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action = executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 }
 
 func TestJWTAuthPolicy_Edge_RetryEventuallySucceeds(t *testing.T) {
@@ -367,7 +367,7 @@ func TestJWTAuthPolicy_Edge_RetryEventuallySucceeds(t *testing.T) {
 	params["jwksFetchRetryInterval"] = "1ms"
 	params["jwksFetchTimeout"] = "100ms"
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 
 	if got := atomic.LoadInt32(&requestCount); got != 3 {
@@ -401,12 +401,12 @@ func TestJWTAuthPolicy_Edge_JWKSCacheHit_SkipsRefetch(t *testing.T) {
 
 	p := mustGetPolicy(t, params)
 
-	ctx1 := createMockRequestContext(authHeader("Authorization", "Bearer", token))
-	action1 := p.OnRequest(ctx1, params)
+	ctx1 := createMockRequestHeaderContext(authHeader("Authorization", "Bearer", token))
+	action1 := p.(*JwtAuthPolicy).OnRequestHeaders(ctx1, params)
 	assertAuthSuccess(t, ctx1, action1)
 
-	ctx2 := createMockRequestContext(authHeader("Authorization", "Bearer", token))
-	action2 := p.OnRequest(ctx2, params)
+	ctx2 := createMockRequestHeaderContext(authHeader("Authorization", "Bearer", token))
+	action2 := p.(*JwtAuthPolicy).OnRequestHeaders(ctx2, params)
 	assertAuthSuccess(t, ctx2, action2)
 
 	if got := atomic.LoadInt32(&requestCount); got != 1 {
@@ -440,14 +440,14 @@ func TestJWTAuthPolicy_Edge_JWKSCacheExpiry_Refetches(t *testing.T) {
 
 	p := mustGetPolicy(t, params)
 
-	ctx1 := createMockRequestContext(authHeader("Authorization", "Bearer", token))
-	action1 := p.OnRequest(ctx1, params)
+	ctx1 := createMockRequestHeaderContext(authHeader("Authorization", "Bearer", token))
+	action1 := p.(*JwtAuthPolicy).OnRequestHeaders(ctx1, params)
 	assertAuthSuccess(t, ctx1, action1)
 
 	time.Sleep(25 * time.Millisecond)
 
-	ctx2 := createMockRequestContext(authHeader("Authorization", "Bearer", token))
-	action2 := p.OnRequest(ctx2, params)
+	ctx2 := createMockRequestHeaderContext(authHeader("Authorization", "Bearer", token))
+	action2 := p.(*JwtAuthPolicy).OnRequestHeaders(ctx2, params)
 	assertAuthSuccess(t, ctx2, action2)
 
 	if got := atomic.LoadInt32(&requestCount); got < 2 {
@@ -470,7 +470,7 @@ func TestJWTAuthPolicy_Security_AlgNoneRejected(t *testing.T) {
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["allowedAlgorithms"] = []interface{}{"RS256"}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -489,7 +489,7 @@ func TestJWTAuthPolicy_Security_ValidateIssuerTrue_RejectsUnknownIssuer(t *testi
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["validateIssuer"] = true
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -508,7 +508,7 @@ func TestJWTAuthPolicy_Security_ValidateIssuerFalse_AllowsIssuerMismatch_WithVal
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["validateIssuer"] = false
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -544,7 +544,7 @@ func TestJWTAuthPolicy_Security_UserIssuers_MultipleManagers_TriesFallbackManage
 	}
 	params["issuers"] = []interface{}{"km-bad", "km-good"}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -576,7 +576,7 @@ func TestJWTAuthPolicy_Security_MissingIss_ValidateIssuerToggle(t *testing.T) {
 			params := newRemoteParams(jwksServer.URL + "/jwks.json")
 			params["validateIssuer"] = tc.validate
 
-			ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+			ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 			if tc.expectPass {
 				assertAuthSuccess(t, ctx, action)
 			} else {
@@ -599,7 +599,7 @@ func TestJWTAuthPolicy_Security_AuthorizationSchemeCaseInsensitive(t *testing.T)
 	})
 
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "bearer", token))
 	assertAuthSuccess(t, ctx, action)
 }
 
@@ -641,10 +641,10 @@ func TestJWTAuthPolicy_Regression_ErrorFormats_JsonPlainMinimal(t *testing.T) {
 			params["errorMessage"] = "custom error message"
 			params["onFailureStatusCode"] = 401
 
-			ctx, action := executeOnRequest(t, params, map[string][]string{})
+			ctx, action := executeOnRequestHeaders(t, params, map[string][]string{})
 			assertAuthFailure(t, ctx, action, 401)
 
-			resp := action.(policy.ImmediateResponse)
+			resp := action.(policyv1alpha2.ImmediateResponse)
 			if resp.Headers["content-type"] != tc.expectedType {
 				t.Fatalf("expected content-type %s, got %s", tc.expectedType, resp.Headers["content-type"])
 			}
@@ -665,7 +665,7 @@ func TestJWTAuthPolicy_Regression_OnFailureStatusCodeHonored(t *testing.T) {
 
 	params := newRemoteParams("http://localhost:8080/jwks.json")
 	params["onFailureStatusCode"] = 403
-	ctx, action := executeOnRequest(t, params, map[string][]string{})
+	ctx, action := executeOnRequestHeaders(t, params, map[string][]string{})
 	assertAuthFailure(t, ctx, action, 403)
 }
 
@@ -685,7 +685,7 @@ func TestJWTAuthPolicy_Regression_MetadataSetOnSuccessAndFailure(t *testing.T) {
 		})
 		params := newRemoteParams(jwksServer.URL + "/jwks.json")
 
-		ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+		ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 		assertAuthSuccess(t, ctx, action)
 
 		if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.AuthType != "jwt" {
@@ -697,7 +697,7 @@ func TestJWTAuthPolicy_Regression_MetadataSetOnSuccessAndFailure(t *testing.T) {
 		resetJWTAuthSingletonCache(t)
 
 		params := newRemoteParams("http://localhost:8080/jwks.json")
-		ctx, action := executeOnRequest(t, params, map[string][]string{})
+		ctx, action := executeOnRequestHeaders(t, params, map[string][]string{})
 		assertAuthFailure(t, ctx, action, 401)
 
 		// On failure, AuthContext should indicate not authenticated
@@ -707,7 +707,7 @@ func TestJWTAuthPolicy_Regression_MetadataSetOnSuccessAndFailure(t *testing.T) {
 	})
 }
 
-func TestJWTAuthPolicy_Regression_ModeAndOnResponseContract(t *testing.T) {
+func TestJWTAuthPolicy_Regression_ModeContract(t *testing.T) {
 	resetJWTAuthSingletonCache(t)
 
 	p := mustGetPolicy(t, map[string]interface{}{})
@@ -717,21 +717,17 @@ func TestJWTAuthPolicy_Regression_ModeAndOnResponseContract(t *testing.T) {
 	}
 
 	mode := jwtPolicy.Mode()
-	if mode.RequestHeaderMode != policy.HeaderModeProcess {
+	if mode.RequestHeaderMode != policyv1alpha2.HeaderModeProcess {
 		t.Fatalf("expected RequestHeaderMode to be process")
 	}
-	if mode.RequestBodyMode != policy.BodyModeSkip {
+	if mode.RequestBodyMode != policyv1alpha2.BodyModeSkip {
 		t.Fatalf("expected RequestBodyMode to be skip")
 	}
-	if mode.ResponseHeaderMode != policy.HeaderModeSkip {
+	if mode.ResponseHeaderMode != policyv1alpha2.HeaderModeSkip {
 		t.Fatalf("expected ResponseHeaderMode to be skip")
 	}
-	if mode.ResponseBodyMode != policy.BodyModeSkip {
+	if mode.ResponseBodyMode != policyv1alpha2.BodyModeSkip {
 		t.Fatalf("expected ResponseBodyMode to be skip")
-	}
-
-	if action := jwtPolicy.OnResponse(&policy.ResponseContext{}, map[string]interface{}{}); action != nil {
-		t.Fatalf("expected nil response action, got %T", action)
 	}
 }
 
@@ -753,7 +749,7 @@ func TestJWTAuthPolicy_Regression_RequiredClaimsTypeMismatch(t *testing.T) {
 		"role": "admin",
 	}
 
-	ctx, action := executeOnRequest(t, params, authHeader("Authorization", "Bearer", token))
+	ctx, action := executeOnRequestHeaders(t, params, authHeader("Authorization", "Bearer", token))
 	assertAuthFailure(t, ctx, action, 401)
 }
 
@@ -866,18 +862,18 @@ func resetJWTAuthSingletonCache(t *testing.T) {
 	})
 }
 
-func executeOnRequest(t *testing.T, params map[string]interface{}, headers map[string][]string) (*policy.RequestContext, policy.RequestAction) {
+func executeOnRequestHeaders(t *testing.T, params map[string]interface{}, headers map[string][]string) (*policyv1alpha2.RequestHeaderContext, policyv1alpha2.RequestHeaderAction) {
 	t.Helper()
 	p := mustGetPolicy(t, params)
-	ctx := createMockRequestContext(headers)
-	return ctx, p.OnRequest(ctx, params)
+	ctx := createMockRequestHeaderContext(headers)
+	return ctx, p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 }
 
-func mustGetPolicy(t *testing.T, params map[string]interface{}) policy.Policy {
+func mustGetPolicy(t *testing.T, params map[string]interface{}) policyv1alpha2.Policy {
 	t.Helper()
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 	return p
 }
@@ -917,7 +913,7 @@ func authHeader(headerName, scheme, token string) map[string][]string {
 	}
 }
 
-func assertAuthSuccess(t *testing.T, ctx *policy.RequestContext, action policy.RequestAction) {
+func assertAuthSuccess(t *testing.T, ctx *policyv1alpha2.RequestHeaderContext, action policyv1alpha2.RequestHeaderAction) {
 	t.Helper()
 
 	if ctx == nil {
@@ -926,12 +922,12 @@ func assertAuthSuccess(t *testing.T, ctx *policy.RequestContext, action policy.R
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("expected auth success, got unauthenticated context")
 	}
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
-func assertAuthFailure(t *testing.T, ctx *policy.RequestContext, action policy.RequestAction, statusCode int) {
+func assertAuthFailure(t *testing.T, ctx *policyv1alpha2.RequestHeaderContext, action policyv1alpha2.RequestHeaderAction, statusCode int) {
 	t.Helper()
 
 	if ctx == nil {
@@ -941,7 +937,7 @@ func assertAuthFailure(t *testing.T, ctx *policy.RequestContext, action policy.R
 		t.Fatalf("expected auth failure, got authenticated context")
 	}
 
-	resp, ok := action.(policy.ImmediateResponse)
+	resp, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", action)
 	}
@@ -952,12 +948,10 @@ func assertAuthFailure(t *testing.T, ctx *policy.RequestContext, action policy.R
 
 func createRS256TokenWithKid(t *testing.T, privateKey *rsa.PrivateKey, claims map[string]interface{}, kid string) string {
 	t.Helper()
+	claims = normalizeClaims(claims)
 
-	normalizedClaims := normalizeClaims(claims)
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(normalizedClaims))
-	if kid != "" {
-		token.Header["kid"] = kid
-	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claims))
+	token.Header["kid"] = kid
 
 	tokenString, err := token.SignedString(privateKey)
 	if err != nil {
@@ -968,78 +962,65 @@ func createRS256TokenWithKid(t *testing.T, privateKey *rsa.PrivateKey, claims ma
 
 func createUnsignedNoneToken(t *testing.T, claims map[string]interface{}) string {
 	t.Helper()
+	claims = normalizeClaims(claims)
 
-	normalizedClaims := normalizeClaims(claims)
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims(normalizedClaims))
-	token.Header["kid"] = "none-kid"
+	token := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims(claims))
 
 	tokenString, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
 	if err != nil {
-		t.Fatalf("failed to sign none token: %v", err)
+		t.Fatalf("failed to create unsigned token: %v", err)
 	}
 	return tokenString
 }
 
 func createTokenWithoutAlgHeader(t *testing.T, privateKey *rsa.PrivateKey, claims map[string]interface{}, kid string) string {
 	t.Helper()
+	claims = normalizeClaims(claims)
 
-	normalizedClaims := normalizeClaims(claims)
-	header := map[string]interface{}{
-		"typ": "JWT",
-	}
-	if kid != "" {
-		header["kid"] = kid
-	}
-
-	headerJSON, err := json.Marshal(header)
+	headerJSON, err := json.Marshal(map[string]string{"typ": "JWT", "kid": kid})
 	if err != nil {
 		t.Fatalf("failed to marshal header: %v", err)
 	}
-	payloadJSON, err := json.Marshal(normalizedClaims)
+	payloadJSON, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatalf("failed to marshal claims: %v", err)
 	}
 
-	headerEncoded := base64.RawURLEncoding.EncodeToString(headerJSON)
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payloadJSON)
-	signingInput := headerEncoded + "." + payloadEncoded
+	header := base64.RawURLEncoding.EncodeToString(headerJSON)
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := header + "." + payload
 
-	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	hashed := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
 	if err != nil {
-		t.Fatalf("failed to create signature: %v", err)
+		t.Fatalf("failed to sign token: %v", err)
 	}
 
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func normalizeClaims(claims map[string]interface{}) map[string]interface{} {
-	normalized := make(map[string]interface{}, len(claims)+2)
-	for k, v := range claims {
-		normalized[k] = v
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
 	}
-	if _, ok := normalized["exp"]; !ok {
-		normalized["exp"] = time.Now().Add(time.Hour).Unix()
+	if _, ok := claims["iat"]; !ok {
+		claims["iat"] = time.Now().Unix()
 	}
-	if _, ok := normalized["iat"]; !ok {
-		normalized["iat"] = time.Now().Unix()
-	}
-	return normalized
+	return claims
 }
 
 func writeJWKSResponse(t *testing.T, w http.ResponseWriter, publicKey *rsa.PublicKey, kid string) {
 	t.Helper()
+	nBytes := publicKey.N.Bytes()
+	nB64 := base64.RawURLEncoding.EncodeToString(nBytes)
 
-	nB64 := base64.RawURLEncoding.EncodeToString(publicKey.N.Bytes())
-
-	e := publicKey.E
-	eBytes := make([]byte, 0, 4)
-	for e > 0 {
-		eBytes = append([]byte{byte(e & 0xFF)}, eBytes...)
-		e >>= 8
-	}
-	if len(eBytes) == 0 {
-		eBytes = []byte{0}
+	eBytes := make([]byte, 4)
+	eBytes[0] = byte((publicKey.E >> 24) & 0xFF)
+	eBytes[1] = byte((publicKey.E >> 16) & 0xFF)
+	eBytes[2] = byte((publicKey.E >> 8) & 0xFF)
+	eBytes[3] = byte(publicKey.E & 0xFF)
+	for len(eBytes) > 1 && eBytes[0] == 0 {
+		eBytes = eBytes[1:]
 	}
 	eB64 := base64.RawURLEncoding.EncodeToString(eBytes)
 
@@ -1058,6 +1039,6 @@ func writeJWKSResponse(t *testing.T, w http.ResponseWriter, publicKey *rsa.Publi
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(jwks); err != nil {
-		t.Fatalf("failed to encode JWKS response: %v", err)
+		t.Logf("Failed to encode JWKS: %v", err)
 	}
 }

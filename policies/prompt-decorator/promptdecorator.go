@@ -287,7 +287,7 @@ func (p *PromptDecoratorPolicy) OnRequest(ctx *policy.RequestContext, params map
 		// If malformed entries found, return error without modifying the slice
 		if len(malformedEntries) > 0 {
 			errorDetails := fmt.Sprintf("malformed entries at %s", strings.Join(malformedEntries, "; "))
-			return p.buildErrorResponse("Array contains non-map elements", fmt.Errorf(errorDetails))
+			return p.buildErrorResponse("Array contains non-map elements", fmt.Errorf("%s", errorDetails))
 		}
 
 		// Create decoration messages from decoration config

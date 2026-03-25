@@ -736,6 +736,128 @@ func (p *McpAclListPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ m
 	return policyv1alpha2.UpstreamRequestModifications{}
 }
 
+// OnResponseBody enforces ACL rules on the MCP response body.
+func (p *McpAclListPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseContext, _ map[string]any) policyv1alpha2.ResponseAction {
+	if !isMcpPostRequest(ctx.RequestMethod, ctx.OperationPath) {
+		return nil
+	}
+	slog.Debug("MCP ACL List Policy: OnResponseBody started")
+
+	if ctx.Metadata == nil {
+		return nil
+	}
+
+	capabilityType, _ := ctx.Metadata[metadataMcpCapabilityType].(string)
+	action, _ := ctx.Metadata[metadataMcpAction].(string)
+	if capabilityType == "" || action != "list" {
+		slog.Debug("MCP ACL List Policy: OnResponseBody skipped, action is not list", "capabilityType", capabilityType, "action", action)
+		return nil
+	}
+
+	config := p.getAclConfig(capabilityType)
+	if !config.Enabled {
+		return nil
+	}
+
+	if ctx.ResponseBody == nil || !ctx.ResponseBody.Present {
+		return nil
+	}
+
+	if isEventStreamV2(ctx.ResponseHeaders) {
+		events := parseEventStream(ctx.ResponseBody.Content)
+		updated := false
+		for i, event := range events {
+			if strings.TrimSpace(event.data) == "" {
+				continue
+			}
+			var responsePayload map[string]any
+			if err := json.Unmarshal([]byte(event.data), &responsePayload); err != nil {
+				continue
+			}
+			if _, hasError := responsePayload["error"]; hasError {
+				slog.Debug("MCP ACL List Policy: Upstream response contains error", "capabilityType", capabilityType)
+				continue
+			}
+			resultRaw, ok := responsePayload["result"].(map[string]any)
+			if !ok {
+				slog.Debug("MCP ACL List Policy: Invalid MCP response result", "capabilityType", capabilityType, "error", "result not an object")
+				continue
+			}
+
+			listKey := capabilityType
+			existing, ok := resultRaw[listKey].([]any)
+			if !ok {
+				continue
+			}
+			filtered, changed := filterListItems(existing, capabilityType, config)
+			if !changed {
+				slog.Debug("MCP ACL List Policy: No changes in list items", "capabilityType", capabilityType)
+				continue
+			}
+
+			resultRaw[listKey] = filtered
+			responsePayload["result"] = resultRaw
+
+			updatedPayload, err := json.Marshal(responsePayload)
+			if err != nil {
+				slog.Debug("MCP ACL List Policy: Failed to marshal updated response", "capabilityType", capabilityType, "error", err)
+				continue
+			}
+			events[i].data = string(updatedPayload)
+			updated = true
+		}
+
+		if !updated {
+			return nil
+		}
+		return policyv1alpha2.DownstreamResponseModifications{
+			Body: buildEventStream(events),
+		}
+	}
+
+	var responsePayload map[string]any
+	if err := json.Unmarshal(ctx.ResponseBody.Content, &responsePayload); err != nil {
+		slog.Debug("MCP ACL List Policy: Failed to parse MCP response", "capabilityType", capabilityType, "error", err)
+		return nil
+	}
+
+	if _, hasError := responsePayload["error"]; hasError {
+		slog.Debug("MCP ACL List Policy: Upstream response contains error", "capabilityType", capabilityType)
+		return nil
+	}
+
+	resultRaw, ok := responsePayload["result"].(map[string]any)
+	if !ok {
+		slog.Debug("MCP ACL List Policy: Invalid MCP response result", "capabilityType", capabilityType, "error", "result not an object")
+		return nil
+	}
+
+	listKey := capabilityType
+	existing, ok := resultRaw[listKey].([]any)
+	if !ok {
+		return nil
+	}
+
+	filtered, changed := filterListItems(existing, capabilityType, config)
+	if !changed {
+		slog.Debug("MCP ACL List Policy: No changes in list items", "capabilityType", capabilityType)
+		return nil
+	}
+
+	resultRaw[listKey] = filtered
+	responsePayload["result"] = resultRaw
+
+	updatedPayload, err := json.Marshal(responsePayload)
+	if err != nil {
+		slog.Debug("MCP ACL List Policy: Failed to marshal updated response", "capabilityType", capabilityType, "error", err)
+		return nil
+	}
+
+	return policyv1alpha2.DownstreamResponseModifications{
+		Body: updatedPayload,
+	}
+}
+
 // getSessionIDV2 extracts the MCP session ID from v1alpha2 headers.
 func getSessionIDV2(headers *policyv1alpha2.Headers) string {
 	if headers == nil {

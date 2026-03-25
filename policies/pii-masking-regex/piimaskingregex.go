@@ -503,6 +503,9 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(ctx *policyv1alpha2.RequestCo
 	if p.params.RedactPII {
 		modifiedContent = p.redactPIIFromContent(extractedValue, p.params.PIIEntities)
 	} else {
+		if ctx.Metadata == nil {
+			ctx.Metadata = make(map[string]interface{})
+		}
 		modifiedContent, err = p.maskPIIFromContent(extractedValue, p.params.PIIEntities, ctx.Metadata)
 		if err != nil {
 			return p.buildErrorResponseV2(fmt.Sprintf("error masking PII: %v", err)).(policyv1alpha2.RequestAction)

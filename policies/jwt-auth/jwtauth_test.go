@@ -14,7 +14,7 @@
  *  limitations under the License.
  *
  */
- 
+
 package jwtauth
 
 import (
@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
 )
 
@@ -60,7 +61,7 @@ func TestJWTAuthPolicy_ValidToken(t *testing.T) {
 	})
 
 	// Create request context with Authorization header
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -95,13 +96,13 @@ func TestJWTAuthPolicy_ValidToken(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify successful authentication
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
@@ -111,26 +112,26 @@ func TestJWTAuthPolicy_ValidToken(t *testing.T) {
 		t.Errorf("Expected AuthType='jwt', got %q", ctx.SharedContext.AuthContext.AuthType)
 	}
 
-	// Verify it's an UpstreamRequestModifications action
-	modifications, ok := action.(policy.UpstreamRequestModifications)
+	// Verify it's an UpstreamRequestHeaderModifications action
+	modifications, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 
 	// Verify claim mappings were applied as headers
-	if modifications.SetHeaders["X-User-ID"] != "user123" {
-		t.Errorf("Expected X-User-ID header to be 'user123', got %s", modifications.SetHeaders["X-User-ID"])
+	if modifications.HeadersToSet["X-User-ID"] != "user123" {
+		t.Errorf("Expected X-User-ID header to be 'user123', got %s", modifications.HeadersToSet["X-User-ID"])
 	}
 
-	if modifications.SetHeaders["X-User-Name"] != "John Doe" {
-		t.Errorf("Expected X-User-Name header to be 'John Doe', got %s", modifications.SetHeaders["X-User-Name"])
+	if modifications.HeadersToSet["X-User-Name"] != "John Doe" {
+		t.Errorf("Expected X-User-Name header to be 'John Doe', got %s", modifications.HeadersToSet["X-User-Name"])
 	}
 }
 
 // TestJWTAuthPolicy_MissingToken tests authentication failure when Authorization header is missing
 func TestJWTAuthPolicy_MissingToken(t *testing.T) {
 	// Create request context without Authorization header
-	ctx := createMockRequestContext(map[string][]string{})
+	ctx := createMockRequestHeaderContext(map[string][]string{})
 
 	params := map[string]interface{}{
 		"headerName":          "Authorization",
@@ -151,12 +152,12 @@ func TestJWTAuthPolicy_MissingToken(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify authentication failed
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
@@ -164,7 +165,7 @@ func TestJWTAuthPolicy_MissingToken(t *testing.T) {
 	}
 
 	// Verify it's an ImmediateResponse
-	response, ok := action.(policy.ImmediateResponse)
+	response, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -176,7 +177,7 @@ func TestJWTAuthPolicy_MissingToken(t *testing.T) {
 
 // TestJWTAuthPolicy_InvalidTokenFormat tests with malformed token
 func TestJWTAuthPolicy_InvalidTokenFormat(t *testing.T) {
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {"Bearer invalid.token"},
 	})
 
@@ -196,18 +197,18 @@ func TestJWTAuthPolicy_InvalidTokenFormat(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=false for invalid token format")
 	}
 
-	_, ok := action.(policy.ImmediateResponse)
+	_, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for invalid token, got %T", action)
 	}
@@ -226,7 +227,7 @@ func TestJWTAuthPolicy_ExpiredToken(t *testing.T) {
 		"iss": "https://issuer.example.com",
 	}, expiredTime)
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -245,18 +246,18 @@ func TestJWTAuthPolicy_ExpiredToken(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=false for expired token")
 	}
 
-	_, ok := action.(policy.ImmediateResponse)
+	_, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for expired token")
 	}
@@ -274,7 +275,7 @@ func TestJWTAuthPolicy_InvalidAudience(t *testing.T) {
 		"iss": "https://issuer.example.com",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -293,18 +294,18 @@ func TestJWTAuthPolicy_InvalidAudience(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=false for invalid audience")
 	}
 
-	_, ok := action.(policy.ImmediateResponse)
+	_, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for invalid audience")
 	}
@@ -322,7 +323,7 @@ func TestJWTAuthPolicy_CustomClaims(t *testing.T) {
 		"iss":  "https://issuer.example.com",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -343,20 +344,20 @@ func TestJWTAuthPolicy_CustomClaims(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true when required claims match")
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications for valid token with matching claims")
+		t.Fatalf("Expected UpstreamRequestHeaderModifications for valid token with matching claims")
 	}
 }
 
@@ -372,7 +373,7 @@ func TestJWTAuthPolicy_InvalidCustomClaims(t *testing.T) {
 		"iss":  "https://issuer.example.com",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -393,18 +394,18 @@ func TestJWTAuthPolicy_InvalidCustomClaims(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=false for mismatched required claims")
 	}
 
-	_, ok := action.(policy.ImmediateResponse)
+	_, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for invalid claims")
 	}
@@ -426,7 +427,7 @@ func TestJWTAuthPolicy_InvalidSignature(t *testing.T) {
 		"iss": "https://issuer.example.com",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -444,19 +445,19 @@ func TestJWTAuthPolicy_InvalidSignature(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Should fail because signature doesn't match the JWKS public key
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=false for token signed with invalid key")
 	}
 
-	response, ok := action.(policy.ImmediateResponse)
+	response, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for invalid signature, got %T", action)
 	}
@@ -477,7 +478,7 @@ func TestJWTAuthPolicy_CustomHeaderPrefix(t *testing.T) {
 		"iss": "https://issuer.example.com",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("JWT %s", token)},
 	})
 
@@ -496,26 +497,26 @@ func TestJWTAuthPolicy_CustomHeaderPrefix(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true with custom prefix override")
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications with custom header prefix")
+		t.Fatalf("Expected UpstreamRequestHeaderModifications with custom header prefix")
 	}
 }
 
 // TestJWTAuthPolicy_ErrorResponseFormat tests different error response formats
 func TestJWTAuthPolicy_ErrorResponseFormatJSON(t *testing.T) {
-	ctx := createMockRequestContext(map[string][]string{})
+	ctx := createMockRequestHeaderContext(map[string][]string{})
 
 	params := map[string]interface{}{
 		"errorMessageFormat":  "json",
@@ -531,14 +532,14 @@ func TestJWTAuthPolicy_ErrorResponseFormatJSON(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
-	response := action.(policy.ImmediateResponse)
+	response := action.(policyv1alpha2.ImmediateResponse)
 	if response.Headers["content-type"] != "application/json" {
 		t.Errorf("Expected content-type to be application/json")
 	}
@@ -550,7 +551,7 @@ func TestJWTAuthPolicy_ErrorResponseFormatJSON(t *testing.T) {
 }
 
 func TestJWTAuthPolicy_ErrorResponseFormatPlain(t *testing.T) {
-	ctx := createMockRequestContext(map[string][]string{})
+	ctx := createMockRequestHeaderContext(map[string][]string{})
 
 	params := map[string]interface{}{
 		"errorMessageFormat":  "plain",
@@ -566,14 +567,14 @@ func TestJWTAuthPolicy_ErrorResponseFormatPlain(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
-	response := action.(policy.ImmediateResponse)
+	response := action.(policyv1alpha2.ImmediateResponse)
 	if response.Headers["content-type"] != "text/plain" {
 		t.Errorf("Expected content-type to be text/plain")
 	}
@@ -626,7 +627,7 @@ func TestJWTAuthPolicy_RemoteWithSelfSignedCert(t *testing.T) {
 	})
 
 	// Create request context
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -653,22 +654,22 @@ func TestJWTAuthPolicy_RemoteWithSelfSignedCert(t *testing.T) {
 		"audiences": []interface{}{"api-audience"},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify successful authentication - token validated against self-signed JWKS
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true with self-signed certificate")
 	}
 
-	// Verify it's an UpstreamRequestModifications action
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+	// Verify it's an UpstreamRequestHeaderModifications action
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -719,7 +720,7 @@ func TestJWTAuthPolicy_SkipTlsVerify_Success(t *testing.T) {
 	})
 
 	// Create request context
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -746,22 +747,22 @@ func TestJWTAuthPolicy_SkipTlsVerify_Success(t *testing.T) {
 		"audiences": []interface{}{"api-audience"},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify successful authentication - TLS verification was skipped
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true with skipTlsVerify=true")
 	}
 
-	// Verify it's an UpstreamRequestModifications action
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+	// Verify it's an UpstreamRequestHeaderModifications action
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -812,7 +813,7 @@ func TestJWTAuthPolicy_SkipTlsVerify_False_Fails(t *testing.T) {
 	})
 
 	// Create request context
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -840,13 +841,13 @@ func TestJWTAuthPolicy_SkipTlsVerify_False_Fails(t *testing.T) {
 		"jwksFetchRetryCount": 0,
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify authentication failed - TLS verification should fail for self-signed cert
 	if ctx.SharedContext.AuthContext == nil || ctx.SharedContext.AuthContext.Authenticated {
@@ -854,7 +855,7 @@ func TestJWTAuthPolicy_SkipTlsVerify_False_Fails(t *testing.T) {
 	}
 
 	// Verify it's an ImmediateResponse (error)
-	response, ok := action.(policy.ImmediateResponse)
+	response, ok := action.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse for TLS verification failure, got %T", action)
 	}
@@ -880,7 +881,7 @@ func TestJWTAuthPolicy_LocalInlineCertificate(t *testing.T) {
 	pubKeyPEM := publicKeyToPEM(t, publicKey)
 
 	// Create request context
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -906,22 +907,22 @@ func TestJWTAuthPolicy_LocalInlineCertificate(t *testing.T) {
 		"audiences": []interface{}{"api-audience"},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify successful authentication
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true with inline certificate")
 	}
 
-	// Verify it's an UpstreamRequestModifications action
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+	// Verify it's an UpstreamRequestHeaderModifications action
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -942,7 +943,7 @@ func TestJWTAuthPolicy_LocalCertificateFile(t *testing.T) {
 	defer os.Remove(certPath)
 
 	// Create request context
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -968,22 +969,22 @@ func TestJWTAuthPolicy_LocalCertificateFile(t *testing.T) {
 		"audiences": []interface{}{"api-audience"},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("Failed to create policy: %v", err)
 	}
 
 	// Execute policy
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Verify successful authentication
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Errorf("Expected AuthContext.Authenticated=true with certificate file")
 	}
 
-	// Verify it's an UpstreamRequestModifications action
-	if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+	// Verify it's an UpstreamRequestHeaderModifications action
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1066,6 +1067,8 @@ func createJWKSServer(t *testing.T, publicKey *rsa.PublicKey, kid string) *httpt
 	return server
 }
 
+// createMockRequestContext creates a v1alpha RequestContext for private helper tests
+// (handleAuthSuccess, handleAuthFailure) which still use the v1alpha interface.
 func createMockRequestContext(headers map[string][]string) *policy.RequestContext {
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{
@@ -1079,7 +1082,18 @@ func createMockRequestContext(headers map[string][]string) *policy.RequestContex
 	}
 }
 
-// createTestHeaders is no longer needed with NewHeaders
+// createMockRequestHeaderContext creates a v1alpha2 RequestHeaderContext for OnRequestHeaders tests.
+func createMockRequestHeaderContext(headers map[string][]string) *policyv1alpha2.RequestHeaderContext {
+	return &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "test-request-id",
+			Metadata:  make(map[string]interface{}),
+		},
+		Headers: policyv1alpha2.NewHeaders(headers),
+		Path:    "/api/test",
+		Method:  "GET",
+	}
+}
 
 // createHTTPSJWKSServerUnstarted creates an unstarted HTTPS server for initial hostname detection
 func createHTTPSJWKSServerUnstarted(t *testing.T, publicKey *rsa.PublicKey, kid string) *httptest.Server {
@@ -1216,89 +1230,6 @@ func createSelfSignedCertForHost(t *testing.T, hostURL string) (string, []byte, 
 	return certFile.Name() + ":" + keyFile.Name(), certPEM, caFile.Name()
 }
 
-// // createSelfSignedCert creates a self-signed certificate for testing HTTPS endpoints
-// func createSelfSignedCert(t *testing.T) (string, []byte, string) {
-// 	// Generate RSA key
-// 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-// 	if err != nil {
-// 		t.Fatalf("Failed to generate private key: %v", err)
-// 	}
-
-// 	// Create certificate template
-// 	template := &x509.Certificate{
-// 		SerialNumber: big.NewInt(1),
-// 		Subject: pkix.Name{
-// 			Organization: []string{"Test"},
-// 			CommonName:   "localhost",
-// 		},
-// 		NotBefore:             time.Now(),
-// 		NotAfter:              time.Now().Add(24 * time.Hour),
-// 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-// 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-// 		BasicConstraintsValid: true,
-// 		IsCA:                  true,
-// 		DNSNames:              []string{"localhost", "127.0.0.1"},
-// 	}
-
-// 	// Create self-signed certificate
-// 	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
-// 	if err != nil {
-// 		t.Fatalf("Failed to create certificate: %v", err)
-// 	}
-
-// 	// Encode certificate to PEM
-// 	certPEM := pem.EncodeToMemory(&pem.Block{
-// 		Type:  "CERTIFICATE",
-// 		Bytes: certBytes,
-// 	})
-
-// 	// Encode private key to PEM
-// 	privKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-// 	if err != nil {
-// 		t.Fatalf("Failed to marshal private key: %v", err)
-// 	}
-
-// 	keyPEM := pem.EncodeToMemory(&pem.Block{
-// 		Type:  "PRIVATE KEY",
-// 		Bytes: privKeyBytes,
-// 	})
-
-// 	// Write certificate to temporary file
-// 	certFile, err := os.CreateTemp("", "test-cert-*.pem")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create cert temporary file: %v", err)
-// 	}
-// 	defer certFile.Close()
-
-// 	if _, err := certFile.Write(certPEM); err != nil {
-// 		t.Fatalf("Failed to write certificate to file: %v", err)
-// 	}
-
-// 	// Write private key to temporary file
-// 	keyFile, err := os.CreateTemp("", "test-key-*.pem")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create key temporary file: %v", err)
-// 	}
-// 	defer keyFile.Close()
-
-// 	if _, err := keyFile.Write(keyPEM); err != nil {
-// 		t.Fatalf("Failed to write key to file: %v", err)
-// 	}
-
-// 	// Write CA cert to separate temporary file (for client validation)
-// 	caFile, err := os.CreateTemp("", "test-ca-*.pem")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create CA temp file: %v", err)
-// 	}
-// 	defer caFile.Close()
-
-// 	if _, err := caFile.Write(certPEM); err != nil {
-// 		t.Fatalf("Failed to write CA cert to file: %v", err)
-// 	}
-
-// 	return certFile.Name() + ":" + keyFile.Name(), certPEM, caFile.Name()
-// }
-
 // createHTTPSJWKSServer creates an HTTPS JWKS endpoint with self-signed certificate
 func createHTTPSJWKSServer(t *testing.T, publicKey *rsa.PublicKey, kid string, certKeyPath string) *httptest.Server {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1407,7 +1338,7 @@ func TestJWTAuthPolicy_UserIdClaim_DefaultSub(t *testing.T) {
 		"aud": "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1427,12 +1358,12 @@ func TestJWTAuthPolicy_UserIdClaim_DefaultSub(t *testing.T) {
 		// userIdClaim not specified, should default to "sub"
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1443,9 +1374,9 @@ func TestJWTAuthPolicy_UserIdClaim_DefaultSub(t *testing.T) {
 		t.Errorf("Expected Subject='user-12345', got %q", ctx.SharedContext.AuthContext.Subject)
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1464,7 +1395,7 @@ func TestJWTAuthPolicy_UserIdClaim_CustomClaim(t *testing.T) {
 		"aud":     "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1484,12 +1415,12 @@ func TestJWTAuthPolicy_UserIdClaim_CustomClaim(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1503,9 +1434,9 @@ func TestJWTAuthPolicy_UserIdClaim_CustomClaim(t *testing.T) {
 		t.Errorf("Expected Properties[\"user_id\"]='custom-user-9999', got %q", ctx.SharedContext.AuthContext.Properties["user_id"])
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1523,7 +1454,7 @@ func TestJWTAuthPolicy_UserIdClaim_EmailClaim(t *testing.T) {
 		"aud":   "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1543,12 +1474,12 @@ func TestJWTAuthPolicy_UserIdClaim_EmailClaim(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1562,9 +1493,9 @@ func TestJWTAuthPolicy_UserIdClaim_EmailClaim(t *testing.T) {
 		t.Errorf("Expected Properties[\"email\"]='alice@example.com', got %q", ctx.SharedContext.AuthContext.Properties["email"])
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1582,7 +1513,7 @@ func TestJWTAuthPolicy_UserIdClaim_MissingClaim(t *testing.T) {
 		// Note: no 'preferred_username' claim
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1602,12 +1533,12 @@ func TestJWTAuthPolicy_UserIdClaim_MissingClaim(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	// Authentication should still succeed even if a custom claim doesn't exist
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
@@ -1619,9 +1550,9 @@ func TestJWTAuthPolicy_UserIdClaim_MissingClaim(t *testing.T) {
 		t.Errorf("Expected Subject='user-12345' (from sub), got %q", ctx.SharedContext.AuthContext.Subject)
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1639,7 +1570,7 @@ func TestJWTAuthPolicy_UserIdClaim_NumericValue(t *testing.T) {
 		"aud":        "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1659,12 +1590,12 @@ func TestJWTAuthPolicy_UserIdClaim_NumericValue(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1678,9 +1609,9 @@ func TestJWTAuthPolicy_UserIdClaim_NumericValue(t *testing.T) {
 		t.Errorf("Expected Properties[\"account_id\"]='987654321', got %q", ctx.SharedContext.AuthContext.Properties["account_id"])
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1697,7 +1628,7 @@ func TestJWTAuthPolicy_UserIdClaim_EmptyString(t *testing.T) {
 		"aud": "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1717,12 +1648,12 @@ func TestJWTAuthPolicy_UserIdClaim_EmptyString(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1733,9 +1664,9 @@ func TestJWTAuthPolicy_UserIdClaim_EmptyString(t *testing.T) {
 		t.Errorf("Expected Subject='user-12345' (from sub), got %q", ctx.SharedContext.AuthContext.Subject)
 	}
 
-	_, ok := action.(policy.UpstreamRequestModifications)
+	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 }
 
@@ -1755,7 +1686,7 @@ func TestJWTAuthPolicy_UserIdClaim_WithClaimMappings(t *testing.T) {
 		"aud":      "api-audience",
 	})
 
-	ctx := createMockRequestContext(map[string][]string{
+	ctx := createMockRequestHeaderContext(map[string][]string{
 		"authorization": {fmt.Sprintf("Bearer %s", token)},
 	})
 
@@ -1779,12 +1710,12 @@ func TestJWTAuthPolicy_UserIdClaim_WithClaimMappings(t *testing.T) {
 		},
 	}
 
-	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, params)
 	if err != nil {
-		t.Fatalf("GetPolicy failed: %v", err)
+		t.Fatalf("GetPolicyV2 failed: %v", err)
 	}
 
-	action := p.OnRequest(ctx, params)
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(ctx, params)
 
 	if ctx.SharedContext.AuthContext == nil || !ctx.SharedContext.AuthContext.Authenticated {
 		t.Fatalf("Expected AuthContext.Authenticated=true")
@@ -1796,20 +1727,22 @@ func TestJWTAuthPolicy_UserIdClaim_WithClaimMappings(t *testing.T) {
 	}
 
 	// Verify claim mappings were also applied
-	modifications, ok := action.(policy.UpstreamRequestModifications)
+	modifications, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Fatalf("Expected UpstreamRequestModifications, got %T", action)
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
 	}
 
-	if modifications.SetHeaders["X-User-Email"] != "john@example.com" {
-		t.Errorf("Expected X-User-Email='john@example.com', got '%v'", modifications.SetHeaders["X-User-Email"])
+	if modifications.HeadersToSet["X-User-Email"] != "john@example.com" {
+		t.Errorf("Expected X-User-Email='john@example.com', got '%v'", modifications.HeadersToSet["X-User-Email"])
 	}
 
-	if modifications.SetHeaders["X-User-Role"] != "admin" {
-		t.Errorf("Expected X-User-Role='admin', got '%v'", modifications.SetHeaders["X-User-Role"])
+	if modifications.HeadersToSet["X-User-Role"] != "admin" {
+		t.Errorf("Expected X-User-Role='admin', got '%v'", modifications.HeadersToSet["X-User-Role"])
 	}
 }
 
+// TestJWTAuthPolicy_AuthContext_PreviousPreserved_OnSuccess tests that the v1alpha helper
+// chains AuthContext entries on success.
 func TestJWTAuthPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
 	p := &JwtAuthPolicy{}
 	prior := &policy.AuthContext{Authenticated: true, AuthType: "other"}
@@ -1827,6 +1760,8 @@ func TestJWTAuthPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
 	}
 }
 
+// TestJWTAuthPolicy_AuthContext_PreviousPreserved_OnFailure tests that the v1alpha helper
+// chains AuthContext entries on failure.
 func TestJWTAuthPolicy_AuthContext_PreviousPreserved_OnFailure(t *testing.T) {
 	p := &JwtAuthPolicy{}
 	prior := &policy.AuthContext{Authenticated: true, AuthType: "other"}

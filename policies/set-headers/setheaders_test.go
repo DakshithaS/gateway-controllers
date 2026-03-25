@@ -21,27 +21,27 @@ import (
 	"strings"
 	"testing"
 
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 // Helper function to create test headers
-func createTestHeaders(headers map[string]string) *policy.Headers {
+func createTestHeaders(headers map[string]string) *policyv1alpha2.Headers {
 	headerMap := make(map[string][]string)
 	for k, v := range headers {
 		headerMap[k] = []string{v}
 	}
-	return policy.NewHeaders(headerMap)
+	return policyv1alpha2.NewHeaders(headerMap)
 }
 
 func TestSetHeadersPolicy_Mode(t *testing.T) {
 	p := &SetHeadersPolicy{}
 	mode := p.Mode()
 
-	expectedMode := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeSkip,
-		ResponseHeaderMode: policy.HeaderModeProcess,
-		ResponseBodyMode:   policy.BodyModeSkip,
+	expectedMode := policyv1alpha2.ProcessingMode{
+		RequestHeaderMode:  policyv1alpha2.HeaderModeProcess,
+		RequestBodyMode:    policyv1alpha2.BodyModeSkip,
+		ResponseHeaderMode: policyv1alpha2.HeaderModeProcess,
+		ResponseBodyMode:   policyv1alpha2.BodyModeSkip,
 	}
 
 	if mode != expectedMode {
@@ -50,10 +50,10 @@ func TestSetHeadersPolicy_Mode(t *testing.T) {
 }
 
 func TestGetPolicy(t *testing.T) {
-	metadata := policy.PolicyMetadata{}
+	metadata := policyv1alpha2.PolicyMetadata{}
 	params := map[string]interface{}{}
 
-	p, err := GetPolicy(metadata, params)
+	p, err := GetPolicyV2(metadata, params)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -67,9 +67,13 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
-func TestSetHeadersPolicy_OnRequest_NoHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnRequestHeaders_NoHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -77,22 +81,26 @@ func TestSetHeadersPolicy_OnRequest_NoHeaders(t *testing.T) {
 
 	// No requestHeaders parameter
 	params := map[string]interface{}{}
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
 	// Should return empty modifications
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 0 {
-		t.Errorf("Expected no headers to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers to be set, got %d headers", len(mods.HeadersToSet))
 	}
 }
 
-func TestSetHeadersPolicy_OnRequest_SingleHeader(t *testing.T) {
+func TestSetHeadersPolicy_OnRequestHeaders_SingleHeader(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -107,27 +115,31 @@ func TestSetHeadersPolicy_OnRequest_SingleHeader(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 1 {
-		t.Errorf("Expected 1 header to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 1 {
+		t.Errorf("Expected 1 header to be set, got %d headers", len(mods.HeadersToSet))
 	}
 
 	expectedHeaderName := "x-custom-header" // Should be normalized to lowercase
-	if mods.SetHeaders[expectedHeaderName] != "custom-value" {
+	if mods.HeadersToSet[expectedHeaderName] != "custom-value" {
 		t.Errorf("Expected header '%s' to have value 'custom-value', got '%s'",
-			expectedHeaderName, mods.SetHeaders[expectedHeaderName])
+			expectedHeaderName, mods.HeadersToSet[expectedHeaderName])
 	}
 }
 
-func TestSetHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnRequestHeaders_MultipleHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -150,15 +162,15 @@ func TestSetHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 3 {
-		t.Errorf("Expected 3 headers to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 3 {
+		t.Errorf("Expected 3 headers to be set, got %d headers", len(mods.HeadersToSet))
 	}
 
 	expectedHeaders := map[string]string{
@@ -168,16 +180,20 @@ func TestSetHeadersPolicy_OnRequest_MultipleHeaders(t *testing.T) {
 	}
 
 	for name, expectedValue := range expectedHeaders {
-		if actualValue := mods.SetHeaders[name]; actualValue != expectedValue {
+		if actualValue := mods.HeadersToSet[name]; actualValue != expectedValue {
 			t.Errorf("Expected header '%s' to have value '%s', got '%s'",
 				name, expectedValue, actualValue)
 		}
 	}
 }
 
-func TestSetHeadersPolicy_OnRequest_HeaderNameNormalization(t *testing.T) {
+func TestSetHeadersPolicy_OnRequestHeaders_HeaderNameNormalization(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -190,23 +206,27 @@ func TestSetHeadersPolicy_OnRequest_HeaderNameNormalization(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	expectedHeaderName := "x-upper-case" // Should be trimmed and lowercase
-	if mods.SetHeaders[expectedHeaderName] != "test-value" {
+	if mods.HeadersToSet[expectedHeaderName] != "test-value" {
 		t.Errorf("Expected header '%s' to be normalized and set, got headers: %v",
-			expectedHeaderName, mods.SetHeaders)
+			expectedHeaderName, mods.HeadersToSet)
 	}
 }
 
-func TestSetHeadersPolicy_OnResponse_NoHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnResponseHeaders_NoHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -214,22 +234,26 @@ func TestSetHeadersPolicy_OnResponse_NoHeaders(t *testing.T) {
 
 	// No responseHeaders parameter
 	params := map[string]interface{}{}
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
 	// Should return empty modifications
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 0 {
-		t.Errorf("Expected no headers to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers to be set, got %d headers", len(mods.HeadersToSet))
 	}
 }
 
-func TestSetHeadersPolicy_OnResponse_SingleHeader(t *testing.T) {
+func TestSetHeadersPolicy_OnResponseHeaders_SingleHeader(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -244,27 +268,31 @@ func TestSetHeadersPolicy_OnResponse_SingleHeader(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 1 {
-		t.Errorf("Expected 1 header to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 1 {
+		t.Errorf("Expected 1 header to be set, got %d headers", len(mods.HeadersToSet))
 	}
 
 	expectedHeaderName := "x-response-time" // Should be normalized to lowercase
-	if mods.SetHeaders[expectedHeaderName] != "123ms" {
+	if mods.HeadersToSet[expectedHeaderName] != "123ms" {
 		t.Errorf("Expected header '%s' to have value '123ms', got '%s'",
-			expectedHeaderName, mods.SetHeaders[expectedHeaderName])
+			expectedHeaderName, mods.HeadersToSet[expectedHeaderName])
 	}
 }
 
-func TestSetHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnResponseHeaders_MultipleHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -287,15 +315,15 @@ func TestSetHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
+	result := p.OnResponseHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 3 {
-		t.Errorf("Expected 3 headers to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 3 {
+		t.Errorf("Expected 3 headers to be set, got %d headers", len(mods.HeadersToSet))
 	}
 
 	expectedHeaders := map[string]string{
@@ -305,7 +333,7 @@ func TestSetHeadersPolicy_OnResponse_MultipleHeaders(t *testing.T) {
 	}
 
 	for name, expectedValue := range expectedHeaders {
-		if actualValue := mods.SetHeaders[name]; actualValue != expectedValue {
+		if actualValue := mods.HeadersToSet[name]; actualValue != expectedValue {
 			t.Errorf("Expected header '%s' to have value '%s', got '%s'",
 				name, expectedValue, actualValue)
 		}
@@ -316,7 +344,11 @@ func TestSetHeadersPolicy_BothRequestAndResponse(t *testing.T) {
 	p := &SetHeadersPolicy{}
 
 	// Test request phase
-	reqCtx := &policy.RequestContext{
+	reqCtx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -335,35 +367,43 @@ func TestSetHeadersPolicy_BothRequestAndResponse(t *testing.T) {
 		},
 	}
 
-	reqResult := p.OnRequest(reqCtx, params)
-	reqMods, ok := reqResult.(policy.UpstreamRequestModifications)
+	reqResult := p.OnRequestHeaders(reqCtx, params)
+	reqMods, ok := reqResult.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", reqResult)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", reqResult)
 	}
 
-	if reqMods.SetHeaders["x-request-header"] != "request-value" {
+	if reqMods.HeadersToSet["x-request-header"] != "request-value" {
 		t.Errorf("Expected request header to be set")
 	}
 
 	// Test response phase
-	respCtx := &policy.ResponseContext{
+	respCtx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{}),
 	}
 
-	respResult := p.OnResponse(respCtx, params)
-	respMods, ok := respResult.(policy.UpstreamResponseModifications)
+	respResult := p.OnResponseHeaders(respCtx, params)
+	respMods, ok := respResult.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", respResult)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", respResult)
 	}
 
-	if respMods.SetHeaders["x-response-header"] != "response-value" {
+	if respMods.HeadersToSet["x-response-header"] != "response-value" {
 		t.Errorf("Expected response header to be set")
 	}
 }
 
 func TestSetHeadersPolicy_EmptyHeadersList(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -371,21 +411,25 @@ func TestSetHeadersPolicy_EmptyHeadersList(t *testing.T) {
 		"requestHeaders": []interface{}{}, // Empty array
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 0 {
-		t.Errorf("Expected no headers to be set for empty array, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers to be set for empty array, got %d headers", len(mods.HeadersToSet))
 	}
 }
 
 func TestSetHeadersPolicy_InvalidHeadersType(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -393,21 +437,25 @@ func TestSetHeadersPolicy_InvalidHeadersType(t *testing.T) {
 		"requestHeaders": "not-an-array", // Invalid type
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if len(mods.SetHeaders) != 0 {
-		t.Errorf("Expected no headers to be set for invalid type, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers to be set for invalid type, got %d headers", len(mods.HeadersToSet))
 	}
 }
 
 func TestSetHeadersPolicy_InvalidHeaderEntry(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -421,26 +469,30 @@ func TestSetHeadersPolicy_InvalidHeaderEntry(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	// Should only process valid entries
-	if len(mods.SetHeaders) != 1 {
-		t.Errorf("Expected 1 valid header to be set, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 1 {
+		t.Errorf("Expected 1 valid header to be set, got %d headers", len(mods.HeadersToSet))
 	}
 
-	if mods.SetHeaders["valid-header"] != "valid-value" {
+	if mods.HeadersToSet["valid-header"] != "valid-value" {
 		t.Errorf("Expected valid header to be processed correctly")
 	}
 }
 
 func TestSetHeadersPolicy_SpecialCharactersInValues(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -453,24 +505,28 @@ func TestSetHeadersPolicy_SpecialCharactersInValues(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	expectedValue := "value with spaces, symbols: !@#$%^&*()_+{}|:<>?[]\\;'\""
-	if mods.SetHeaders["x-special-chars"] != expectedValue {
+	if mods.HeadersToSet["x-special-chars"] != expectedValue {
 		t.Errorf("Expected special characters to be preserved in header value, got '%s'",
-			mods.SetHeaders["x-special-chars"])
+			mods.HeadersToSet["x-special-chars"])
 	}
 }
 
 // Test the key difference: overwrite behavior when same header name appears multiple times
 func TestSetHeadersPolicy_MultipleHeadersSameName_OverwriteBehavior(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -493,28 +549,28 @@ func TestSetHeadersPolicy_MultipleHeadersSameName_OverwriteBehavior(t *testing.T
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
+	result := p.OnRequestHeaders(ctx, params)
 
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
 	// Should have 2 unique header names (last value wins for duplicates)
-	if len(mods.SetHeaders) != 2 {
-		t.Errorf("Expected 2 unique headers in SetHeaders, got %d headers", len(mods.SetHeaders))
+	if len(mods.HeadersToSet) != 2 {
+		t.Errorf("Expected 2 unique headers in HeadersToSet, got %d headers", len(mods.HeadersToSet))
 	}
 
 	// Check that the last value for X-Custom-Header is used (overwrite behavior)
-	if mods.SetHeaders["x-custom-header"] != "second-value" {
+	if mods.HeadersToSet["x-custom-header"] != "second-value" {
 		t.Errorf("Expected 'x-custom-header' to have last value 'second-value' (overwrite), got '%s'",
-			mods.SetHeaders["x-custom-header"])
+			mods.HeadersToSet["x-custom-header"])
 	}
 
 	// Check that the other header is present with single value
-	if mods.SetHeaders["x-another-header"] != "another-value" {
+	if mods.HeadersToSet["x-another-header"] != "another-value" {
 		t.Errorf("Expected 'x-another-header' to have value 'another-value', got '%s'",
-			mods.SetHeaders["x-another-header"])
+			mods.HeadersToSet["x-another-header"])
 	}
 }
 
@@ -658,9 +714,13 @@ func TestSetHeadersPolicy_Validate_BothInvalid(t *testing.T) {
 	}
 }
 
-func TestSetHeadersPolicy_OnRequest_NestedHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnRequestHeaders_NestedHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.RequestContext{
+	ctx := &policyv1alpha2.RequestHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		Headers: createTestHeaders(map[string]string{}),
 	}
 
@@ -675,20 +735,24 @@ func TestSetHeadersPolicy_OnRequest_NestedHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnRequest(ctx, params)
-	mods, ok := result.(policy.UpstreamRequestModifications)
+	result := p.OnRequestHeaders(ctx, params)
+	mods, ok := result.(policyv1alpha2.UpstreamRequestHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamRequestModifications, got %T", result)
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
 	}
 
-	if mods.SetHeaders["x-nested-request"] != "nested-request-value" {
-		t.Errorf("Expected nested request header to be set, got %v", mods.SetHeaders)
+	if mods.HeadersToSet["x-nested-request"] != "nested-request-value" {
+		t.Errorf("Expected nested request header to be set, got %v", mods.HeadersToSet)
 	}
 }
 
-func TestSetHeadersPolicy_OnResponse_NestedHeaders(t *testing.T) {
+func TestSetHeadersPolicy_OnResponseHeaders_NestedHeaders(t *testing.T) {
 	p := &SetHeadersPolicy{}
-	ctx := &policy.ResponseContext{
+	ctx := &policyv1alpha2.ResponseHeaderContext{
+		SharedContext: &policyv1alpha2.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
 		ResponseHeaders: createTestHeaders(map[string]string{}),
 	}
 
@@ -703,14 +767,14 @@ func TestSetHeadersPolicy_OnResponse_NestedHeaders(t *testing.T) {
 		},
 	}
 
-	result := p.OnResponse(ctx, params)
-	mods, ok := result.(policy.UpstreamResponseModifications)
+	result := p.OnResponseHeaders(ctx, params)
+	mods, ok := result.(policyv1alpha2.DownstreamResponseHeaderModifications)
 	if !ok {
-		t.Errorf("Expected UpstreamResponseModifications, got %T", result)
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
 	}
 
-	if mods.SetHeaders["x-nested-response"] != "nested-response-value" {
-		t.Errorf("Expected nested response header to be set, got %v", mods.SetHeaders)
+	if mods.HeadersToSet["x-nested-response"] != "nested-response-value" {
+		t.Errorf("Expected nested response header to be set, got %v", mods.HeadersToSet)
 	}
 }
 

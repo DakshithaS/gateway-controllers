@@ -311,7 +311,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 		slog.Debug("MCP Authorization Policy: Processing MCP request for authorization")
 	} else {
 		slog.Debug("MCP Authorization Policy: Skipping authz...")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return nil
 	}
 
 	// Check AuthContext populated by an upstream auth policy
@@ -337,7 +337,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 	attributeType, ok := p.getAttributeTypeFromMethod(mcpReq.Method)
 	if !ok {
 		slog.Debug("MCP Authorization Policy: Skipping since the method is not one of tools, resources, or prompts", "method", mcpReq.Method)
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return nil
 	}
 
 	// Extract attribute name/identifier based on method type
@@ -365,7 +365,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 	if authCtx.AuthType == McpOAuthAuthType {
 		authCtx.AuthType = McpOAuthzAuthType
 	}
-	return policyv1alpha2.UpstreamRequestModifications{}
+	return nil
 }
 
 func (p *McpAuthzPolicy) handleAuthFailureV2(ctx *policyv1alpha2.RequestContext, errorMessage string, scopeMap map[string]struct{}) policyv1alpha2.RequestAction {
