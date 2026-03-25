@@ -372,10 +372,17 @@ func (p *SemanticCachePolicy) OnRequest(ctx *policy.RequestContext, params map[s
 	// Get API ID from context (use APIName and APIVersion to create unique ID)
 	apiID := fmt.Sprintf("%s:%s", ctx.APIName, ctx.APIVersion)
 
+	// Cosine similarity embedders (e.g. Mistral) have a floor of ~0.6 — even completely
+	// unrelated texts score that high. Map [0.6, 1.0] → [0, 1] so the user-supplied
+	// threshold works across the full semantic range.
+	// effectiveThreshold = 0.6 + userThreshold * 0.4
+	const minSimilarityBaseline = 0.6
+	effectiveThreshold := minSimilarityBaseline + p.threshold*(1.0-minSimilarityBaseline)
+
 	// Check cache for similar response
 	// Threshold needs to be a string for the vector DB provider
 	cacheFilter := map[string]interface{}{
-		"threshold": fmt.Sprintf("%.2f", p.threshold),
+		"threshold": fmt.Sprintf("%.4f", effectiveThreshold),
 		"api_id":    apiID,
 		"ctx":       context.Background(), // Vector DB providers need context
 	}
@@ -455,10 +462,17 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, 
 	// Get API ID from context (use APIName and APIVersion to create unique ID)
 	apiID := fmt.Sprintf("%s:%s", ctx.APIName, ctx.APIVersion)
 
+	// Cosine similarity embedders (e.g. Mistral) have a floor of ~0.6 — even completely
+	// unrelated texts score that high. Map [0.6, 1.0] → [0, 1] so the user-supplied
+	// threshold works across the full semantic range.
+	// effectiveThreshold = 0.6 + userThreshold * 0.4
+	const minSimilarityBaseline = 0.6
+	effectiveThreshold := minSimilarityBaseline + p.threshold*(1.0-minSimilarityBaseline)
+
 	// Check cache for similar response
 	// Threshold needs to be a string for the vector DB provider
 	cacheFilter := map[string]interface{}{
-		"threshold": fmt.Sprintf("%.2f", p.threshold),
+		"threshold": fmt.Sprintf("%.4f", effectiveThreshold),
 		"api_id":    apiID,
 		"ctx":       context.Background(), // Vector DB providers need context
 	}
@@ -473,7 +487,7 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, 
 	// Check if we got a valid cache response
 	// Retrieve returns empty CacheResponse on no match or threshold not met
 	if cacheResponse.ResponsePayload == nil || len(cacheResponse.ResponsePayload) == 0 {
-		slog.Debug("SemanticCache: Cache miss", "apiID", apiID, "threshold", p.threshold)
+		slog.Debug("SemanticCache: Cache miss", "apiID", apiID, "threshold", effectiveThreshold)
 		// Cache miss - continue to upstream
 		return policyv1alpha2.UpstreamRequestModifications{}
 	}
