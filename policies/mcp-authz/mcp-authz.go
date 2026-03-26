@@ -113,29 +113,53 @@ func GetPolicyV2(
 	}, params)
 }
 
-// parseRules extracts and validates rules from params
+// parseRules extracts and validates rules from the 4 top-level arrays: tools, resources, prompts, methods
 func parseRules(params map[string]any) ([]Rule, error) {
-	rulesRaw, ok := params["rules"]
+	var allRules []Rule
+
+	// Parse each array type
+	arrayTypes := []struct {
+		key   string
+		type_ string
+	}{
+		{"tools", "tool"},
+		{"resources", "resource"},
+		{"prompts", "prompt"},
+		{"methods", "method"},
+	}
+
+	for _, at := range arrayTypes {
+		rules, err := parseArrayRules(params, at.key, at.type_)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse %s: %w", at.key, err)
+		}
+		allRules = append(allRules, rules...)
+	}
+
+	return allRules, nil
+}
+
+// parseArrayRules parses rules from a specific array (tools, resources, prompts, or methods)
+func parseArrayRules(params map[string]any, arrayKey, attributeType string) ([]Rule, error) {
+	rulesRaw, ok := params[arrayKey]
 	if !ok {
-		return nil, fmt.Errorf("rules parameter is required")
+		// Array is optional
+		return nil, nil
 	}
 
 	rulesArray, ok := rulesRaw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("rules must be an array")
-	}
-	if len(rulesArray) == 0 {
-		return nil, fmt.Errorf("rules must contain at least one rule")
+		return nil, fmt.Errorf("%s must be an array", arrayKey)
 	}
 
 	var rules []Rule
 	for i, ruleRaw := range rulesArray {
 		ruleMap, ok := ruleRaw.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("rules[%d] must be an object", i)
+			return nil, fmt.Errorf("%s[%d] must be an object", arrayKey, i)
 		}
 
-		rule, err := parseRule(ruleMap, i)
+		rule, err := parseRuleItem(ruleMap, arrayKey, i, attributeType)
 		if err != nil {
 			return nil, err
 		}
@@ -145,59 +169,39 @@ func parseRules(params map[string]any) ([]Rule, error) {
 	return rules, nil
 }
 
-// parseRule parses a single rule from a map
-func parseRule(ruleMap map[string]any, index int) (Rule, error) {
-	rule := Rule{}
+// parseRuleItem parses a single rule item from a map
+func parseRuleItem(ruleMap map[string]any, arrayKey string, index int, attributeType string) (Rule, error) {
+	rule := Rule{
+		Attribute: Attribute{
+			Type: attributeType,
+		},
+	}
 	hasRequiredClaims := false
 	hasRequiredScopes := false
 
-	// Parse attribute (required)
-	attrRaw, ok := ruleMap["attribute"]
+	// Parse name (required)
+	nameRaw, ok := ruleMap["name"]
 	if !ok {
-		return rule, fmt.Errorf("rules[%d].attribute is required", index)
+		return rule, fmt.Errorf("%s[%d].name is required", arrayKey, index)
 	}
-	attrMap, ok := attrRaw.(map[string]any)
+	nameStr, ok := nameRaw.(string)
 	if !ok {
-		return rule, fmt.Errorf("rules[%d].attribute must be an object", index)
+		return rule, fmt.Errorf("%s[%d].name must be a string", arrayKey, index)
 	}
-
-	// Parse attribute type (required)
-	attrType, ok := attrMap["type"]
-	if !ok {
-		return rule, fmt.Errorf("rules[%d].attribute.type is required", index)
-	}
-	attrTypeStr, ok := attrType.(string)
-	if !ok {
-		return rule, fmt.Errorf("rules[%d].attribute.type must be a string", index)
-	}
-	if !isValidAttributeType(attrTypeStr) {
-		return rule, fmt.Errorf("rules[%d].attribute.type must be one of: tool, resource, prompt, method", index)
-	}
-	rule.Attribute.Type = attrTypeStr
-
-	// Parse attribute name (optional, defaults to "*")
-	if attrName, ok := attrMap["name"]; ok {
-		attrNameStr, ok := attrName.(string)
-		if !ok {
-			return rule, fmt.Errorf("rules[%d].attribute.name must be a string", index)
-		}
-		rule.Attribute.Name = attrNameStr
-	} else {
-		rule.Attribute.Name = "*"
-	}
+	rule.Attribute.Name = nameStr
 
 	// Parse requiredClaims (optional)
 	if claimsRaw, ok := ruleMap["requiredClaims"]; ok {
 		hasRequiredClaims = true
 		claimsMap, ok := claimsRaw.(map[string]any)
 		if !ok {
-			return rule, fmt.Errorf("rules[%d].requiredClaims must be an object", index)
+			return rule, fmt.Errorf("%s[%d].requiredClaims must be an object", arrayKey, index)
 		}
 		rule.RequiredClaims = make(map[string]string)
 		for k, v := range claimsMap {
 			vStr, ok := v.(string)
 			if !ok {
-				return rule, fmt.Errorf("rules[%d].requiredClaims[%s] must be a string", index, k)
+				return rule, fmt.Errorf("%s[%d].requiredClaims[%s] must be a string", arrayKey, index, k)
 			}
 			rule.RequiredClaims[k] = vStr
 		}
@@ -208,29 +212,25 @@ func parseRule(ruleMap map[string]any, index int) (Rule, error) {
 		hasRequiredScopes = true
 		scopesArray, ok := scopesRaw.([]any)
 		if !ok {
-			return rule, fmt.Errorf("rules[%d].requiredScopes must be an array", index)
+			return rule, fmt.Errorf("%s[%d].requiredScopes must be an array", arrayKey, index)
 		}
 		for j, scopeRaw := range scopesArray {
 			scopeStr, ok := scopeRaw.(string)
 			if !ok {
-				return rule, fmt.Errorf("rules[%d].requiredScopes[%d] must be a string", index, j)
+				return rule, fmt.Errorf("%s[%d].requiredScopes[%d] must be a string", arrayKey, index, j)
 			}
 			rule.RequiredScopes = append(rule.RequiredScopes, scopeStr)
 		}
 	}
+
 	if !hasRequiredClaims && !hasRequiredScopes {
-		return rule, fmt.Errorf("rules[%d] must define at least one of requiredClaims or requiredScopes", index)
+		return rule, fmt.Errorf("%s[%d] must define at least one of requiredClaims or requiredScopes", arrayKey, index)
 	}
 	if len(rule.RequiredClaims) == 0 && len(rule.RequiredScopes) == 0 {
-		return rule, fmt.Errorf("rules[%d] must define at least one non-empty authorization condition", index)
+		return rule, fmt.Errorf("%s[%d] must define at least one non-empty authorization condition", arrayKey, index)
 	}
 
 	return rule, nil
-}
-
-// isValidAttributeType checks if the attribute type is valid
-func isValidAttributeType(attrType string) bool {
-	return attrType == "tool" || attrType == "resource" || attrType == "prompt" || attrType == "method"
 }
 
 func (p *McpAuthzPolicy) Mode() policy.ProcessingMode {
@@ -611,18 +611,21 @@ func (p *McpAuthzPolicy) checkClaims(requiredClaims map[string]string, authCtx *
 
 // checkScopes verifies that all required scopes are present in the AuthContext
 func (p *McpAuthzPolicy) checkScopes(requiredScopes []string, authCtx *policy.AuthContext) (bool, []string) {
-	var missing []string
+	found := false
+	var matchedScope string
 	for _, required := range requiredScopes {
-		if !authCtx.Scopes[required] {
-			missing = append(missing, required)
+		if authCtx.Scopes[required] {
+			found = true
+			matchedScope = required
+			break
 		}
 	}
-	if len(missing) == 0 {
-		slog.Debug("MCP Authorization Policy: All required scopes are present")
-		return true, nil
+	if !found {
+		slog.Debug("MCP Authorization Policy: Missing required scopes", "missing", requiredScopes)
+		return false, requiredScopes
 	}
-	slog.Debug("MCP Authorization Policy: Missing required scopes", "missing", missing)
-	return false, missing
+	slog.Debug("MCP Authorization Policy: Found matching scope", "scope", matchedScope)
+	return true, nil
 }
 
 // generateResourcePath generates the full resource URL for the given resource path

@@ -1,6 +1,6 @@
 {
   "name": "mcp-acl-list",
-  "displayName": "MCP ACL List",
+  "displayName": "MCP Access Control",
   "version": "0.2",
   "provider": "WSO2",
   "categories": [

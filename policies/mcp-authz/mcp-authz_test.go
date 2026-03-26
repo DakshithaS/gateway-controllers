@@ -58,8 +58,8 @@ func authenticatedAuthCtx(scopes map[string]bool, subject, issuer string, audien
 	}
 }
 
-func rulesParam(rules []any) map[string]any {
-	return map[string]any{"rules": rules}
+func toolsParam(tools []any) map[string]any {
+	return map[string]any{"tools": tools}
 }
 
 func toolCallBody(toolName string) []byte {
@@ -73,9 +73,9 @@ func toolCallBody(toolName string) []byte {
 // ---- GetPolicy ----
 
 func TestGetPolicy(t *testing.T) {
-	params := rulesParam([]any{
+	params := toolsParam([]any{
 		map[string]any{
-			"attribute":      map[string]any{"type": "tool", "name": "my-tool"},
+			"name":           "my-tool",
 			"requiredScopes": []any{"mcp:tools:read"},
 		},
 	})
@@ -88,10 +88,14 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_MissingRules(t *testing.T) {
-	_, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, map[string]any{})
-	if err == nil {
-		t.Error("Expected error for missing rules param")
+func TestGetPolicy_EmptyParams(t *testing.T) {
+	// Empty params should be valid (no rules configured means allow all)
+	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, map[string]any{})
+	if err != nil {
+		t.Errorf("Expected no error for empty params, got: %v", err)
+	}
+	if p == nil {
+		t.Error("Expected non-nil policy for empty params")
 	}
 }
 
@@ -281,9 +285,9 @@ func TestOnRequest_WildcardRule(t *testing.T) {
 // ---- AuthContext mutation on success ----
 
 func TestOnRequest_Success_SetsAuthorizedAndAuthType(t *testing.T) {
-	params := rulesParam([]any{
+	params := toolsParam([]any{
 		map[string]any{
-			"attribute":      map[string]any{"type": "tool", "name": "my-tool"},
+			"name":           "my-tool",
 			"requiredScopes": []any{"mcp:tools:read"},
 		},
 	})
@@ -312,9 +316,9 @@ func TestOnRequest_Success_SetsAuthorizedAndAuthType(t *testing.T) {
 }
 
 func TestOnRequest_Success_NonMcpOAuthAuthType_Unchanged(t *testing.T) {
-	params := rulesParam([]any{
+	params := toolsParam([]any{
 		map[string]any{
-			"attribute":      map[string]any{"type": "tool", "name": "my-tool"},
+			"name":           "my-tool",
 			"requiredScopes": []any{"mcp:tools:read"},
 		},
 	})
@@ -342,4 +346,3 @@ func TestOnRequest_Success_NonMcpOAuthAuthType_Unchanged(t *testing.T) {
 		t.Errorf("Expected AuthType='jwt' (unchanged), got %q", ctx.SharedContext.AuthContext.AuthType)
 	}
 }
-
