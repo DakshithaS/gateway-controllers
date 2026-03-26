@@ -778,7 +778,11 @@ func (e *CostExtractor) RequiresRequestBody() bool {
 		return false
 	}
 	for _, source := range e.config.Sources {
-		if isRequestPhaseSource(source.Type) {
+		// request_body and request_cel need body buffering; request_header and
+		// request_metadata are available in header phase but consumption is
+		// deferred to OnRequestBody, so they also require buffering.
+		if source.Type == CostSourceRequestBody || source.Type == CostSourceRequestCEL ||
+			source.Type == CostSourceRequestHeader || source.Type == CostSourceRequestMetadata {
 			return true
 		}
 	}

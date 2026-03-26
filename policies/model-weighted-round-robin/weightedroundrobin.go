@@ -749,19 +749,6 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestHeaders(ctx *policyv1alpha2.Req
 				HeadersToSet: map[string]string{":path": newPath},
 			}
 		}
-		return policyv1alpha2.UpstreamRequestHeaderModifications{}
-	case "payload":
-		// Body not available in header phase; OnRequestBody will handle it.
-		// Envoy does not send a body phase message for Content-Length: 0 requests,
-		// so we must reject empty bodies here before OnRequestBody is skipped.
-		if isContentLengthZero(ctx) {
-			return policyv1alpha2.ImmediateResponse{
-				StatusCode: 400,
-				Headers:    map[string]string{"Content-Type": "application/json"},
-				Body:       []byte(`{"error":"Request body is empty."}`),
-			}
-		}
-		return policyv1alpha2.UpstreamRequestHeaderModifications{}
 	}
 	return policyv1alpha2.UpstreamRequestHeaderModifications{}
 }
@@ -836,15 +823,6 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestBody(ctx *policyv1alpha2.Reques
 
 	slog.Debug("ModelWeightedRoundRobin: OnRequestBody modified payload model", "newModel", selectedModel)
 	return policyv1alpha2.UpstreamRequestModifications{Body: updatedPayload}
-}
-
-// isContentLengthZero reports whether the request has an explicit Content-Length: 0 header.
-func isContentLengthZero(ctx *policyv1alpha2.RequestHeaderContext) bool {
-	if ctx.Headers == nil {
-		return false
-	}
-	values := ctx.Headers.Get("content-length")
-	return len(values) > 0 && values[0] == "0"
 }
 
 // modifyQueryParamInPath updates a query parameter value in a raw path string.

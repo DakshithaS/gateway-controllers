@@ -278,37 +278,6 @@ func (p *WordCountGuardrailPolicy) Mode() policy.ProcessingMode {
 	}
 }
 
-// OnRequestHeaders handles requests where the body phase is skipped by Envoy — specifically
-// requests with Content-Length: 0. Envoy/ext_proc does not send a body phase message for
-// empty bodies, so OnRequestBody would never be called. We validate here so that min > 0
-// constraints are enforced even when no body is present.
-func (p *WordCountGuardrailPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, _ map[string]interface{}) policyv1alpha2.RequestHeaderAction {
-	if !p.hasRequestParams || !p.requestParams.Enabled {
-		return policyv1alpha2.UpstreamRequestHeaderModifications{}
-	}
-
-	// Only intercept when Content-Length is explicitly 0 — non-empty bodies are handled
-	// by OnRequestBody, and absent Content-Length may indicate chunked transfer.
-	if !isContentLengthZero(ctx) {
-		return policyv1alpha2.UpstreamRequestHeaderModifications{}
-	}
-
-	result := p.validatePayloadV2(nil, p.requestParams, false)
-	if immediate, ok := result.(policyv1alpha2.ImmediateResponse); ok {
-		return immediate
-	}
-	return policyv1alpha2.UpstreamRequestHeaderModifications{}
-}
-
-// isContentLengthZero reports whether the request has an explicit Content-Length: 0 header.
-func isContentLengthZero(ctx *policyv1alpha2.RequestHeaderContext) bool {
-	if ctx.Headers == nil {
-		return false
-	}
-	values := ctx.Headers.Get("content-length")
-	return len(values) > 0 && values[0] == "0"
-}
-
 // OnRequest validates request body word count
 func (p *WordCountGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	if !p.hasRequestParams || !p.requestParams.Enabled {

@@ -401,11 +401,15 @@ func (p *ContentLengthGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.Request
 		return policyv1alpha2.UpstreamRequestModifications{}
 	}
 
-	var content []byte
-	if ctx.Body != nil {
-		content = ctx.Body.Content
+	if ctx.Body == nil || ctx.Body.Content == nil {
+		return policyv1alpha2.ImmediateResponse{
+			StatusCode: GuardrailErrorCode,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       []byte(`{"type":"CONTENT_LENGTH_GUARDRAIL","message":"Request body is absent or could not be buffered"}`),
+		}
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+
+	return p.validatePayloadV2(ctx.Body.Content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates response body content length.

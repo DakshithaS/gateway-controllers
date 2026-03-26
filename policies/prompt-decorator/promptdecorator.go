@@ -210,29 +210,6 @@ func (p *PromptDecoratorPolicy) Mode() policy.ProcessingMode {
 	}
 }
 
-// OnRequestHeaders handles requests where the body phase is skipped by Envoy — specifically
-// requests with Content-Length: 0. Envoy/ext_proc does not send a body phase message for
-// empty bodies, so OnRequestBody would never be called.
-func (p *PromptDecoratorPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContext, _ map[string]interface{}) policyv1alpha2.RequestHeaderAction {
-	if !isContentLengthZero(ctx) {
-		return policyv1alpha2.UpstreamRequestHeaderModifications{}
-	}
-	result := p.buildErrorResponseV2("Empty request body", nil)
-	if immediate, ok := result.(policyv1alpha2.ImmediateResponse); ok {
-		return immediate
-	}
-	return policyv1alpha2.UpstreamRequestHeaderModifications{}
-}
-
-// isContentLengthZero reports whether the request has an explicit Content-Length: 0 header.
-func isContentLengthZero(ctx *policyv1alpha2.RequestHeaderContext) bool {
-	if ctx.Headers == nil {
-		return false
-	}
-	values := ctx.Headers.Get("content-length")
-	return len(values) > 0 && values[0] == "0"
-}
-
 // OnRequest decorates request body
 func (p *PromptDecoratorPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	var content []byte
