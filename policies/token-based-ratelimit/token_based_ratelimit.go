@@ -388,9 +388,12 @@ func convertLimits(rawLimits interface{}) []interface{} {
 	return converted
 }
 
-// OnRequestHeaders delegates to the provider-specific ratelimit instance's OnRequestHeaders.
-// If no delegate exists yet (first request for this provider), it creates one via resolveDelegate
-// so that quota keys are stored in metadata for the response phase.
+// OnRequestHeaders runs the full request-phase rate limit check in the header phase,
+// eliminating the need to buffer the request body. It calls the delegate's OnRequestHeaders
+// (pre-check / standard quota consumption) and then its OnRequestBody with a synthetic
+// RequestContext built from the available header-phase data. This means request-header cost
+// sources (e.g. X-Token-Cost) are extracted and consumed immediately, before the upstream
+// is called, without requiring body buffering.
 func (p *TokenBasedRateLimitPolicy) OnRequestHeaders(
 	ctx *policy.RequestHeaderContext,
 	params map[string]interface{},
@@ -398,12 +401,18 @@ func (p *TokenBasedRateLimitPolicy) OnRequestHeaders(
 	type requestHeaderPolicer interface {
 		OnRequestHeaders(*policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
 	}
+	type requestBodyPolicer interface {
+		OnRequestBody(*policy.RequestContext, map[string]interface{}) policy.RequestAction
+	}
+
+	slog.Debug("OnRequestHeaders: processing token-based rate limit",
+		"route", p.metadata.RouteName)
 
 	providerName, ok := ctx.SharedContext.Metadata[MetadataKeyProviderName].(string)
 	if !ok || providerName == "" {
 		slog.Debug("OnRequestHeaders: provider name not found in metadata; skipping token-based rate limit",
 			"route", p.metadata.RouteName)
-		return policy.UpstreamRequestHeaderModifications{}
+		return nil
 	}
 
 	delegate, err := p.resolveDelegate(providerName, params)
@@ -412,70 +421,55 @@ func (p *TokenBasedRateLimitPolicy) OnRequestHeaders(
 			"route", p.metadata.RouteName,
 			"provider", providerName,
 			"error", err)
-		return policy.UpstreamRequestHeaderModifications{}
+		return nil
 	}
 
 	if delegate == nil {
 		slog.Warn("OnRequestHeaders: delegate is nil for provider",
 			"route", p.metadata.RouteName,
 			"provider", providerName)
-		return policy.UpstreamRequestHeaderModifications{}
+		return nil
 	}
 
+	// Phase 1: header pre-check — blocks if quota is already at zero.
 	if rl, ok := delegate.(requestHeaderPolicer); ok {
-		return rl.OnRequestHeaders(ctx, params)
+		if action := rl.OnRequestHeaders(ctx, params); isBlockingHeaderAction(action) {
+			return action
+		}
+	}
+
+	// Phase 2: request-phase cost extraction — extracts cost from headers (e.g. X-Token-Cost)
+	// and consumes tokens. Uses a synthetic RequestContext so no body buffering is needed.
+	// ImmediateResponse implements RequestHeaderAction, so a 429 can be returned directly.
+	if rl, ok := delegate.(requestBodyPolicer); ok {
+		reqCtx := &policy.RequestContext{
+			SharedContext: ctx.SharedContext,
+			Headers:       ctx.Headers,
+			Body:          &policy.Body{Present: false},
+			Path:          ctx.Path,
+			Method:        ctx.Method,
+			Authority:     ctx.Authority,
+			Scheme:        ctx.Scheme,
+			Vhost:         ctx.Vhost,
+		}
+		if action := rl.OnRequestBody(reqCtx, nil); action != nil {
+			if ir, ok := action.(policy.ImmediateResponse); ok {
+				return ir
+			}
+		}
 	}
 
 	return policy.UpstreamRequestHeaderModifications{}
 }
 
-// OnRequestBody processes the request body phase by delegating to a provider-specific ratelimit instance.
-func (p *TokenBasedRateLimitPolicy) OnRequestBody(
-	ctx *policy.RequestContext,
-	params map[string]interface{},
-) policy.RequestAction {
-	slog.Debug("OnRequestBody: processing token-based rate limit",
-		"route", p.metadata.RouteName)
-
-	providerName, ok := ctx.SharedContext.Metadata[MetadataKeyProviderName].(string)
-	if !ok || providerName == "" {
-		slog.Debug("OnRequestBody: provider name not found in metadata; skipping token-based rate limit",
-			"route", p.metadata.RouteName)
-		return nil
+// isBlockingHeaderAction returns true when the action signals an immediate response
+// (e.g. 429 rate-limit exceeded) that should stop request processing.
+func isBlockingHeaderAction(action policy.RequestHeaderAction) bool {
+	if action == nil {
+		return false
 	}
-
-	slog.Debug("OnRequestBody: resolved provider",
-		"route", p.metadata.RouteName,
-		"provider", providerName)
-
-	delegate, err := p.resolveDelegate(providerName, nil)
-	if err != nil {
-		slog.Warn("OnRequestBody: failed to resolve rate limit delegate for provider",
-			"route", p.metadata.RouteName,
-			"provider", providerName,
-			"error", err)
-		return nil
-	}
-
-	if delegate == nil {
-		slog.Warn("OnRequestBody: delegate is nil for provider",
-			"route", p.metadata.RouteName,
-			"provider", providerName)
-		return nil
-	}
-
-	slog.Debug("OnRequestBody: delegating to advanced-ratelimit",
-		"route", p.metadata.RouteName,
-		"provider", providerName)
-
-	type requestBodyPolicer interface {
-		OnRequestBody(*policy.RequestContext, map[string]interface{}) policy.RequestAction
-	}
-	if rl, ok := delegate.(requestBodyPolicer); ok {
-		return rl.OnRequestBody(ctx, nil)
-	}
-
-	return nil
+	_, ok := action.(policy.ImmediateResponse)
+	return ok
 }
 
 // OnResponseHeaders delegates to the provider-specific ratelimit instance's OnResponseHeaders
