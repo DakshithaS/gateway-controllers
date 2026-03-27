@@ -119,8 +119,15 @@ func (p *APIKeyPolicy) OnRequestHeaders(ctx *policy.RequestHeaderContext, params
 
 	keyName, _ := params["key"].(string)
 	location, _ := params["in"].(string)
+	analyticsMetadata := map[string]interface{}{}
+	if ctx.SharedContext != nil && ctx.SharedContext.AuthContext != nil {
+		analyticsMetadata[applicationNameMetadataKey] = ctx.SharedContext.AuthContext.Properties["ApplicationName"]
+		analyticsMetadata[applicationIDMetadataKey] = ctx.SharedContext.AuthContext.Properties["ApplicationID"]
+	}
 
-	mods := policy.UpstreamRequestHeaderModifications{}
+	mods := policy.UpstreamRequestHeaderModifications{
+		AnalyticsMetadata: analyticsMetadata,
+	}
 	if location == "header" {
 		mods.HeadersToRemove = []string{http.CanonicalHeaderKey(keyName)}
 	} else if location == "query" {
@@ -224,6 +231,10 @@ func (p *APIKeyPolicy) authenticate(
 		Authenticated: true,
 		AuthType:      AuthType,
 		Previous:      shared.AuthContext,
+		Properties: map[string]string{
+			"ApplicationName": resolvedKey.ApplicationName,
+			"ApplicationID":   resolvedKey.ApplicationID,
+		},
 	}
 	return nil
 }

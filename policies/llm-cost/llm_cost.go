@@ -273,5 +273,9 @@ func setCostMetadata(ctx *policy.ResponseContext, costUSD float64, status string
 	}
 	ctx.Metadata[MetadataLLMCost] = fmt.Sprintf("%.10f", costUSD)
 	ctx.Metadata[MetadataLLMCostStatus] = status
-	return policy.DownstreamResponseModifications{}
+	return policy.DownstreamResponseModifications{
+		AnalyticsMetadata: map[string]interface{}{
+			MetadataLLMCost: costUSD,
+		},
+	}
 }
