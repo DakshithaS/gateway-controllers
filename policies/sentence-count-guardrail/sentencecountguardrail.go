@@ -426,6 +426,10 @@ func normalizeExtractedValue(value interface{}) (string, error) {
 // buildErrorResponse builds an error response for both request and response phases
 func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "sentence-count-guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "SENTENCE_COUNT_GUARDRAIL",
@@ -440,8 +444,9 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validat
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policy.UpstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			SetHeaders: map[string]string{
 				"Content-Type": "application/json",
 			},
@@ -449,7 +454,8 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validat
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -611,6 +617,10 @@ func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params 
 // buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
 func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
+	analyticsMetadata := map[string]interface{}{
+		"isGuardrailHit": true,
+		"guardrailName":  "sentence-count-guardrail",
+	}
 
 	responseBody := map[string]interface{}{
 		"type":    "SENTENCE_COUNT_GUARDRAIL",
@@ -625,8 +635,9 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, valid
 	if isResponse {
 		statusCode := GuardrailErrorCode
 		return policyv1alpha2.DownstreamResponseModifications{
-			StatusCode: &statusCode,
-			Body:       bodyBytes,
+			StatusCode:        &statusCode,
+			Body:              bodyBytes,
+			AnalyticsMetadata: analyticsMetadata,
 			DownstreamResponseHeaderModifications: policyv1alpha2.DownstreamResponseHeaderModifications{
 				HeadersToSet: map[string]string{"Content-Type": "application/json"},
 			},
@@ -634,7 +645,8 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, valid
 	}
 
 	return policyv1alpha2.ImmediateResponse{
-		StatusCode: GuardrailErrorCode,
+		StatusCode:        GuardrailErrorCode,
+		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
