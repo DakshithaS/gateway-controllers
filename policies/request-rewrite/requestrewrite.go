@@ -375,21 +375,10 @@ func (p *RequestRewritePolicy) computeRewrite(ctx *policy.RequestHeaderContext, 
 	updatedRelativePath := relativePath
 	pathRewriteApplied := false
 	queryRewriteConfigured := cfg.QueryRewrite != nil
-	isFullPathReplacement := false
 
 	if cfg.PathRewrite != nil {
-		rewriteType := strings.ToUpper(strings.TrimSpace(cfg.PathRewrite.Type))
-		if rewriteType == pathReplaceFull {
-			// ReplaceFullPath replaces the ENTIRE path, not just the relative portion.
-			isFullPathReplacement = true
-			if cfg.PathRewrite.ReplaceFullPath != "" {
-				updatedRelativePath = cfg.PathRewrite.ReplaceFullPath
-				pathRewriteApplied = true
-			}
-		} else {
-			updatedRelativePath = applyPathRewrite(ctx.OperationPath, updatedRelativePath, cfg.PathRewrite)
-			pathRewriteApplied = updatedRelativePath != relativePath
-		}
+		updatedRelativePath = applyPathRewrite(ctx.OperationPath, updatedRelativePath, cfg.PathRewrite)
+		pathRewriteApplied = updatedRelativePath != relativePath
 	}
 
 	if cfg.QueryRewrite != nil {
@@ -400,12 +389,7 @@ func (p *RequestRewritePolicy) computeRewrite(ctx *policy.RequestHeaderContext, 
 
 	finalPath := originalPath
 	if pathRewriteApplied || queryRewriteConfigured {
-		var updatedPath string
-		if isFullPathReplacement {
-			updatedPath = updatedRelativePath
-		} else {
-			updatedPath = joinBaseAndRelative(basePrefix, updatedRelativePath)
-		}
+		updatedPath := joinBaseAndRelative(basePrefix, updatedRelativePath)
 		finalPath = buildPath(updatedPath, queryValues)
 	}
 
