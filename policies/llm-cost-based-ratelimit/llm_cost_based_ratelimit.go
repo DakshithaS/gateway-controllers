@@ -78,12 +78,15 @@ func GetPolicyV2(
 }
 
 // Mode returns the processing mode for this policy.
+// ResponseBodyMode is Buffer so that OnResponseBody is called after llm-cost
+// sets x-llm-cost in SharedContext.Metadata; response headers phase runs before
+// that metadata is populated so cost extraction there would always return 0.
 func (p *LLMCostRateLimitPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeSkip,
 		ResponseHeaderMode: policy.HeaderModeProcess,
-		ResponseBodyMode:   policy.BodyModeSkip,
+		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }
 
