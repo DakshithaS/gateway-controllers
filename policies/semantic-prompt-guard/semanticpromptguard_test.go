@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	embeddingproviders "github.com/wso2/api-platform/sdk/ai/embeddings"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	embeddingproviders "github.com/wso2/api-platform/sdk/ai/utils/embeddingproviders"
 )
 
 type mockEmbeddingProvider struct {

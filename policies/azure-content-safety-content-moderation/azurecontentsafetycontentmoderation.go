@@ -394,10 +394,8 @@ func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason st
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: map[string]string{
-					"Content-Type": "application/json",
-				},
+			HeadersToSet: map[string]string{
+				"Content-Type": "application/json",
 			},
 		}
 	}

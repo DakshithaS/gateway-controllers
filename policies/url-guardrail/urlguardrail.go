@@ -697,9 +697,7 @@ func (p *URLGuardrailPolicy) buildErrorResponse(reason string, validationError e
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: map[string]string{"Content-Type": "application/json"},
-			},
+			HeadersToSet:      map[string]string{"Content-Type": "application/json"},
 		}
 	}
 

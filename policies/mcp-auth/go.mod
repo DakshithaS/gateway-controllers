@@ -2,7 +2,7 @@ module github.com/wso2/gateway-controllers/policies/mcp-auth
 
 go 1.26.1
 
-require github.com/wso2/api-platform/sdk/core v0.1.2
+require github.com/wso2/api-platform/sdk/core v0.1.4
 
 require github.com/wso2/gateway-controllers/policies/jwt-auth v0.9.0
 

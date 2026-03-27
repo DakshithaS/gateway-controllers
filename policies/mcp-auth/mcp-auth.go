@@ -112,7 +112,6 @@ func GetPolicyV2(
 	return GetPolicy(metadata, params)
 }
 
-
 // parseAuthority extracts host and port from an authority string (e.g., "example.com:8080")
 func parseAuthority(authority string) (host string, port int) {
 	if authority == "" {
@@ -552,7 +551,16 @@ func (p *McpAuthPolicy) handleAuth(ctx *policy.RequestContext, params map[string
 	}
 	if a, ok := headerAction.(policy.UpstreamRequestHeaderModifications); ok {
 		return policy.UpstreamRequestModifications{
-			UpstreamRequestHeaderModifications: a,
+			HeadersToSet:            a.HeadersToSet,
+			HeadersToRemove:         a.HeadersToRemove,
+			UpstreamName:            a.UpstreamName,
+			Path:                    a.Path,
+			Method:                  a.Method,
+			QueryParametersToAdd:    a.QueryParametersToAdd,
+			QueryParametersToRemove: a.QueryParametersToRemove,
+			AnalyticsMetadata:       a.AnalyticsMetadata,
+			DynamicMetadata:         a.DynamicMetadata,
+			AnalyticsHeaderFilter:   a.AnalyticsHeaderFilter,
 		}
 	}
 	return nil

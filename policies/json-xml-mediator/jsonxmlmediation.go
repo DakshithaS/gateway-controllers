@@ -418,11 +418,9 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx *policy.RequestContext, _ map
 
 	return policy.UpstreamRequestModifications{
 		Body: convertedBody,
-		UpstreamRequestHeaderModifications: policy.UpstreamRequestHeaderModifications{
-			HeadersToSet: map[string]string{
-				"content-type":   convertedContentType,
-				"content-length": fmt.Sprintf("%d", len(convertedBody)),
-			},
+		HeadersToSet: map[string]string{
+			"content-type":   convertedContentType,
+			"content-length": fmt.Sprintf("%d", len(convertedBody)),
 		},
 	}
 }
@@ -464,11 +462,9 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx *policy.ResponseContext, _ m
 
 	return policy.DownstreamResponseModifications{
 		Body: convertedBody,
-		DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-			HeadersToSet: map[string]string{
-				"content-type":   convertedContentType,
-				"content-length": fmt.Sprintf("%d", len(convertedBody)),
-			},
+		HeadersToSet: map[string]string{
+			"content-type":   convertedContentType,
+			"content-length": fmt.Sprintf("%d", len(convertedBody)),
 		},
 	}
 }
@@ -525,11 +521,9 @@ func (p *JSONXMLMediationPolicy) handleInternalServerErrorResponse(message strin
 	return policy.DownstreamResponseModifications{
 		StatusCode: &statusCode,
 		Body:       bodyBytes,
-		DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-			HeadersToSet: map[string]string{
-				"content-type":   "application/json",
-				"content-length": fmt.Sprintf("%d", len(bodyBytes)),
-			},
+		HeadersToSet: map[string]string{
+			"content-type":   "application/json",
+			"content-length": fmt.Sprintf("%d", len(bodyBytes)),
 		},
 	}
 }

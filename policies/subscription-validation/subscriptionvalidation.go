@@ -10,7 +10,7 @@ import (
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policyenginev1 "github.com/wso2/api-platform/sdk/core/gateway/policyengine/v1"
+	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
 )
 
 const (

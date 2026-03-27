@@ -99,7 +99,7 @@ type RateLimitPolicy struct {
 	apiId          string         // From metadata, API identifier
 	apiName        string         // From metadata, API name for scope-based caching
 	apiVersion     string         // From metadata, API version
-	attachedTo     policy.Level // From metadata, whether policy is attached at API or route level
+	attachedTo     policy.Level   // From metadata, whether policy is attached at API or route level
 	baseCacheKey   string         // Base cache key for tracking limiters in memory backend
 	statusCode     int
 	responseBody   string
@@ -215,8 +215,8 @@ func GetPolicy(
 
 		// Create Redis client
 		redisClient = redis.NewClient(&redis.Options{
-			Addr:         fmt.Sprintf("%s:%d", 
-			redisHost, redisPort),
+			Addr: fmt.Sprintf("%s:%d",
+				redisHost, redisPort),
 			Username:     redisUsername,
 			Password:     redisPassword,
 			DB:           redisDB,
@@ -444,7 +444,6 @@ const (
 	rateLimitHeaderHandledKey = "ratelimit:header_handled" // Quota names fully handled in header phase
 )
 
-
 // quotaResult stores the result of checking a single quota
 type quotaResult struct {
 	QuotaName string
@@ -452,10 +451,6 @@ type quotaResult struct {
 	Key       string
 	Duration  time.Duration // Window duration for IETF RateLimit-Policy header
 }
-
-
-
-
 
 // buildMultiQuotaHeaders creates rate limit headers for all quotas.
 // For IETF headers, uses Structured Fields format to report all quotas.
@@ -1576,7 +1571,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx *policy.ResponseHeaderContext, p
 		return nil
 	}
 
-	return policyv1alpha2.DownstreamResponseHeaderModifications{
+	return policy.DownstreamResponseHeaderModifications{
 		HeadersToSet: headers,
 	}
 }
@@ -1736,9 +1731,7 @@ func (p *RateLimitPolicy) OnResponseBody(
 		}
 
 		return policy.DownstreamResponseModifications{
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: headers,
-			},
+			HeadersToSet: headers,
 		}
 	}
 	return policy.DownstreamResponseModifications{}

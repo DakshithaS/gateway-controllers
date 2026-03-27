@@ -1014,9 +1014,7 @@ func (p *AWSBedrockGuardrailPolicy) buildErrorResponse(reason string, validation
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: map[string]string{"Content-Type": "application/json"},
-			},
+			HeadersToSet:      map[string]string{"Content-Type": "application/json"},
 		}
 	}
 

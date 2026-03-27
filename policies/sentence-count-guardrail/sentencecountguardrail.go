@@ -511,9 +511,7 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validat
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: map[string]string{"Content-Type": "application/json"},
-			},
+			HeadersToSet:      map[string]string{"Content-Type": "application/json"},
 		}
 	}
 

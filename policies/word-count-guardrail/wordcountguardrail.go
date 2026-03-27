@@ -299,9 +299,9 @@ func extractStringFromJSONPath(payload []byte, jsonPath string) (string, error) 
 
 func normalizeExtractedValue(value interface{}) (string, error) {
 	// 1. Handle nil immediately to avoid pointer panics
-    if value == nil {
-        return "", nil 
-    }
+	if value == nil {
+		return "", nil
+	}
 	switch v := value.(type) {
 	case string:
 		return v, nil
@@ -506,10 +506,8 @@ func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationE
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
-				HeadersToSet: map[string]string{
-					"Content-Type": "application/json",
-				},
+			HeadersToSet: map[string]string{
+				"Content-Type": "application/json",
 			},
 		}
 	}
