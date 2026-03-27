@@ -278,6 +278,63 @@ func assertUnauthorizedJSON(t *testing.T, action policyv1alpha2.RequestHeaderAct
 	}
 }
 
+func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
+	resetAPIKeyStore(t)
+	seedExternalAPIKey(t, "api-1", "header-secret", `["GET /orders"]`)
+
+	p := &APIKeyPolicy{}
+	prior := &policyv1alpha2.AuthContext{Authenticated: true, AuthType: "other"}
+
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
+		"X-Api-Key": {"header-secret"},
+	}, "api-1", "OrdersAPI", "v1", "/orders")
+	ctx.SharedContext.AuthContext = prior
+
+	action := p.OnRequestHeaders(ctx, map[string]interface{}{
+		"key": "x-api-key",
+		"in":  "header",
+	})
+
+	if _, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if ctx.SharedContext.AuthContext == nil {
+		t.Fatal("Expected AuthContext to be set")
+	}
+	if ctx.SharedContext.AuthContext.Previous != prior {
+		t.Errorf("Expected Previous to point to prior AuthContext, got %v", ctx.SharedContext.AuthContext.Previous)
+	}
+}
+
+func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnFailure(t *testing.T) {
+	resetAPIKeyStore(t)
+
+	p := &APIKeyPolicy{}
+	prior := &policyv1alpha2.AuthContext{Authenticated: true, AuthType: "other"}
+
+	shared := &policyv1alpha2.SharedContext{
+		RequestID:     "req-1",
+		Metadata:      map[string]interface{}{},
+		APIId:         "api-1",
+		APIName:       "OrdersAPI",
+		APIVersion:    "v1",
+		OperationPath: "/orders",
+	}
+	shared.AuthContext = prior
+
+	resp := p.failAuthV2(shared, 401, "json", "Valid API key required", "invalid API key")
+
+	if resp == nil {
+		t.Fatal("Expected ImmediateResponse from failAuthV2")
+	}
+	if shared.AuthContext == nil {
+		t.Fatal("Expected AuthContext to be set")
+	}
+	if shared.AuthContext.Previous != prior {
+		t.Errorf("Expected Previous to point to prior AuthContext, got %v", shared.AuthContext.Previous)
+	}
+}
+
 func resetAPIKeyStore(t *testing.T) {
 	t.Helper()
 	if err := apikeycommon.GetAPIkeyStoreInstance().ClearAll(); err != nil {
