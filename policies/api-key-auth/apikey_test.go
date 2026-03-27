@@ -51,6 +51,12 @@ func TestAPIKeyPolicy_OnRequestHeaders_SuccessFromHeader(t *testing.T) {
 	if len(mods.HeadersToRemove) != 1 || mods.HeadersToRemove[0] != http.CanonicalHeaderKey("x-api-key") {
 		t.Fatalf("expected HeadersToRemove=[%q], got %v", http.CanonicalHeaderKey("x-api-key"), mods.HeadersToRemove)
 	}
+	if got, ok := mods.AnalyticsMetadata[applicationNameMetadataKey]; !ok || got != "test-app-name" {
+		t.Fatalf("expected %q metadata to be %q, got %v", applicationNameMetadataKey, "test-app-name", got)
+	}
+	if got, ok := mods.AnalyticsMetadata[applicationIDMetadataKey]; !ok || got != "test-app-id" {
+		t.Fatalf("expected %q metadata to be %q, got %v", applicationIDMetadataKey, "test-app-id", got)
+	}
 }
 
 func TestAPIKeyPolicy_OnRequestHeaders_SuccessFromQuery(t *testing.T) {
@@ -74,6 +80,12 @@ func TestAPIKeyPolicy_OnRequestHeaders_SuccessFromQuery(t *testing.T) {
 	}
 	if len(mods.QueryParametersToRemove) != 1 || mods.QueryParametersToRemove[0] != "x_api_key" {
 		t.Fatalf("expected QueryParametersToRemove=[%q], got %v", "x_api_key", mods.QueryParametersToRemove)
+	}
+	if got, ok := mods.AnalyticsMetadata[applicationNameMetadataKey]; !ok || got != "test-app-name" {
+		t.Fatalf("expected %q metadata to be %q, got %v", applicationNameMetadataKey, "test-app-name", got)
+	}
+	if got, ok := mods.AnalyticsMetadata[applicationIDMetadataKey]; !ok || got != "test-app-id" {
+		t.Fatalf("expected %q metadata to be %q, got %v", applicationIDMetadataKey, "test-app-id", got)
 	}
 }
 
@@ -348,6 +360,8 @@ func seedExternalAPIKey(t *testing.T, apiID, plainKey, operations string) {
 		ID:          "id-" + sanitizeTestName(t.Name()),
 		Name:        "name-" + sanitizeTestName(t.Name()),
 		DisplayName: "test-key",
+		ApplicationID:   "test-app-id",
+		ApplicationName: "test-app-name",
 		APIKey:      apikeycommon.ComputeAPIKeyHash(plainKey),
 		APIId:       apiID,
 		Operations:  operations,
