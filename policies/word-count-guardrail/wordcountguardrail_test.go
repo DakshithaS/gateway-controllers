@@ -543,12 +543,12 @@ func TestGetPolicy(t *testing.T) {
 func TestValidatePayload_RequestPaths(t *testing.T) {
 	p := &WordCountGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte(`{"messages":"hello world"}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, false)
+	pass := p.validatePayload([]byte(`{"messages":"hello world"}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, false)
 	if _, ok := pass.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications on valid payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(`{"messages":""}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: true}, false)
+	fail := p.validatePayload([]byte(`{"messages":""}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: true}, false)
 	imm, ok := fail.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on invalid payload, got %T", fail)
@@ -571,12 +571,12 @@ func TestValidatePayload_RequestPaths(t *testing.T) {
 func TestValidatePayload_ResponsePaths(t *testing.T) {
 	p := &WordCountGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte(`{"messages":"hello world"}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, true)
+	pass := p.validatePayload([]byte(`{"messages":"hello world"}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, true)
 	if _, ok := pass.(policyv1alpha2.DownstreamResponseModifications); !ok {
 		t.Fatalf("expected DownstreamResponseModifications on valid response payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(`{"messages":""}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: false}, true)
+	fail := p.validatePayload([]byte(`{"messages":""}`), WordCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: false}, true)
 	resp, ok := fail.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected DownstreamResponseModifications on invalid response payload, got %T", fail)
@@ -606,13 +606,13 @@ func TestValidatePayload_InvertMode(t *testing.T) {
 	}
 
 	// In invert mode, content within range should fail.
-	within := p.validatePayloadV2([]byte(`{"messages":"one two"}`), params, false)
+	within := p.validatePayload([]byte(`{"messages":"one two"}`), params, false)
 	if _, ok := within.(policyv1alpha2.ImmediateResponse); !ok {
 		t.Fatalf("expected ImmediateResponse when in-range payload is rejected in invert mode, got %T", within)
 	}
 
 	// In invert mode, content outside range should pass.
-	outside := p.validatePayloadV2([]byte(`{"messages":"one two three four"}`), params, false)
+	outside := p.validatePayload([]byte(`{"messages":"one two three four"}`), params, false)
 	if _, ok := outside.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications when out-of-range payload passes in invert mode, got %T", outside)
 	}
@@ -622,7 +622,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 	p := &WordCountGuardrailPolicy{}
 	payload := []byte(`{"data":{"text":"one two"}}`)
 
-	pass := p.validatePayloadV2(payload, WordCountGuardrailPolicyParams{
+	pass := p.validatePayload(payload, WordCountGuardrailPolicyParams{
 		Min:      2,
 		Max:      2,
 		JsonPath: "$.data.text",
@@ -631,7 +631,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 		t.Fatalf("expected pass using jsonPath extraction, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2(payload, WordCountGuardrailPolicyParams{
+	fail := p.validatePayload(payload, WordCountGuardrailPolicyParams{
 		Min:            1,
 		Max:            10,
 		JsonPath:       "$.missing",

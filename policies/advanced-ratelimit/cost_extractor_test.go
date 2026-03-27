@@ -29,7 +29,7 @@ func TestCostExtractor_ExtractResponseCostV2_PlainBody(t *testing.T) {
 		},
 	}
 
-	cost, extracted := extractor.ExtractResponseCostV2(ctx)
+	cost, extracted := extractor.ExtractResponseCost(ctx)
 	if !extracted {
 		t.Fatal("expected extraction from response body to succeed")
 	}
@@ -61,7 +61,7 @@ func TestCostExtractor_ExtractResponseCostV2_FallsBackToDefault(t *testing.T) {
 		},
 	}
 
-	cost, extracted := extractor.ExtractResponseCostV2(ctx)
+	cost, extracted := extractor.ExtractResponseCost(ctx)
 	if extracted {
 		t.Fatal("expected extraction to fail for invalid JSON payload")
 	}

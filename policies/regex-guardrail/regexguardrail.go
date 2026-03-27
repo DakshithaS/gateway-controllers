@@ -236,7 +236,7 @@ func (p *RegexGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext,
 	if ctx.Body != nil {
 		content = ctx.Body.Content
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates response body against regex pattern.
@@ -249,11 +249,11 @@ func (p *RegexGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseContex
 	if ctx.ResponseBody != nil {
 		content = ctx.ResponseBody.Content
 	}
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
 }
 
-// validatePayloadV2 validates payload against regex pattern, returning policyv1alpha2 actions.
-func (p *RegexGuardrailPolicy) validatePayloadV2(payload []byte, params RegexGuardrailPolicyParams, isResponse bool) interface{} {
+// validatePayload validates payload against regex pattern, returning policyv1alpha2 actions.
+func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuardrailPolicyParams, isResponse bool) interface{} {
 	if len(payload) == 0 {
 		if isResponse {
 			return policyv1alpha2.DownstreamResponseModifications{}
@@ -263,13 +263,13 @@ func (p *RegexGuardrailPolicy) validatePayloadV2(payload []byte, params RegexGua
 	extractedValue, err := utils.ExtractStringValueFromJsonpath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("RegexGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment)
 	}
 
 	compiledRegex, err := regexp.Compile(params.Regex)
 	if err != nil {
 		slog.Debug("RegexGuardrail: Invalid regex pattern", "regex", params.Regex, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Invalid regex pattern", err, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Invalid regex pattern", err, isResponse, params.ShowAssessment)
 	}
 	matched := compiledRegex.MatchString(extractedValue)
 
@@ -282,7 +282,7 @@ func (p *RegexGuardrailPolicy) validatePayloadV2(payload []byte, params RegexGua
 
 	if !validationPassed {
 		slog.Debug("RegexGuardrail: Validation failed", "regex", params.Regex, "matched", matched, "invert", params.Invert, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Violated regular expression: "+params.Regex, nil, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Violated regular expression: "+params.Regex, nil, isResponse, params.ShowAssessment)
 	}
 
 	slog.Debug("RegexGuardrail: Validation passed", "regex", params.Regex, "matched", matched, "invert", params.Invert, "isResponse", isResponse)
@@ -347,7 +347,7 @@ func (p *RegexGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.ResponseS
 		if !chunk.EndOfStream {
 			return policyv1alpha2.ResponseChunkAction{}
 		}
-		result := p.validatePayloadV2([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true)
 		if mod, ok := result.(policyv1alpha2.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policyv1alpha2.ResponseChunkAction{Body: mod.Body}
 		}
@@ -474,8 +474,8 @@ func (p *RegexGuardrailPolicy) buildSSEErrorEvent(rp RegexGuardrailPolicyParams)
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
-func (p *RegexGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool) interface{} {
+// buildErrorResponse builds a policyv1alpha2 error response for both request and response phases.
+func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,

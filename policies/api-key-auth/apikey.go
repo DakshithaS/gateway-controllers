@@ -149,14 +149,14 @@ func (p *APIKeyPolicy) authenticate(
 	keyName, ok := params["key"].(string)
 	if !ok || keyName == "" {
 		slog.Debug("API Key Auth Policy: Missing or invalid 'key' configuration")
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
+		return p.failAuth(shared, 401, "json", "Valid API key required",
 			"missing or invalid 'key' configuration")
 	}
 
 	location, ok := params["in"].(string)
 	if !ok || location == "" {
 		slog.Debug("API Key Auth Policy: Missing or invalid 'in' configuration")
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
+		return p.failAuth(shared, 401, "json", "Valid API key required",
 			"missing or invalid 'in' configuration")
 	}
 
@@ -180,13 +180,13 @@ func (p *APIKeyPolicy) authenticate(
 		}
 	default:
 		slog.Debug("API Key Auth Policy: Unsupported location", "location", location)
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
+		return p.failAuth(shared, 401, "json", "Valid API key required",
 			"missing or invalid 'in' configuration")
 	}
 
 	if providedKey == "" {
 		slog.Debug("API Key Auth Policy: No API key found", "location", location, "keyName", keyName)
-		return p.failAuthV2(shared, 401, "json", "Valid API key required", "missing API key")
+		return p.failAuth(shared, 401, "json", "Valid API key required", "missing API key")
 	}
 
 	apiId := shared.APIId
@@ -199,7 +199,7 @@ func (p *APIKeyPolicy) authenticate(
 		slog.Debug("API Key Auth Policy: Missing API details for validation",
 			"apiId", apiId, "apiName", apiName, "apiVersion", apiVersion,
 			"apiOperation", apiOperation, "operationMethod", operationMethod)
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
+		return p.failAuth(shared, 401, "json", "Valid API key required",
 			"missing API details for validation")
 	}
 
@@ -211,12 +211,12 @@ func (p *APIKeyPolicy) authenticate(
 	resolvedKey, err := p.resolveValidatedAPIKey(apiId, apiOperation, operationMethod, providedKey, issuer)
 	if err != nil {
 		slog.Debug("API Key Auth Policy: Validation error", "error", err)
-		return p.failAuthV2(shared, 401, "json", "Valid API key required",
+		return p.failAuth(shared, 401, "json", "Valid API key required",
 			"error validating API key")
 	}
 	if resolvedKey == nil {
 		slog.Debug("API Key Auth Policy: Invalid API key")
-		return p.failAuthV2(shared, 401, "json", "Valid API key required", "invalid API key")
+		return p.failAuth(shared, 401, "json", "Valid API key required", "invalid API key")
 	}
 
 	slog.Debug("API Key Auth Policy: Authentication successful")
@@ -228,8 +228,8 @@ func (p *APIKeyPolicy) authenticate(
 	return nil
 }
 
-// failAuthV2 sets the auth context to unauthenticated and returns a policyv1alpha2.ImmediateResponse.
-func (p *APIKeyPolicy) failAuthV2(shared *policyv1alpha2.SharedContext, statusCode int, errorFormat, errorMessage, reason string) *policyv1alpha2.ImmediateResponse {
+// failAuth sets the auth context to unauthenticated and returns a policyv1alpha2.ImmediateResponse.
+func (p *APIKeyPolicy) failAuth(shared *policyv1alpha2.SharedContext, statusCode int, errorFormat, errorMessage, reason string) *policyv1alpha2.ImmediateResponse {
 	shared.AuthContext = &policyv1alpha2.AuthContext{
 		Authenticated: false,
 		AuthType:      AuthType,

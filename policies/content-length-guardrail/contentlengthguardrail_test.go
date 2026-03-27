@@ -382,12 +382,12 @@ func TestGetPolicy(t *testing.T) {
 func TestValidatePayload_RequestPaths(t *testing.T) {
 	p := &ContentLengthGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte("hello"), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10}, false)
+	pass := p.validatePayload([]byte("hello"), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10}, false)
 	if _, ok := pass.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications on valid payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(""), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10, ShowAssessment: true}, false)
+	fail := p.validatePayload([]byte(""), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10, ShowAssessment: true}, false)
 	imm, ok := fail.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on invalid payload, got %T", fail)
@@ -410,12 +410,12 @@ func TestValidatePayload_RequestPaths(t *testing.T) {
 func TestValidatePayload_ResponsePaths(t *testing.T) {
 	p := &ContentLengthGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte("hello"), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10}, true)
+	pass := p.validatePayload([]byte("hello"), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10}, true)
 	if _, ok := pass.(policyv1alpha2.DownstreamResponseModifications); !ok {
 		t.Fatalf("expected DownstreamResponseModifications on valid response payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(""), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10, ShowAssessment: false}, true)
+	fail := p.validatePayload([]byte(""), ContentLengthGuardrailPolicyParams{Min: 1, Max: 10, ShowAssessment: false}, true)
 	resp, ok := fail.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected DownstreamResponseModifications on invalid response payload, got %T", fail)
@@ -444,13 +444,13 @@ func TestValidatePayload_InvertMode(t *testing.T) {
 	}
 
 	// In invert mode, content within range should fail.
-	within := p.validatePayloadV2([]byte("ab"), params, false)
+	within := p.validatePayload([]byte("ab"), params, false)
 	if _, ok := within.(policyv1alpha2.ImmediateResponse); !ok {
 		t.Fatalf("expected ImmediateResponse when in-range payload is rejected in invert mode, got %T", within)
 	}
 
 	// In invert mode, content outside range should pass.
-	outside := p.validatePayloadV2([]byte("abcd"), params, false)
+	outside := p.validatePayload([]byte("abcd"), params, false)
 	if _, ok := outside.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications when out-of-range payload passes in invert mode, got %T", outside)
 	}
@@ -460,7 +460,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 	p := &ContentLengthGuardrailPolicy{}
 	payload := []byte(`{"data":{"text":"abc"}}`)
 
-	pass := p.validatePayloadV2(payload, ContentLengthGuardrailPolicyParams{
+	pass := p.validatePayload(payload, ContentLengthGuardrailPolicyParams{
 		Min:      3,
 		Max:      3,
 		JsonPath: "$.data.text",
@@ -469,7 +469,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 		t.Fatalf("expected pass using jsonPath extraction, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2(payload, ContentLengthGuardrailPolicyParams{
+	fail := p.validatePayload(payload, ContentLengthGuardrailPolicyParams{
 		Min:            1,
 		Max:            10,
 		JsonPath:       "$.missing",

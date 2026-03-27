@@ -398,9 +398,9 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContex
 		return policyv1alpha2.UpstreamRequestModifications{}
 	}
 
-	contentType := getFirstHeaderV2(ctx.Headers, "content-type")
+	contentType := getFirstHeader(ctx.Headers, "content-type")
 	if !matchesContentType(contentType, p.downstreamPayloadFormat) {
-		return p.handleInternalServerErrorV2(fmt.Sprintf(
+		return p.handleInternalServerError(fmt.Sprintf(
 			"Content-Type must be %s for downstream payload format %s",
 			expectedContentTypeMessage(p.downstreamPayloadFormat),
 			p.downstreamPayloadFormat,
@@ -413,7 +413,7 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContex
 		p.upstreamPayloadFormat,
 	)
 	if convErr != nil {
-		return p.handleInternalServerErrorV2(convErr.Error())
+		return p.handleInternalServerError(convErr.Error())
 	}
 
 	return policyv1alpha2.UpstreamRequestModifications{
@@ -444,9 +444,9 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseCont
 		return policyv1alpha2.DownstreamResponseModifications{}
 	}
 
-	contentType := getFirstHeaderV2(ctx.ResponseHeaders, "content-type")
+	contentType := getFirstHeader(ctx.ResponseHeaders, "content-type")
 	if !matchesContentType(contentType, p.upstreamPayloadFormat) {
-		return p.handleInternalServerErrorResponseV2(fmt.Sprintf(
+		return p.handleInternalServerErrorResponse(fmt.Sprintf(
 			"Content-Type must be %s in response for upstream payload format %s",
 			expectedContentTypeMessage(p.upstreamPayloadFormat),
 			p.upstreamPayloadFormat,
@@ -459,7 +459,7 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseCont
 		p.downstreamPayloadFormat,
 	)
 	if convErr != nil {
-		return p.handleInternalServerErrorResponseV2(convErr.Error())
+		return p.handleInternalServerErrorResponse(convErr.Error())
 	}
 
 	return policyv1alpha2.DownstreamResponseModifications{
@@ -486,7 +486,7 @@ func isSSEResponse(s string) bool {
 	return false
 }
 
-func (p *JSONXMLMediationPolicy) handleInternalServerErrorV2(message string) policyv1alpha2.RequestAction {
+func (p *JSONXMLMediationPolicy) handleInternalServerError(message string) policyv1alpha2.RequestAction {
 	errorResponse := map[string]interface{}{
 		"error":   "Internal Server Error",
 		"message": message,
@@ -503,7 +503,7 @@ func (p *JSONXMLMediationPolicy) handleInternalServerErrorV2(message string) pol
 	}
 }
 
-func getFirstHeaderV2(headers *policyv1alpha2.Headers, key string) string {
+func getFirstHeader(headers *policyv1alpha2.Headers, key string) string {
 	if headers == nil {
 		return ""
 	}
@@ -514,7 +514,7 @@ func getFirstHeaderV2(headers *policyv1alpha2.Headers, key string) string {
 	return strings.ToLower(vals[0])
 }
 
-func (p *JSONXMLMediationPolicy) handleInternalServerErrorResponseV2(message string) policyv1alpha2.ResponseAction {
+func (p *JSONXMLMediationPolicy) handleInternalServerErrorResponse(message string) policyv1alpha2.ResponseAction {
 	errorResponse := map[string]interface{}{
 		"error":   "Internal Server Error",
 		"message": message,

@@ -322,10 +322,10 @@ func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnFailure(t *testing.T) {
 	}
 	shared.AuthContext = prior
 
-	resp := p.failAuthV2(shared, 401, "json", "Valid API key required", "invalid API key")
+	resp := p.failAuth(shared, 401, "json", "Valid API key required", "invalid API key")
 
 	if resp == nil {
-		t.Fatal("Expected ImmediateResponse from failAuthV2")
+		t.Fatal("Expected ImmediateResponse from failAuth")
 	}
 	if shared.AuthContext == nil {
 		t.Fatal("Expected AuthContext to be set")

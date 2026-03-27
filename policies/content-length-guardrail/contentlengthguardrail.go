@@ -294,7 +294,7 @@ func (p *ContentLengthGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.Request
 		}
 	}
 
-	return p.validatePayloadV2(ctx.Body.Content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(ctx.Body.Content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates response body content length.
@@ -307,15 +307,15 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.Respon
 	if ctx.ResponseBody != nil {
 		content = ctx.ResponseBody.Content
 	}
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
 }
 
-// validatePayloadV2 validates payload content length, returning policyv1alpha2 actions.
-func (p *ContentLengthGuardrailPolicy) validatePayloadV2(payload []byte, params ContentLengthGuardrailPolicyParams, isResponse bool) interface{} {
+// validatePayload validates payload content length, returning policyv1alpha2 actions.
+func (p *ContentLengthGuardrailPolicy) validatePayload(payload []byte, params ContentLengthGuardrailPolicyParams, isResponse bool) interface{} {
 	extractedValue, err := utils.ExtractStringValueFromJsonpath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("ContentLengthGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -340,7 +340,7 @@ func (p *ContentLengthGuardrailPolicy) validatePayloadV2(payload []byte, params 
 		} else {
 			reason = fmt.Sprintf("content length %d bytes is outside the allowed range %d-%d bytes", byteCount, params.Min, params.Max)
 		}
-		return p.buildErrorResponseV2(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	slog.Debug("ContentLengthGuardrail: Validation passed", "byteCount", byteCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
@@ -423,7 +423,7 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 		if !chunk.EndOfStream {
 			return policyv1alpha2.ResponseChunkAction{}
 		}
-		result := p.validatePayloadV2([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true)
 		if mod, ok := result.(policyv1alpha2.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policyv1alpha2.ResponseChunkAction{Body: mod.Body}
 		}
@@ -622,8 +622,8 @@ func (p *ContentLengthGuardrailPolicy) buildSSEErrorEvent(reason string, showAss
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
-func (p *ContentLengthGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
+// buildErrorResponse builds a policyv1alpha2 error response for both request and response phases.
+func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,

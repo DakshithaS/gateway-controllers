@@ -1789,8 +1789,8 @@ func TestSetCostMetadataV2_Formatting(t *testing.T) {
 		{1.23456789012345, "1.2345678901"},
 	}
 	for _, tc := range cases {
-		ctx := makeResponseContextV2(nil)
-		result := setCostMetadataV2(ctx, tc.cost, costStatusCalculated)
+		ctx := makeResponseContext(nil)
+		result := setCostMetadata(ctx, tc.cost, costStatusCalculated)
 		_, ok := result.(policyv1alpha2.DownstreamResponseModifications)
 		if !ok {
 			t.Fatalf("unexpected action type")
@@ -1810,7 +1810,7 @@ func TestSetCostMetadataV2_Formatting(t *testing.T) {
 // OnResponseBody -- cost status
 // ---------------------------------------------------------------------------
 
-func makeResponseContextV2(body []byte) *policyv1alpha2.ResponseContext {
+func makeResponseContext(body []byte) *policyv1alpha2.ResponseContext {
 	ctx := &policyv1alpha2.ResponseContext{
 		SharedContext: &policyv1alpha2.SharedContext{
 			Metadata: make(map[string]interface{}),
@@ -1822,7 +1822,7 @@ func makeResponseContextV2(body []byte) *policyv1alpha2.ResponseContext {
 	return ctx
 }
 
-func assertCostMetadataV2(t *testing.T, ctx *policyv1alpha2.ResponseContext, action policyv1alpha2.ResponseAction, wantStatus string, wantCost string) {
+func assertCostMetadata(t *testing.T, ctx *policyv1alpha2.ResponseContext, action policyv1alpha2.ResponseAction, wantStatus string, wantCost string) {
 	t.Helper()
 	_, ok := action.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
@@ -1846,9 +1846,9 @@ func TestOnResponseBody_SuccessStatus_Calculated(t *testing.T) {
 		"model": "gpt-4o-mini-2024-07-18",
 		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 	}`)
-	ctx := makeResponseContextV2(body)
+	ctx := makeResponseContext(body)
 	action := p.OnResponseBody(ctx, nil)
-	assertCostMetadataV2(t, ctx, action, costStatusCalculated, "")
+	assertCostMetadata(t, ctx, action, costStatusCalculated, "")
 	// Also verify the cost metadata is non-empty (exact value tested in calculator tests).
 	if gotCost, _ := ctx.Metadata[MetadataLLMCost].(string); gotCost == "" {
 		t.Error("expected non-empty x-llm-cost in metadata")
@@ -1861,27 +1861,27 @@ func TestOnResponseBody_EmptyBody_NotCalculated(t *testing.T) {
 		SharedContext: &policyv1alpha2.SharedContext{Metadata: make(map[string]interface{})},
 		ResponseBody:  &policyv1alpha2.Body{Present: false},
 	}
-	assertCostMetadataV2(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
+	assertCostMetadata(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
 }
 
 func TestOnResponseBody_UnparsableBody_NotCalculated(t *testing.T) {
 	p := &LLMCostPolicy{pricingMap: testPricingMap}
-	ctx := makeResponseContextV2([]byte("not json"))
-	assertCostMetadataV2(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
+	ctx := makeResponseContext([]byte("not json"))
+	assertCostMetadata(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
 }
 
 func TestOnResponseBody_NoModelName_NotCalculated(t *testing.T) {
 	p := &LLMCostPolicy{pricingMap: testPricingMap}
 	body := []byte(`{"usage": {"prompt_tokens": 10}}`)
-	ctx := makeResponseContextV2(body)
-	assertCostMetadataV2(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
 }
 
 func TestOnResponseBody_UnknownModel_NotCalculated(t *testing.T) {
 	p := &LLMCostPolicy{pricingMap: testPricingMap}
 	body := []byte(`{"model": "totally-unknown-model-xyz", "usage": {"prompt_tokens": 10}}`)
-	ctx := makeResponseContextV2(body)
-	assertCostMetadataV2(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(ctx, nil), costStatusNotCalculated, "0.0000000000")
 }
 
 // ---------------------------------------------------------------------------

@@ -378,7 +378,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(ctx *policyv1alpha2.RequestCo
 
 	extractedValue, ok, err := extractStringFromPath(payload, p.params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponseV2(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policyv1alpha2.RequestAction)
+		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policyv1alpha2.RequestAction)
 	}
 	if !ok {
 		// Value at path is not a scalar (e.g. multimodal content array); skip masking.
@@ -397,7 +397,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(ctx *policyv1alpha2.RequestCo
 		}
 		modifiedContent, err = p.maskPIIFromContent(extractedValue, p.params.PIIEntities, ctx.Metadata)
 		if err != nil {
-			return p.buildErrorResponseV2(fmt.Sprintf("error masking PII: %v", err)).(policyv1alpha2.RequestAction)
+			return p.buildErrorResponse(fmt.Sprintf("error masking PII: %v", err)).(policyv1alpha2.RequestAction)
 		}
 	}
 
@@ -865,7 +865,7 @@ func extractStringFromPath(payload []byte, jsonPath string) (string, bool, error
 	}
 }
 
-func (p *PIIMaskingRegexPolicy) buildErrorResponseV2(reason string) interface{} {
+func (p *PIIMaskingRegexPolicy) buildErrorResponse(reason string) interface{} {
 	responseBody := map[string]interface{}{
 		"code":    APIMInternalExceptionCode,
 		"message": "Error occurred during pii-masking-regex mediation: " + reason,

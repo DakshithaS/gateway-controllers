@@ -285,7 +285,7 @@ func (p *AzureContentSafetyContentModerationPolicy) OnRequestBody(ctx *policyv1a
 	if ctx.Body != nil {
 		content = ctx.Body.Content
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates response body content
@@ -298,11 +298,11 @@ func (p *AzureContentSafetyContentModerationPolicy) OnResponseBody(ctx *policyv1
 	if ctx.ResponseBody != nil {
 		content = ctx.ResponseBody.Content
 	}
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
 }
 
-// validatePayloadV2 validates payload against Azure Content Safety, returning policyv1alpha2 actions.
-func (p *AzureContentSafetyContentModerationPolicy) validatePayloadV2(payload []byte, params AzureContentSafetyPolicyParams, isResponse bool) interface{} {
+// validatePayload validates payload against Azure Content Safety, returning policyv1alpha2 actions.
+func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []byte, params AzureContentSafetyPolicyParams, isResponse bool) interface{} {
 	categoryMap := p.buildCategoryMap(params)
 	categories := p.getValidCategories(categoryMap)
 
@@ -331,7 +331,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayloadV2(payload []
 			return policyv1alpha2.UpstreamRequestModifications{}
 		}
 		slog.Debug("AzureContentSafety: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil, "")
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil, "")
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -347,7 +347,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayloadV2(payload []
 			return policyv1alpha2.UpstreamRequestModifications{}
 		}
 		slog.Debug("AzureContentSafety: Error calling Azure Content Safety API", "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error calling Azure Content Safety API", err, isResponse, params.ShowAssessment, nil, "")
+		return p.buildErrorResponse("Error calling Azure Content Safety API", err, isResponse, params.ShowAssessment, nil, "")
 	}
 
 	for _, analysis := range categoriesAnalysis {
@@ -358,7 +358,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayloadV2(payload []
 
 		if threshold >= 0 && severity >= threshold {
 			slog.Debug("AzureContentSafety: Violation detected", "category", category, "severity", severity, "threshold", threshold, "isResponse", isResponse)
-			return p.buildErrorResponseV2("Violation of Azure content safety content moderation detected", nil, isResponse, params.ShowAssessment, categoriesAnalysis, extractedValue)
+			return p.buildErrorResponse("Violation of Azure content safety content moderation detected", nil, isResponse, params.ShowAssessment, categoriesAnalysis, extractedValue)
 		}
 	}
 
@@ -370,8 +370,8 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayloadV2(payload []
 	return policyv1alpha2.UpstreamRequestModifications{}
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases
-func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, categoriesAnalysis []map[string]interface{}, inspectedContent string) interface{} {
+// buildErrorResponse builds a policyv1alpha2 error response for both request and response phases
+func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, categoriesAnalysis []map[string]interface{}, inspectedContent string) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, categoriesAnalysis, inspectedContent)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,

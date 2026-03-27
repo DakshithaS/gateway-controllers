@@ -382,7 +382,7 @@ func (p *SentenceCountGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.Request
 	if ctx.Body != nil {
 		content = ctx.Body.Content
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates response body sentence count.
@@ -410,7 +410,7 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.Respon
 		return p.validateSentenceCountInText(text, p.responseParams, true)
 	}
 
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
 }
 
 // validateSentenceCountInText validates sentence count on pre-extracted text,
@@ -435,18 +435,18 @@ func (p *SentenceCountGuardrailPolicy) validateSentenceCountInText(text string, 
 		}
 		slog.Debug("SentenceCountGuardrail: buffered SSE validation failed",
 			"count", count, "min", params.Min, "max", params.Max, "invert", params.Invert)
-		return p.buildErrorResponseV2(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max).(policyv1alpha2.ResponseAction)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max).(policyv1alpha2.ResponseAction)
 	}
 
 	return policyv1alpha2.DownstreamResponseModifications{}
 }
 
-// validatePayloadV2 validates payload sentence count, returning policyv1alpha2 actions.
-func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params SentenceCountGuardrailPolicyParams, isResponse bool) interface{} {
+// validatePayload validates payload sentence count, returning policyv1alpha2 actions.
+func (p *SentenceCountGuardrailPolicy) validatePayload(payload []byte, params SentenceCountGuardrailPolicyParams, isResponse bool) interface{} {
 	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("SentenceCountGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -477,7 +477,7 @@ func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params 
 		} else {
 			reason = fmt.Sprintf("sentence count %d is outside the allowed range %d-%d sentences", sentenceCount, params.Min, params.Max)
 		}
-		return p.buildErrorResponseV2(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	slog.Debug("SentenceCountGuardrail: Validation passed", "sentenceCount", sentenceCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
@@ -487,8 +487,8 @@ func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params 
 	return policyv1alpha2.UpstreamRequestModifications{}
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
-func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
+// buildErrorResponse builds a policyv1alpha2 error response for both request and response phases.
+func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
@@ -611,7 +611,7 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 			}
 			return policyv1alpha2.ResponseChunkAction{}
 		}
-		result := p.validatePayloadV2([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true)
 		if mod, ok := result.(policyv1alpha2.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policyv1alpha2.ResponseChunkAction{Body: mod.Body}
 		}

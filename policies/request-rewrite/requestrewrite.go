@@ -364,7 +364,7 @@ func (p *RequestRewritePolicy) computeRewrite(ctx *policyv1alpha2.RequestHeaderC
 		return nil, nil, nil
 	}
 
-	if !matchesRequestV2(ctx, cfg.Match) {
+	if !matchesRequest(ctx, cfg.Match) {
 		slog.Debug("[Request Rewrite]: Match conditions not met, skipping transformations")
 		return nil, nil, nil
 	}
@@ -427,7 +427,7 @@ func (p *RequestRewritePolicy) computeRewrite(ctx *policyv1alpha2.RequestHeaderC
 	return newPath, newMethod, nil
 }
 
-func matchesRequestV2(ctx *policyv1alpha2.RequestHeaderContext, match *matchConfig) bool {
+func matchesRequest(ctx *policyv1alpha2.RequestHeaderContext, match *matchConfig) bool {
 	if match == nil {
 		return true
 	}
@@ -437,7 +437,7 @@ func matchesRequestV2(ctx *policyv1alpha2.RequestHeaderContext, match *matchConf
 	}
 
 	for _, matcher := range match.Headers {
-		if !matchHeaderV2(ctx, matcher) {
+		if !matchHeader(ctx, matcher) {
 			return false
 		}
 	}
@@ -454,7 +454,7 @@ func matchesRequestV2(ctx *policyv1alpha2.RequestHeaderContext, match *matchConf
 	return true
 }
 
-func matchHeaderV2(ctx *policyv1alpha2.RequestHeaderContext, matcher headerMatcher) bool {
+func matchHeader(ctx *policyv1alpha2.RequestHeaderContext, matcher headerMatcher) bool {
 	name := strings.TrimSpace(matcher.Name)
 	if name == "" {
 		return false

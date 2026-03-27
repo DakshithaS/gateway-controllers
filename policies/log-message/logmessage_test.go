@@ -206,7 +206,7 @@ func TestBuildHeadersMapV2_MasksAuthorizationAndExcludes(t *testing.T) {
 		"X-Multi":       {"one", "two"},
 	})
 
-	result := p.buildHeadersMapV2(headers, map[string]struct{}{"x-api-key": {}})
+	result := p.buildHeadersMap(headers, map[string]struct{}{"x-api-key": {}})
 
 	authValue, ok := getHeaderValue(result, "authorization")
 	if !ok {
@@ -235,31 +235,31 @@ func TestBuildHeadersMapV2_MasksAuthorizationAndExcludes(t *testing.T) {
 
 func TestBuildHeadersMapV2_NilHeaders(t *testing.T) {
 	p := &LogMessagePolicy{}
-	result := p.buildHeadersMapV2(nil, map[string]struct{}{})
+	result := p.buildHeadersMap(nil, map[string]struct{}{})
 	if len(result) != 0 {
 		t.Fatalf("expected empty map for nil headers, got %v", result)
 	}
 }
 
-func TestGetRequestIDV2(t *testing.T) {
+func TestGetRequestID(t *testing.T) {
 	p := &LogMessagePolicy{}
 
 	t.Run("present", func(t *testing.T) {
 		headers := createTestHeaders(map[string]string{"x-request-id": "req-123"})
-		if requestID := p.getRequestIDV2(headers); requestID != "req-123" {
+		if requestID := p.getRequestID(headers); requestID != "req-123" {
 			t.Fatalf("expected req-123, got %s", requestID)
 		}
 	})
 
 	t.Run("missing", func(t *testing.T) {
 		headers := createTestHeaders(map[string]string{"content-type": "application/json"})
-		if requestID := p.getRequestIDV2(headers); requestID != ErrMsgMissingReqID {
+		if requestID := p.getRequestID(headers); requestID != ErrMsgMissingReqID {
 			t.Fatalf("expected %s, got %s", ErrMsgMissingReqID, requestID)
 		}
 	})
 
 	t.Run("nil headers", func(t *testing.T) {
-		if requestID := p.getRequestIDV2(nil); requestID != ErrMsgMissingReqID {
+		if requestID := p.getRequestID(nil); requestID != ErrMsgMissingReqID {
 			t.Fatalf("expected %s, got %s", ErrMsgMissingReqID, requestID)
 		}
 	})

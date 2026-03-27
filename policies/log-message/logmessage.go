@@ -161,10 +161,10 @@ func (p *LogMessagePolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderCon
 
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
-		RequestID:     p.getRequestIDV2(ctx.Headers),
+		RequestID:     p.getRequestID(ctx.Headers),
 		HTTPMethod:    ctx.Method,
 		ResourcePath:  ctx.Path,
-		Headers:       p.buildHeadersMapV2(ctx.Headers, config.excludedHeaders),
+		Headers:       p.buildHeadersMap(ctx.Headers, config.excludedHeaders),
 	}
 
 	p.logMessage(logRecord)
@@ -185,7 +185,7 @@ func (p *LogMessagePolicy) OnResponseHeaders(ctx *policyv1alpha2.ResponseHeaderC
 		RequestID:     p.getResponseRequestIDv2(ctx.ResponseHeaders),
 		HTTPMethod:    ctx.RequestMethod,
 		ResourcePath:  ctx.RequestPath,
-		Headers:       p.buildHeadersMapV2(ctx.ResponseHeaders, config.excludedHeaders),
+		Headers:       p.buildHeadersMap(ctx.ResponseHeaders, config.excludedHeaders),
 	}
 
 	p.logMessage(logRecord)
@@ -206,7 +206,7 @@ func (p *LogMessagePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, par
 	// Create log record
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
-		RequestID:     p.getRequestIDV2(ctx.Headers),
+		RequestID:     p.getRequestID(ctx.Headers),
 		HTTPMethod:    ctx.Method,
 		ResourcePath:  ctx.Path,
 	}
@@ -282,7 +282,7 @@ func (p *LogMessagePolicy) OnRequestBodyChunk(ctx *policyv1alpha2.RequestStreamC
 
 	logRecord := LogRecord{
 		MediationFlow: MediationFlowRequest,
-		RequestID:     p.getRequestIDV2(ctx.Headers),
+		RequestID:     p.getRequestID(ctx.Headers),
 		HTTPMethod:    ctx.Method,
 		ResourcePath:  ctx.Path,
 		Payload:       string(chunk.Chunk),
@@ -320,7 +320,7 @@ func (p *LogMessagePolicy) OnResponseBodyChunk(ctx *policyv1alpha2.ResponseStrea
 }
 
 // getRequestID extracts request ID from request headers
-func (p *LogMessagePolicy) getRequestIDV2(headers *policyv1alpha2.Headers) string {
+func (p *LogMessagePolicy) getRequestID(headers *policyv1alpha2.Headers) string {
 	if headers == nil {
 		return ErrMsgMissingReqID
 	}
@@ -342,7 +342,7 @@ func (p *LogMessagePolicy) getResponseRequestIDv2(headers *policyv1alpha2.Header
 }
 
 // buildHeadersMap builds a map of headers for logging, excluding sensitive ones
-func (p *LogMessagePolicy) buildHeadersMapV2(headers *policyv1alpha2.Headers, excludedHeaders map[string]struct{}) map[string]interface{} {
+func (p *LogMessagePolicy) buildHeadersMap(headers *policyv1alpha2.Headers, excludedHeaders map[string]struct{}) map[string]interface{} {
 	headersMap := make(map[string]interface{})
 	if headers == nil {
 		return headersMap

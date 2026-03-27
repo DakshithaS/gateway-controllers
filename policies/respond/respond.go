@@ -111,7 +111,7 @@ func (p *RespondPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContex
 	if statusCodeRaw, ok := params["statusCode"]; ok {
 		parsedStatusCode, err := parseStatusCode(statusCodeRaw)
 		if err != nil {
-			return configErrorV2(err.Error())
+			return configError(err.Error())
 		}
 		statusCode = parsedStatusCode
 	}
@@ -120,7 +120,7 @@ func (p *RespondPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContex
 	if bodyRaw, ok := params["body"]; ok {
 		bodyString, ok := bodyRaw.(string)
 		if !ok {
-			return configErrorV2("body must be a string")
+			return configError("body must be a string")
 		}
 		body = []byte(bodyString)
 	}
@@ -129,45 +129,45 @@ func (p *RespondPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContex
 	if headersRaw, ok := params["headers"]; ok {
 		headersList, ok := headersRaw.([]interface{})
 		if !ok {
-			return configErrorV2("headers must be an array")
+			return configError("headers must be an array")
 		}
 		for i, headerRaw := range headersList {
 			headerMap, ok := headerRaw.(map[string]interface{})
 			if !ok {
-				return configErrorV2(fmt.Sprintf("headers[%d] must be an object", i))
+				return configError(fmt.Sprintf("headers[%d] must be an object", i))
 			}
 			if err := validateHeaderObjectKeys(headerMap, i); err != nil {
-				return configErrorV2(err.Error())
+				return configError(err.Error())
 			}
 
 			nameRaw, ok := headerMap["name"]
 			if !ok {
-				return configErrorV2(fmt.Sprintf("headers[%d] missing required 'name' field", i))
+				return configError(fmt.Sprintf("headers[%d] missing required 'name' field", i))
 			}
 			name, ok := nameRaw.(string)
 			if !ok {
-				return configErrorV2(fmt.Sprintf("headers[%d].name must be a string", i))
+				return configError(fmt.Sprintf("headers[%d].name must be a string", i))
 			}
 			if name == "" {
-				return configErrorV2(fmt.Sprintf("headers[%d].name cannot be empty", i))
+				return configError(fmt.Sprintf("headers[%d].name cannot be empty", i))
 			}
 			if len(name) > headerNameMaxLen {
-				return configErrorV2(fmt.Sprintf("headers[%d].name must not exceed %d characters", i, headerNameMaxLen))
+				return configError(fmt.Sprintf("headers[%d].name must not exceed %d characters", i, headerNameMaxLen))
 			}
 			if !headerNamePattern.MatchString(name) {
-				return configErrorV2(fmt.Sprintf("headers[%d].name contains invalid characters", i))
+				return configError(fmt.Sprintf("headers[%d].name contains invalid characters", i))
 			}
 
 			valueRaw, ok := headerMap["value"]
 			if !ok {
-				return configErrorV2(fmt.Sprintf("headers[%d] missing required 'value' field", i))
+				return configError(fmt.Sprintf("headers[%d] missing required 'value' field", i))
 			}
 			value, ok := valueRaw.(string)
 			if !ok {
-				return configErrorV2(fmt.Sprintf("headers[%d].value must be a string", i))
+				return configError(fmt.Sprintf("headers[%d].value must be a string", i))
 			}
 			if len(value) > headerValueMaxLen {
-				return configErrorV2(fmt.Sprintf("headers[%d].value must not exceed %d characters", i, headerValueMaxLen))
+				return configError(fmt.Sprintf("headers[%d].value must not exceed %d characters", i, headerValueMaxLen))
 			}
 
 			headers[name] = value
@@ -182,7 +182,7 @@ func (p *RespondPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderContex
 }
 
 // configError returns a 500 error response for configuration issues
-func configErrorV2(message string) policyv1alpha2.ImmediateResponse {
+func configError(message string) policyv1alpha2.ImmediateResponse {
 	errBody, _ := json.Marshal(map[string]string{
 		"error":   "Configuration Error",
 		"message": message,

@@ -330,7 +330,7 @@ func TestOnRequestHeaders_CookieUsedWhenHeaderMissing(t *testing.T) {
 	assertCookieStripped(t, action, "sub-key")
 }
 
-func TestGetCookieValueV2(t *testing.T) {
+func TestGetCookieValue(t *testing.T) {
 	tests := []struct {
 		name    string
 		headers map[string][]string
@@ -346,9 +346,9 @@ func TestGetCookieValueV2(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := policyv1alpha2.NewHeaders(tt.headers)
-			got := getCookieValueV2(h, tt.cookie)
+			got := getCookieValue(h, tt.cookie)
 			if got != tt.want {
-				t.Fatalf("getCookieValueV2(%q) = %q, want %q", tt.cookie, got, tt.want)
+				t.Fatalf("getCookieValue(%q) = %q, want %q", tt.cookie, got, tt.want)
 			}
 		})
 	}

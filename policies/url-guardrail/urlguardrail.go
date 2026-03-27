@@ -402,7 +402,7 @@ func (p *URLGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _
 	if ctx.Body != nil {
 		content = ctx.Body.Content
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(content, p.requestParams, false).(policyv1alpha2.RequestAction)
 }
 
 // OnResponseBody validates URLs found in the response body.
@@ -420,10 +420,10 @@ func (p *URLGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseContext,
 	}
 
 	if text := extractSSEDeltaContent(string(content), p.responseParams.StreamingJsonPath); text != "" {
-		return p.validateURLsInTextV2(text, p.responseParams, true).(policyv1alpha2.ResponseAction)
+		return p.validateURLsInText(text, p.responseParams, true).(policyv1alpha2.ResponseAction)
 	}
 
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
 }
 
 // ─── Streaming (SSE) support ──────────────────────────────────────────────────
@@ -507,7 +507,7 @@ func (p *URLGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.ResponseStr
 		if !chunk.EndOfStream {
 			return policyv1alpha2.ResponseChunkAction{}
 		}
-		result := p.validatePayloadV2([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true)
 		if mod, ok := result.(policyv1alpha2.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policyv1alpha2.ResponseChunkAction{Body: mod.Body}
 		}
@@ -623,18 +623,18 @@ func (p *URLGuardrailPolicy) buildSSEErrorEvent(invalidURLs []string, showAssess
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
-func (p *URLGuardrailPolicy) validatePayloadV2(payload []byte, params URLGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *URLGuardrailPolicy) validatePayload(payload []byte, params URLGuardrailPolicyParams, isResponse bool) interface{} {
 	// Extract value using JSONPath
 	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("URLGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, []string{})
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, []string{})
 	}
 
-	return p.validateURLsInTextV2(extractedValue, params, isResponse)
+	return p.validateURLsInText(extractedValue, params, isResponse)
 }
 
-func (p *URLGuardrailPolicy) validateURLsInTextV2(text string, params URLGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *URLGuardrailPolicy) validateURLsInText(text string, params URLGuardrailPolicyParams, isResponse bool) interface{} {
 	text = textCleanRegexCompiled.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 
@@ -660,7 +660,7 @@ func (p *URLGuardrailPolicy) validateURLsInTextV2(text string, params URLGuardra
 
 	if len(invalidURLs) > 0 {
 		slog.Debug("URLGuardrail: Validation failed", "invalidURLCount", len(invalidURLs), "totalURLCount", len(urls), "isResponse", isResponse)
-		return p.buildErrorResponseV2("Violation of url validity detected", nil, isResponse, params.ShowAssessment, invalidURLs)
+		return p.buildErrorResponse("Violation of url validity detected", nil, isResponse, params.ShowAssessment, invalidURLs)
 	}
 
 	if len(urls) > 0 {
@@ -673,8 +673,8 @@ func (p *URLGuardrailPolicy) validateURLsInTextV2(text string, params URLGuardra
 	return policyv1alpha2.UpstreamRequestModifications{}
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
-func (p *URLGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, invalidURLs []string) interface{} {
+// buildErrorResponse builds a policyv1alpha2 error response for both request and response phases.
+func (p *URLGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, invalidURLs []string) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, invalidURLs)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,

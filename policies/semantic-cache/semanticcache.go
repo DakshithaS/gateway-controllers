@@ -328,7 +328,7 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, 
 		extracted, err := utils.ExtractStringValueFromJsonpath(content, p.jsonPath)
 		if err != nil {
 			// JSONPath extraction failed - return error response
-			return p.buildErrorResponseV2("Error extracting value from JSONPath", err)
+			return p.buildErrorResponse("Error extracting value from JSONPath", err)
 		}
 		textToEmbed = extracted
 	}
@@ -407,11 +407,11 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, 
 
 // OnResponseBody handles response body processing for semantic caching.
 func (p *SemanticCachePolicy) OnResponseBody(ctx *policyv1alpha2.ResponseContext, _ map[string]interface{}) policyv1alpha2.ResponseAction {
-	return p.processResponseBodyV2(ctx)
+	return p.processResponseBody(ctx)
 }
 
 // processResponseBody handles response body processing for semantic caching.
-func (p *SemanticCachePolicy) processResponseBodyV2(ctx *policyv1alpha2.ResponseContext) policyv1alpha2.ResponseAction {
+func (p *SemanticCachePolicy) processResponseBody(ctx *policyv1alpha2.ResponseContext) policyv1alpha2.ResponseAction {
 	// Only cache successful responses (200 status code)
 	if ctx.ResponseStatus != 200 {
 		slog.Debug("SemanticCache: Skipping cache for non-200 response", "statusCode", ctx.ResponseStatus)
@@ -493,8 +493,8 @@ func isSSEResponse(headers *policyv1alpha2.Headers) bool {
 	return false
 }
 
-// buildErrorResponseV2 builds a v1alpha2 error response for JSONPath extraction failures.
-func (p *SemanticCachePolicy) buildErrorResponseV2(message string, err error) policyv1alpha2.RequestAction {
+// buildErrorResponse builds a v1alpha2 error response for JSONPath extraction failures.
+func (p *SemanticCachePolicy) buildErrorResponse(message string, err error) policyv1alpha2.RequestAction {
 	errorMsg := message
 	if err != nil {
 		errorMsg = fmt.Sprintf("%s: %v", message, err)

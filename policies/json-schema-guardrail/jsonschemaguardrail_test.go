@@ -339,7 +339,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	invalidPayload := []byte(`{"name":10}`)
 
 	// Normal mode valid -> pass
-	result := p.validatePayloadV2(validPayload, JSONSchemaGuardrailPolicyParams{
+	result := p.validatePayload(validPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
 	}, false)
 	if _, ok := result.(policyv1alpha2.UpstreamRequestModifications); !ok {
@@ -347,7 +347,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	}
 
 	// Normal mode invalid -> fail
-	result = p.validatePayloadV2(invalidPayload, JSONSchemaGuardrailPolicyParams{
+	result = p.validatePayload(invalidPayload, JSONSchemaGuardrailPolicyParams{
 		Schema:         schema,
 		ShowAssessment: true,
 	}, false)
@@ -370,7 +370,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	}
 
 	// Invert mode valid -> fail
-	result = p.validatePayloadV2(validPayload, JSONSchemaGuardrailPolicyParams{
+	result = p.validatePayload(validPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
 		Invert: true,
 	}, false)
@@ -379,7 +379,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	}
 
 	// Invert mode invalid -> pass
-	result = p.validatePayloadV2(invalidPayload, JSONSchemaGuardrailPolicyParams{
+	result = p.validatePayload(invalidPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
 		Invert: true,
 	}, false)
@@ -392,7 +392,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 	p := &JSONSchemaGuardrailPolicy{}
 
 	// JSONPath extraction error
-	result := p.validatePayloadV2([]byte(`{"name":"alice"}`), JSONSchemaGuardrailPolicyParams{
+	result := p.validatePayload([]byte(`{"name":"alice"}`), JSONSchemaGuardrailPolicyParams{
 		Schema:         `{"type":"string"}`,
 		JsonPath:       "$.missing",
 		ShowAssessment: true,
@@ -410,7 +410,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 	}
 
 	// Schema validation engine error (invalid schema keywords/types)
-	result = p.validatePayloadV2([]byte(`{"name":"alice"}`), JSONSchemaGuardrailPolicyParams{
+	result = p.validatePayload([]byte(`{"name":"alice"}`), JSONSchemaGuardrailPolicyParams{
 		Schema:         `{"type":"not-a-valid-jsonschema-type"}`,
 		ShowAssessment: true,
 	}, false)
@@ -429,7 +429,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 
 func TestBuildErrorResponseV2_ResponsePhase(t *testing.T) {
 	p := &JSONSchemaGuardrailPolicy{}
-	res := p.buildErrorResponseV2("test reason", nil, true, false, nil)
+	res := p.buildErrorResponse("test reason", nil, true, false, nil)
 	mod, ok := res.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected DownstreamResponseModifications, got %T", res)

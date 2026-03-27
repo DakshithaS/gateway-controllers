@@ -571,7 +571,7 @@ func (p *RateLimitPolicy) buildMultiQuotaHeaders(
 	return headers
 }
 
-func (p *RateLimitPolicy) buildRateLimitResponseV2(
+func (p *RateLimitPolicy) buildRateLimitResponse(
 	violatedResult *limiter.Result,
 	violatedQuotaName string,
 	allResults []quotaResult,
@@ -1109,7 +1109,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderCont
 					continue
 				}
 				slog.Error("Rate limit pre-check failed (fail-closed)", "error", err, "quota", quotaName)
-				return p.buildRateLimitResponseV2(nil, quotaName, quotaResults)
+				return p.buildRateLimitResponse(nil, quotaName, quotaResults)
 			}
 			if available <= 0 {
 				slog.Debug("Cost extraction mode: quota exhausted in header phase",
@@ -1122,7 +1122,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderCont
 					Reset:     time.Now().Add(duration),
 					Duration:  duration,
 				}
-				return p.buildRateLimitResponseV2(result, quotaName, quotaResults)
+				return p.buildRateLimitResponse(result, quotaName, quotaResults)
 			}
 			// Not exhausted — defer full consumption to OnRequest/OnResponse
 		} else {
@@ -1134,11 +1134,11 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx *policyv1alpha2.RequestHeaderCont
 					continue
 				}
 				slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-				return p.buildRateLimitResponseV2(nil, quotaName, quotaResults)
+				return p.buildRateLimitResponse(nil, quotaName, quotaResults)
 			}
 			if !result.Allowed {
 				slog.Debug("Rate limit exceeded in header phase", "quota", quotaName, "key", key)
-				return p.buildRateLimitResponseV2(result, quotaName, quotaResults)
+				return p.buildRateLimitResponse(result, quotaName, quotaResults)
 			}
 			quotaResults = append(quotaResults, quotaResult{
 				QuotaName: quotaName,
@@ -1213,7 +1213,7 @@ func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(ctx *policyv1alpha2.R
 		return placeholder
 
 	case "ip":
-		return p.extractIPAddressV2(ctx.Headers)
+		return p.extractIPAddress(ctx.Headers)
 
 	case "apiname":
 		if ctx.APIName != "" {
@@ -1265,7 +1265,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 			q := &p.quotas[i]
 
 			// Extract rate limit key for this quota
-			key := p.extractQuotaKeyV2(ctx, q)
+			key := p.extractQuotaKey(ctx, q)
 			quotaName := q.Name
 			if quotaName == "" {
 				quotaName = fmt.Sprintf("quota-%d", i)
@@ -1286,7 +1286,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 						"key", key)
 
 					// Extract cost from request (headers, metadata, or body)
-					requestCost, extracted := q.CostExtractor.ExtractRequestCostV2(ctx)
+					requestCost, extracted := q.CostExtractor.ExtractRequestCost(ctx)
 					if !extracted {
 						slog.Debug("Request cost extraction failed, using default",
 							"key", key, "quota", quotaName, "defaultCost", requestCost)
@@ -1314,7 +1314,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 							continue
 						}
 						slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-						return p.buildRateLimitResponseV2(nil, quotaName, quotaResults)
+						return p.buildRateLimitResponse(nil, quotaName, quotaResults)
 					}
 
 					if !result.Allowed {
@@ -1324,7 +1324,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 							"quota", quotaName,
 							"remaining", result.Remaining,
 							"limit", result.Limit)
-						return p.buildRateLimitResponseV2(result, quotaName, quotaResults)
+						return p.buildRateLimitResponse(result, quotaName, quotaResults)
 					}
 
 					slog.Debug("Rate limit check passed",
@@ -1352,7 +1352,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 						continue
 					}
 					slog.Error("Rate limit pre-check failed (fail-closed)", "error", err, "key", key, "quota", quotaName)
-					return p.buildRateLimitResponseV2(nil, quotaName, quotaResults)
+					return p.buildRateLimitResponse(nil, quotaName, quotaResults)
 				}
 
 				// If available <= 0, quota is exhausted - block the request
@@ -1368,7 +1368,7 @@ func (p *RateLimitPolicy) OnRequestBody(
 						Reset:     time.Now().Add(duration),
 						Duration:  duration,
 					}
-					return p.buildRateLimitResponseV2(result, quotaName, quotaResults)
+					return p.buildRateLimitResponse(result, quotaName, quotaResults)
 				}
 
 				// Store a placeholder result for the response phase
@@ -1392,12 +1392,12 @@ func (p *RateLimitPolicy) OnRequestBody(
 					continue
 				}
 				slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-				return p.buildRateLimitResponseV2(nil, quotaName, quotaResults)
+				return p.buildRateLimitResponse(nil, quotaName, quotaResults)
 			}
 
 			if !result.Allowed {
 				slog.Debug("Rate limit exceeded", "key", key, "quota", quotaName)
-				return p.buildRateLimitResponseV2(result, quotaName, quotaResults)
+				return p.buildRateLimitResponse(result, quotaName, quotaResults)
 			}
 
 			quotaResults = append(quotaResults, quotaResult{
@@ -1485,7 +1485,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx *policyv1alpha2.ResponseHeaderCo
 				ResponseHeaders: ctx.ResponseHeaders,
 				ResponseStatus:  ctx.ResponseStatus,
 			}
-			actualCost, extracted := q.CostExtractor.ExtractResponseCostV2(responseCtx)
+			actualCost, extracted := q.CostExtractor.ExtractResponseCost(responseCtx)
 			if !extracted {
 				slog.Debug("Cost extraction failed, using default", "key", key, "quota", quotaName, "defaultCost", actualCost)
 			}
@@ -1646,7 +1646,7 @@ func (p *RateLimitPolicy) OnResponseBody(
 				}
 
 				// Extract actual cost from response
-				actualCost, extracted := q.CostExtractor.ExtractResponseCostV2(ctx)
+				actualCost, extracted := q.CostExtractor.ExtractResponseCost(ctx)
 				if !extracted {
 					slog.Debug("Cost extraction failed, using default", "key", key, "quota", quotaName, "defaultCost", actualCost)
 				}
@@ -1746,7 +1746,7 @@ func (p *RateLimitPolicy) OnResponseBody(
 	return policyv1alpha2.DownstreamResponseModifications{}
 }
 
-func (p *RateLimitPolicy) extractQuotaKeyV2(ctx *policyv1alpha2.RequestContext, q *QuotaRuntime) string {
+func (p *RateLimitPolicy) extractQuotaKey(ctx *policyv1alpha2.RequestContext, q *QuotaRuntime) string {
 	if len(q.KeyExtraction) == 0 {
 		slog.Debug("No key extraction configured, using route name",
 			"routeName", p.routeName)
@@ -1754,7 +1754,7 @@ func (p *RateLimitPolicy) extractQuotaKeyV2(ctx *policyv1alpha2.RequestContext, 
 	}
 
 	if len(q.KeyExtraction) == 1 {
-		key := p.extractKeyComponentV2(ctx, q.KeyExtraction[0])
+		key := p.extractKeyComponent(ctx, q.KeyExtraction[0])
 		slog.Debug("Single component key extracted",
 			"type", q.KeyExtraction[0].Type,
 			"key", key)
@@ -1764,7 +1764,7 @@ func (p *RateLimitPolicy) extractQuotaKeyV2(ctx *policyv1alpha2.RequestContext, 
 	// Multiple components - join with ':' in the order specified
 	parts := make([]string, 0, len(q.KeyExtraction))
 	for _, comp := range q.KeyExtraction {
-		part := p.extractKeyComponentV2(ctx, comp)
+		part := p.extractKeyComponent(ctx, comp)
 		parts = append(parts, part)
 	}
 	key := strings.Join(parts, ":")
@@ -1775,7 +1775,7 @@ func (p *RateLimitPolicy) extractQuotaKeyV2(ctx *policyv1alpha2.RequestContext, 
 }
 
 // extractKeyComponent extracts a single component value
-func (p *RateLimitPolicy) extractKeyComponentV2(ctx *policyv1alpha2.RequestContext, comp KeyComponent) string {
+func (p *RateLimitPolicy) extractKeyComponent(ctx *policyv1alpha2.RequestContext, comp KeyComponent) string {
 	switch comp.Type {
 	case "header":
 		values := ctx.Headers.Get(strings.ToLower(comp.Key))
@@ -1800,7 +1800,7 @@ func (p *RateLimitPolicy) extractKeyComponentV2(ctx *policyv1alpha2.RequestConte
 		return placeholder
 
 	case "ip":
-		return p.extractIPAddressV2(ctx.Headers)
+		return p.extractIPAddress(ctx.Headers)
 
 	case "apiname":
 		if ctx.APIName != "" {
@@ -1827,7 +1827,7 @@ func (p *RateLimitPolicy) extractKeyComponentV2(ctx *policyv1alpha2.RequestConte
 		}
 		slog.Debug("Evaluating CEL expression for key extraction",
 			"expression", comp.Expression)
-		result, err := evaluator.EvaluateKeyExpressionV2(comp.Expression, ctx, p.routeName)
+		result, err := evaluator.EvaluateKeyExpression(comp.Expression, ctx, p.routeName)
 		if err != nil {
 			slog.Warn("CEL key extraction failed, using placeholder", "expression", comp.Expression, "error", err)
 			return "_cel_eval_error_"
@@ -1841,7 +1841,7 @@ func (p *RateLimitPolicy) extractKeyComponentV2(ctx *policyv1alpha2.RequestConte
 }
 
 // extractIPAddress extracts client IP from headers
-func (p *RateLimitPolicy) extractIPAddressV2(headers *policyv1alpha2.Headers) string {
+func (p *RateLimitPolicy) extractIPAddress(headers *policyv1alpha2.Headers) string {
 	// Try X-Forwarded-For first (most common)
 	if xff := headers.Get("x-forwarded-for"); len(xff) > 0 && xff[0] != "" {
 		// Take the first IP (client)

@@ -176,7 +176,7 @@ func (p *LLMCostRateLimitPolicy) OnResponseHeaders(
 		slog.Debug("OnResponseHeaders: using pinned delegate from request phase",
 			"route", p.metadata.RouteName)
 		if rl, ok := delegate.(responseHeaderPolicer); ok {
-			return p.addDollarHeadersV2(rl.OnResponseHeaders(ctx, params), costScaleFactor)
+			return p.addDollarHeaders(rl.OnResponseHeaders(ctx, params), costScaleFactor)
 		}
 		return policyv1alpha2.DownstreamResponseHeaderModifications{}
 	}
@@ -199,7 +199,7 @@ func (p *LLMCostRateLimitPolicy) OnResponseHeaders(
 				slog.Debug("OnResponseHeaders: delegating to advanced-ratelimit",
 					"route", p.metadata.RouteName,
 					"provider", providerName)
-				return p.addDollarHeadersV2(rl.OnResponseHeaders(ctx, params), costScaleFactor)
+				return p.addDollarHeaders(rl.OnResponseHeaders(ctx, params), costScaleFactor)
 			}
 		}
 	}
@@ -299,9 +299,9 @@ func (p *LLMCostRateLimitPolicy) addDollarHeadersResponseBody(action policyv1alp
 	return modifications
 }
 
-// addDollarHeadersV2 transforms the delegate's v1alpha2 response header action to include
+// addDollarHeaders transforms the delegate's v1alpha2 response header action to include
 // human-readable dollar-denominated headers alongside the scaled values.
-func (p *LLMCostRateLimitPolicy) addDollarHeadersV2(action policyv1alpha2.ResponseHeaderAction, costScaleFactor int) policyv1alpha2.ResponseHeaderAction {
+func (p *LLMCostRateLimitPolicy) addDollarHeaders(action policyv1alpha2.ResponseHeaderAction, costScaleFactor int) policyv1alpha2.ResponseHeaderAction {
 	if action == nil {
 		return policyv1alpha2.DownstreamResponseHeaderModifications{}
 	}

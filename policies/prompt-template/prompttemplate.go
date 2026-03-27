@@ -351,7 +351,7 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext,
 	if p.params.JsonPath == "" {
 		updatedContent, err := p.resolveTemplatesInText(string(content), true)
 		if err != nil {
-			return p.buildErrorResponseV2("Error resolving templates", err)
+			return p.buildErrorResponse("Error resolving templates", err)
 		}
 		if updatedContent == string(content) {
 			return policyv1alpha2.UpstreamRequestModifications{}
@@ -364,29 +364,29 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext,
 	// jsonPath configured: resolve template references in the extracted string only.
 	var payloadData map[string]interface{}
 	if err := json.Unmarshal(content, &payloadData); err != nil {
-		return p.buildErrorResponseV2("Error parsing JSON payload", err)
+		return p.buildErrorResponse("Error parsing JSON payload", err)
 	}
 
 	extractedValue, err := p.extractStringAtPath(content, p.params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err)
 	}
 
 	updatedValue, err := p.resolveTemplatesInText(extractedValue, false)
 	if err != nil {
-		return p.buildErrorResponseV2("Error resolving templates", err)
+		return p.buildErrorResponse("Error resolving templates", err)
 	}
 	if updatedValue == extractedValue {
 		return policyv1alpha2.UpstreamRequestModifications{}
 	}
 
 	if err := utils.SetValueAtJSONPath(payloadData, p.params.JsonPath, updatedValue); err != nil {
-		return p.buildErrorResponseV2("Error updating JSONPath", err)
+		return p.buildErrorResponse("Error updating JSONPath", err)
 	}
 
 	updatedPayload, err := json.Marshal(payloadData)
 	if err != nil {
-		return p.buildErrorResponseV2("Error marshaling updated JSON payload", err)
+		return p.buildErrorResponse("Error marshaling updated JSON payload", err)
 	}
 
 	return policyv1alpha2.UpstreamRequestModifications{
@@ -395,7 +395,7 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext,
 }
 
 // buildV1ErrorResponse builds an error response for the v1alpha OnRequest method.
-func (p *PromptTemplatePolicy) buildErrorResponseV2(reason string, validationError error) policyv1alpha2.RequestAction {
+func (p *PromptTemplatePolicy) buildErrorResponse(reason string, validationError error) policyv1alpha2.RequestAction {
 	errorMessage := reason
 	if validationError != nil {
 		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)

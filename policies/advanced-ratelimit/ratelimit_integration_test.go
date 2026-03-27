@@ -662,110 +662,110 @@ func TestKeyExtractionBehavior(t *testing.T) {
 
 	t.Run("empty key extraction returns route", func(t *testing.T) {
 		q := &QuotaRuntime{}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "route-main" {
+		if got := p.extractQuotaKey(ctx, q); got != "route-main" {
 			t.Fatalf("expected route-main, got %q", got)
 		}
 	})
 
 	t.Run("header component", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "header", Key: "x-tenant"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "tenant-a" {
+		if got := p.extractQuotaKey(ctx, q); got != "tenant-a" {
 			t.Fatalf("expected tenant-a, got %q", got)
 		}
 	})
 
 	t.Run("missing header placeholder", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "header", Key: "x-missing"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "_missing_header_x-missing_" {
+		if got := p.extractQuotaKey(ctx, q); got != "_missing_header_x-missing_" {
 			t.Fatalf("unexpected placeholder: %q", got)
 		}
 	})
 
 	t.Run("metadata string value", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "plan"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "gold" {
+		if got := p.extractQuotaKey(ctx, q); got != "gold" {
 			t.Fatalf("expected gold, got %q", got)
 		}
 	})
 
 	t.Run("missing or non-string metadata placeholder", func(t *testing.T) {
 		q1 := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "missing"}}}
-		if got := p.extractQuotaKeyV2(ctx, q1); got != "_missing_metadata_missing_" {
+		if got := p.extractQuotaKey(ctx, q1); got != "_missing_metadata_missing_" {
 			t.Fatalf("unexpected placeholder: %q", got)
 		}
 		q2 := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "intPlan"}}}
-		if got := p.extractQuotaKeyV2(ctx, q2); got != "_missing_metadata_intPlan_" {
+		if got := p.extractQuotaKey(ctx, q2); got != "_missing_metadata_intPlan_" {
 			t.Fatalf("unexpected placeholder: %q", got)
 		}
 	})
 
 	t.Run("constant component", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "constant", Key: "fixed"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "fixed" {
+		if got := p.extractQuotaKey(ctx, q); got != "fixed" {
 			t.Fatalf("expected fixed, got %q", got)
 		}
 	})
 
 	t.Run("apiname/apiversion and missing values", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "apiname"}, {Type: "apiversion"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "petstore:v1" {
+		if got := p.extractQuotaKey(ctx, q); got != "petstore:v1" {
 			t.Fatalf("expected petstore:v1, got %q", got)
 		}
 
 		ctx2 := newRequestCtx(nil, nil)
 		ctx2.APIName = ""
 		ctx2.APIVersion = ""
-		if got := p.extractKeyComponentV2(ctx2, KeyComponent{Type: "apiname"}); got != "" {
+		if got := p.extractKeyComponent(ctx2, KeyComponent{Type: "apiname"}); got != "" {
 			t.Fatalf("expected empty apiname, got %q", got)
 		}
-		if got := p.extractKeyComponentV2(ctx2, KeyComponent{Type: "apiversion"}); got != "" {
+		if got := p.extractKeyComponent(ctx2, KeyComponent{Type: "apiversion"}); got != "" {
 			t.Fatalf("expected empty apiversion, got %q", got)
 		}
 	})
 
 	t.Run("routename component", func(t *testing.T) {
-		if got := p.extractKeyComponentV2(ctx, KeyComponent{Type: "routename"}); got != "route-main" {
+		if got := p.extractKeyComponent(ctx, KeyComponent{Type: "routename"}); got != "route-main" {
 			t.Fatalf("expected route-main, got %q", got)
 		}
 	})
 
 	t.Run("ip precedence", func(t *testing.T) {
-		if got := p.extractIPAddressV2(ctx.Headers); got != "10.1.1.1" {
+		if got := p.extractIPAddress(ctx.Headers); got != "10.1.1.1" {
 			t.Fatalf("expected first x-forwarded-for IP, got %q", got)
 		}
 
 		onlyXReal := newRequestCtx(map[string][]string{"x-real-ip": {"10.8.8.8"}}, nil)
-		if got := p.extractIPAddressV2(onlyXReal.Headers); got != "10.8.8.8" {
+		if got := p.extractIPAddress(onlyXReal.Headers); got != "10.8.8.8" {
 			t.Fatalf("expected x-real-ip fallback, got %q", got)
 		}
 
 		none := newRequestCtx(nil, nil)
-		if got := p.extractIPAddressV2(none.Headers); got != "unknown" {
+		if got := p.extractIPAddress(none.Headers); got != "unknown" {
 			t.Fatalf("expected unknown fallback, got %q", got)
 		}
 	})
 
 	t.Run("unknown component type returns empty", func(t *testing.T) {
-		if got := p.extractKeyComponentV2(ctx, KeyComponent{Type: "unknown"}); got != "" {
+		if got := p.extractKeyComponent(ctx, KeyComponent{Type: "unknown"}); got != "" {
 			t.Fatalf("expected empty string for unknown type, got %q", got)
 		}
 	})
 
 	t.Run("multi-component order is preserved", func(t *testing.T) {
 		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "constant", Key: "a"}, {Type: "constant", Key: "b"}, {Type: "constant", Key: "c"}}}
-		if got := p.extractQuotaKeyV2(ctx, q); got != "a:b:c" {
+		if got := p.extractQuotaKey(ctx, q); got != "a:b:c" {
 			t.Fatalf("expected a:b:c, got %q", got)
 		}
 	})
 
 	t.Run("cel happy path and failure path", func(t *testing.T) {
 		happy := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "cel", Expression: "'tenant-cel'"}}}
-		if got := p.extractQuotaKeyV2(ctx, happy); got != "tenant-cel" {
+		if got := p.extractQuotaKey(ctx, happy); got != "tenant-cel" {
 			t.Fatalf("expected cel evaluated string, got %q", got)
 		}
 
 		failed := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "cel", Expression: "1"}}}
-		if got := p.extractQuotaKeyV2(ctx, failed); got != "_cel_eval_error_" {
+		if got := p.extractQuotaKey(ctx, failed); got != "_cel_eval_error_" {
 			t.Fatalf("expected cel eval placeholder, got %q", got)
 		}
 	})
@@ -1332,7 +1332,7 @@ func TestHeaderBuildersAndResponseConstruction(t *testing.T) {
 
 	t.Run("buildRateLimitResponse appends violated quota and sets content type", func(t *testing.T) {
 		violated := &limiter.Result{Allowed: false, Limit: 10, Remaining: 0, RetryAfter: 3 * time.Second, Reset: time.Now().Add(time.Minute), Duration: time.Minute}
-		resp := p.buildRateLimitResponseV2(violated, "blocked", []quotaResult{{QuotaName: "other", Result: newResult(true, 100, 90, 0, time.Minute)}})
+		resp := p.buildRateLimitResponse(violated, "blocked", []quotaResult{{QuotaName: "other", Result: newResult(true, 100, 90, 0, time.Minute)}})
 		if resp.Headers["x-ratelimit-quota"] != "blocked" {
 			t.Fatalf("expected violated quota header, got %q", resp.Headers["x-ratelimit-quota"])
 		}
@@ -1341,7 +1341,7 @@ func TestHeaderBuildersAndResponseConstruction(t *testing.T) {
 		}
 
 		pPlain := &RateLimitPolicy{includeXRL: true, includeIETF: true, includeRetry: true, responseFormat: "plain", statusCode: 429, responseBody: "limited"}
-		respPlain := pPlain.buildRateLimitResponseV2(violated, "blocked", nil)
+		respPlain := pPlain.buildRateLimitResponse(violated, "blocked", nil)
 		if respPlain.Headers["content-type"] != "text/plain" {
 			t.Fatalf("expected text/plain content-type, got %q", respPlain.Headers["content-type"])
 		}
@@ -1696,7 +1696,7 @@ func TestBuildMultiQuotaHeadersOnlyNilResults(t *testing.T) {
 
 func TestBuildRateLimitResponseWithoutViolatedResult(t *testing.T) {
 	p := &RateLimitPolicy{includeXRL: true, includeIETF: true, includeRetry: true, statusCode: 429, responseBody: "{}", responseFormat: "json"}
-	resp := p.buildRateLimitResponseV2(nil, "q1", nil)
+	resp := p.buildRateLimitResponse(nil, "q1", nil)
 	if resp.Headers["x-ratelimit-quota"] != "q1" {
 		t.Fatalf("expected x-ratelimit-quota=q1, got %q", resp.Headers["x-ratelimit-quota"])
 	}

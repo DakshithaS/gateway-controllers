@@ -244,14 +244,14 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 	authCtx := ctx.SharedContext.AuthContext
 	if authCtx == nil || !authCtx.Authenticated {
 		slog.Debug("MCP Authorization Policy: No authenticated context found")
-		return p.handleAuthFailureV2(ctx, "Unauthorized: scope/claim validation failed", nil)
+		return p.handleAuthFailure(ctx, "Unauthorized: scope/claim validation failed", nil)
 	}
 
 	// Parse MCP request to extract method and name
 	var mcpReq MCPRequest
 	if err := json.Unmarshal(ctx.Body.Content, &mcpReq); err != nil {
 		slog.Debug("MCP Authorization Policy: Failed to parse MCP request", "error", err)
-		return p.handleAuthFailureV2(ctx, "Invalid MCP request format", nil)
+		return p.handleAuthFailure(ctx, "Invalid MCP request format", nil)
 	}
 
 	slog.Debug("MCP Authorization Policy: Extracted MCP attributes",
@@ -283,7 +283,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 		slog.Debug("MCP Authorization Policy: Authorization check failed",
 			"attributeName", mcpReq.Params.Name,
 			"method", mcpReq.Method)
-		return p.handleAuthFailureV2(ctx, "Forbidden: insufficient permissions to access this MCP resource", missingScopes)
+		return p.handleAuthFailure(ctx, "Forbidden: insufficient permissions to access this MCP resource", missingScopes)
 	}
 
 	slog.Debug("MCP Authorization Policy: Authorization check passed")
@@ -294,8 +294,8 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map
 	return nil
 }
 
-func (p *McpAuthzPolicy) handleAuthFailureV2(ctx *policyv1alpha2.RequestContext, errorMessage string, scopeMap map[string]struct{}) policyv1alpha2.RequestAction {
-	slog.Debug("MCP Authorization Policy: handleAuthFailureV2 called",
+func (p *McpAuthzPolicy) handleAuthFailure(ctx *policyv1alpha2.RequestContext, errorMessage string, scopeMap map[string]struct{}) policyv1alpha2.RequestAction {
+	slog.Debug("MCP Authorization Policy: handleAuthFailure called",
 		"errorMessage", errorMessage,
 	)
 

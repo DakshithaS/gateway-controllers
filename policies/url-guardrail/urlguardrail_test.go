@@ -327,12 +327,12 @@ func TestValidatePayload_RequestPaths(t *testing.T) {
 
 	p := &URLGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte(`{"text":"`+server.URL+`"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 1000}, false)
+	pass := p.validatePayload([]byte(`{"text":"`+server.URL+`"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 1000}, false)
 	if _, ok := pass.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications on valid URL payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(`{"text":"http://127.0.0.1:1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 200, ShowAssessment: true}, false)
+	fail := p.validatePayload([]byte(`{"text":"http://127.0.0.1:1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 200, ShowAssessment: true}, false)
 	imm, ok := fail.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on invalid URL payload, got %T", fail)
@@ -360,12 +360,12 @@ func TestValidatePayload_RequestPaths(t *testing.T) {
 func TestValidatePayload_ResponsePaths(t *testing.T) {
 	p := &URLGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte(`{"text":"no urls here"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 100}, true)
+	pass := p.validatePayload([]byte(`{"text":"no urls here"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 100}, true)
 	if _, ok := pass.(policyv1alpha2.DownstreamResponseModifications); !ok {
 		t.Fatalf("expected UpstreamResponseModifications on no-url payload, got %T", pass)
 	}
 
-	fail := p.validatePayloadV2([]byte(`{"text":"http://127.0.0.1:1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 200, ShowAssessment: false}, true)
+	fail := p.validatePayload([]byte(`{"text":"http://127.0.0.1:1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", Timeout: 200, ShowAssessment: false}, true)
 	resp, ok := fail.(policyv1alpha2.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamResponseModifications on invalid response URL payload, got %T", fail)
@@ -388,7 +388,7 @@ func TestValidatePayload_ResponsePaths(t *testing.T) {
 func TestValidatePayload_OnlyDNSMode(t *testing.T) {
 	p := &URLGuardrailPolicy{}
 
-	pass := p.validatePayloadV2([]byte(`{"text":"http://127.0.0.1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", OnlyDNS: true, Timeout: 200}, false)
+	pass := p.validatePayload([]byte(`{"text":"http://127.0.0.1"}`), URLGuardrailPolicyParams{JsonPath: "$.text", OnlyDNS: true, Timeout: 200}, false)
 	if _, ok := pass.(policyv1alpha2.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications for valid DNS-only check, got %T", pass)
 	}
@@ -396,7 +396,7 @@ func TestValidatePayload_OnlyDNSMode(t *testing.T) {
 
 func TestValidatePayload_JSONPathExtractionFailure(t *testing.T) {
 	p := &URLGuardrailPolicy{}
-	fail := p.validatePayloadV2([]byte(`{"text":"hello"}`), URLGuardrailPolicyParams{JsonPath: "$.missing", Timeout: 100, ShowAssessment: true}, false)
+	fail := p.validatePayload([]byte(`{"text":"hello"}`), URLGuardrailPolicyParams{JsonPath: "$.missing", Timeout: 100, ShowAssessment: true}, false)
 	imm, ok := fail.(policyv1alpha2.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on jsonPath extraction failure, got %T", fail)
