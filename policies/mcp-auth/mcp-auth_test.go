@@ -32,28 +32,16 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 func TestGetPolicy(t *testing.T) {
-	p, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, nil)
+	p, err := GetPolicy(policy.PolicyMetadata{}, nil)
 	if err != nil {
-		t.Errorf("GetPolicyV2 returned error: %v", err)
+		t.Errorf("GetPolicy returned error: %v", err)
 	}
 	if p == nil {
-		t.Error("GetPolicyV2 returned nil policy")
-	}
-}
-
-func TestMode(t *testing.T) {
-	p := &McpAuthPolicy{}
-	mode := p.Mode()
-	if mode.RequestHeaderMode != policyv1alpha2.HeaderModeSkip {
-		t.Errorf("Expected RequestHeaderMode to be HeaderModeSkip, got %v", mode.RequestHeaderMode)
-	}
-	if mode.RequestBodyMode != policyv1alpha2.BodyModeBuffer {
-		t.Errorf("Expected RequestBodyMode to be BodyModeBuffer, got %v", mode.RequestBodyMode)
+		t.Error("GetPolicy returned nil policy")
 	}
 }
 
@@ -78,7 +66,7 @@ func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 
 	action := p.(*McpAuthPolicy).OnRequestHeaders(ctx, params)
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -117,7 +105,7 @@ func TestOnRequestHeaders_WellKnown_NoKeyManagers(t *testing.T) {
 	ctx.OperationPath = "/.well-known/oauth-protected-resource"
 
 	action := p.OnRequestHeaders(ctx, map[string]any{})
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -136,7 +124,7 @@ func TestOnRequestHeaders_WellKnown_NoKeyManagers_WithForbiddenStatus(t *testing
 	ctx.OperationPath = "/.well-known/oauth-protected-resource"
 
 	action := p.OnRequestHeaders(ctx, map[string]any{})
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -168,7 +156,7 @@ func TestOnRequestHeaders_WellKnown_FilteredIssuers(t *testing.T) {
 
 	action := p.(*McpAuthPolicy).OnRequestHeaders(ctx, params)
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -205,7 +193,7 @@ func TestOnRequestHeaders_WellKnown_WithVhost(t *testing.T) {
 
 	action := p.OnRequestHeaders(ctx, params)
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -246,7 +234,7 @@ func TestOnRequestHeaders_WellKnown_WithVhost_StandardPort(t *testing.T) {
 
 	action := p.OnRequestHeaders(ctx, params)
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -284,7 +272,7 @@ func TestOnRequestHeaders_WellKnown_WithVhost_AndAPIContext(t *testing.T) {
 
 	action := p.OnRequestHeaders(ctx, params)
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -333,7 +321,7 @@ func TestOnRequestBody_Delegation_Failure(t *testing.T) {
 	action := p.OnRequestBody(ctx, params)
 
 	// We expect ImmediateResponse (failure from JWT Auth wrapped)
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse (auth failure), got %T", action)
 	}
@@ -366,7 +354,7 @@ func TestOnRequestBody_InvalidOnFailureStatusCode(t *testing.T) {
 		"onFailureStatusCode": 200,
 	})
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -384,7 +372,7 @@ func TestOnRequestBody_InvalidErrorMessageFormat(t *testing.T) {
 		"errorMessageFormat": "xml",
 	})
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -408,7 +396,7 @@ func TestOnRequestHeaders_WellKnown_PathWithPrefix_Success(t *testing.T) {
 		},
 	})
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -427,7 +415,7 @@ func TestOnRequestHeaders_WellKnown_FalsePositivePathDoesNotMatch(t *testing.T) 
 
 	// The path doesn't match well-known endpoint pattern
 	// so the policy returns UpstreamRequestHeaderModifications (no action taken)
-	_, ok := action.(policyv1alpha2.UpstreamRequestHeaderModifications)
+	_, ok := action.(policy.UpstreamRequestHeaderModifications)
 	if !ok {
 		t.Fatalf("Expected UpstreamRequestHeaderModifications (no match), got %T", action)
 	}
@@ -447,7 +435,7 @@ func TestOnRequestBody_WellKnown_MissingIssuerInKeyManagerConfig(t *testing.T) {
 		},
 	})
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -474,7 +462,7 @@ func TestOnRequestHeaders_HandleAuthFailureWithNilMetadata(t *testing.T) {
 		},
 	})
 
-	resp, ok := action.(policyv1alpha2.ImmediateResponse)
+	resp, ok := action.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
@@ -492,114 +480,12 @@ func TestOnRequestHeaders_HandleAuthFailureWithNilMetadata(t *testing.T) {
 	}
 }
 
-func createMockRequestContext(headers map[string][]string) *policy.RequestContext {
-	return &policy.RequestContext{
-		SharedContext: &policy.SharedContext{
-			RequestID: "test-request-id",
-			Metadata:  make(map[string]any),
-		},
-		Headers: policy.NewHeaders(headers),
-		Body:    nil,
-		Path:    "/api/test",
-		Method:  "GET",
-		Scheme:  "http",
-	}
-}
-
 // createTestPolicy creates an McpAuthPolicy with valid default configuration for testing
 func createTestPolicy() *McpAuthPolicy {
 	return &McpAuthPolicy{
 		OnFailureStatusCode: 401,
 		ErrorMessageFormat:  "json",
 		AuthConfig:          GetMcpAuthConfig(map[string]any{}),
-	}
-}
-
-func TestOnRequest_Delegation_Failure_SetsAuthContext(t *testing.T) {
-	_, publicKey := generateRSATestKeys(t)
-	jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
-	defer jwksServer.Close()
-
-	p := createTestPolicy()
-	ctx := createMockRequestContext(map[string][]string{
-		McpSessionHeader: {"session-123"},
-	})
-	ctx.Method = "POST"
-	ctx.Path = "/mcp"
-	ctx.OperationPath = "/mcp"
-	ctx.Body = &policy.Body{Content: []byte(`{"method":"tools/list"}`)}
-
-	// No valid JWT token — JWT auth should fail, mcp-auth wraps and takes ownership
-	params := map[string]any{
-		"gatewayHost": "gateway.com",
-		"keyManagers": []any{
-			map[string]any{
-				"name":   "test-km",
-				"issuer": "https://issuer.example.com",
-				"jwks": map[string]any{
-					"remote": map[string]any{
-						"uri": jwksServer.URL + "/jwks.json",
-					},
-				},
-			},
-		},
-	}
-
-	action := p.OnRequest(ctx, params)
-
-	// Should return ImmediateResponse (auth failure)
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("Expected ImmediateResponse (auth failure), got %T", action)
-	}
-
-	// AuthContext should be set by mcp-auth
-	if ctx.SharedContext.AuthContext == nil {
-		t.Fatal("Expected AuthContext to be set on failure")
-	}
-	if ctx.SharedContext.AuthContext.Authenticated {
-		t.Error("Expected AuthContext.Authenticated=false on failure")
-	}
-	if ctx.SharedContext.AuthContext.AuthType != "mcp/oauth" {
-		t.Errorf("Expected AuthType='mcp/oauth', got %q", ctx.SharedContext.AuthContext.AuthType)
-	}
-}
-
-// TestHandleAuthFailure_SetsAuthContext tests the v1alpha private helper directly.
-func TestHandleAuthFailure_SetsAuthContext(t *testing.T) {
-	p := &McpAuthPolicy{}
-	ctx := createMockRequestContext(nil)
-
-	action := p.handleAuthFailure(ctx, 401, "json", "key managers not configured")
-
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("Expected ImmediateResponse, got %T", action)
-	}
-
-	if ctx.SharedContext.AuthContext == nil {
-		t.Fatal("Expected AuthContext to be set")
-	}
-	if ctx.SharedContext.AuthContext.Authenticated {
-		t.Error("Expected Authenticated=false")
-	}
-	if ctx.SharedContext.AuthContext.AuthType != "mcp/oauth" {
-		t.Errorf("Expected AuthType='mcp/oauth', got %q", ctx.SharedContext.AuthContext.AuthType)
-	}
-}
-
-// TestMcpAuth_AuthContext_PreviousPreserved_OnFailure tests the v1alpha private helper directly.
-func TestMcpAuth_AuthContext_PreviousPreserved_OnFailure(t *testing.T) {
-	p := &McpAuthPolicy{}
-	prior := &policy.AuthContext{Authenticated: true, AuthType: "other"}
-	ctx := createMockRequestContext(nil)
-	ctx.SharedContext.AuthContext = prior
-
-	p.handleAuthFailure(ctx, 401, "json", "key managers not configured")
-
-	if ctx.SharedContext.AuthContext == nil {
-		t.Fatal("Expected AuthContext to be set")
-	}
-	if ctx.SharedContext.AuthContext.Previous != prior {
-		t.Errorf("Expected Previous to point to prior AuthContext, got %v", ctx.SharedContext.AuthContext.Previous)
 	}
 }
 
@@ -644,7 +530,7 @@ func TestOnRequestBody_Delegation_Success_SetsAuthContextAuthType(t *testing.T) 
 	action := p.OnRequestBody(ctx, params)
 
 	// Should NOT be an ImmediateResponse — jwt-auth succeeded
-	if _, ok := action.(policyv1alpha2.ImmediateResponse); ok {
+	if _, ok := action.(policy.ImmediateResponse); ok {
 		t.Fatalf("Expected successful action (not ImmediateResponse), but got auth failure")
 	}
 
@@ -661,16 +547,16 @@ func TestOnRequestBody_Delegation_Success_SetsAuthContextAuthType(t *testing.T) 
 	}
 }
 
-func createMockRequestBodyContext(headers map[string][]string) *policyv1alpha2.RequestContext {
+func createMockRequestBodyContext(headers map[string][]string) *policy.RequestContext {
 	if headers == nil {
 		headers = map[string][]string{}
 	}
-	return &policyv1alpha2.RequestContext{
-		SharedContext: &policyv1alpha2.SharedContext{
+	return &policy.RequestContext{
+		SharedContext: &policy.SharedContext{
 			RequestID: "test-request-id",
 			Metadata:  make(map[string]any),
 		},
-		Headers:   policyv1alpha2.NewHeaders(headers),
+		Headers:   policy.NewHeaders(headers),
 		Path:      "/api/test",
 		Method:    "GET",
 		Scheme:    "http",
@@ -679,16 +565,16 @@ func createMockRequestBodyContext(headers map[string][]string) *policyv1alpha2.R
 }
 
 // createMockRequestHeaderContext creates a RequestHeaderContext for testing OnRequestHeaders
-func createMockRequestHeaderContext(headers map[string][]string) *policyv1alpha2.RequestHeaderContext {
+func createMockRequestHeaderContext(headers map[string][]string) *policy.RequestHeaderContext {
 	if headers == nil {
 		headers = map[string][]string{}
 	}
-	return &policyv1alpha2.RequestHeaderContext{
-		SharedContext: &policyv1alpha2.SharedContext{
+	return &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
 			RequestID: "test-request-id",
 			Metadata:  make(map[string]any),
 		},
-		Headers:   policyv1alpha2.NewHeaders(headers),
+		Headers:   policy.NewHeaders(headers),
 		Path:      "/api/test",
 		Method:    "GET",
 		Scheme:    "http",
@@ -862,12 +748,12 @@ func TestGetMcpAuthPolicy_WithIssuersAndScopes(t *testing.T) {
 		"requiredScopes": []interface{}{"read", "write"},
 	}
 
-	policy, err := GetPolicy(policy.PolicyMetadata{}, params)
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("GetPolicy returned error: %v", err)
 	}
 
-	mcpPolicy := policy.(*McpAuthPolicy)
+	mcpPolicy := p.(*McpAuthPolicy)
 
 	// Check issuers
 	if len(mcpPolicy.Issuers) != 2 {

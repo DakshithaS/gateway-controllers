@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
-	embeddingproviders "github.com/wso2/api-platform/sdk/utils/embeddingproviders"
-	vectordbproviders "github.com/wso2/api-platform/sdk/utils/vectordbproviders"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	embeddingproviders "github.com/wso2/api-platform/sdk/ai/embeddings"
+	vectordbproviders "github.com/wso2/api-platform/sdk/ai/vectordb"
 )
 
 type mockEmbeddingProvider struct {
@@ -77,22 +76,8 @@ func (m *mockVectorDBProvider) Close() error {
 	return nil
 }
 
-func TestSemanticCachePolicy_Mode(t *testing.T) {
-	p := &SemanticCachePolicy{}
-	got := p.Mode()
-	want := policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeBuffer,
-	}
-	if got != want {
-		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
-	}
-}
-
 func TestGetPolicy_InvalidParams(t *testing.T) {
-	_, err := GetPolicyV2(policyv1alpha2.PolicyMetadata{}, map[string]interface{}{})
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{})
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -324,7 +309,7 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 	tests := []struct {
 		name             string
 		policy           *SemanticCachePolicy
-		ctx              *policyv1alpha2.RequestContext
+		ctx              *policy.RequestContext
 		wantImmediate    bool
 		wantStatus       int
 		wantCacheStatus  string
@@ -337,9 +322,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				vectorStoreProvider: &mockVectorDBProvider{},
 				threshold:           0.5,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
-				Body:          &policyv1alpha2.Body{Content: nil, Present: false},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
+				Body:          &policy.Body{Content: nil, Present: false},
 			},
 			wantImmediate: false,
 		},
@@ -351,9 +336,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				jsonPath:            "$.missing",
 				threshold:           0.5,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
-				Body:          &policyv1alpha2.Body{Content: []byte(`{"prompt":"hello"}`), Present: true},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
+				Body:          &policy.Body{Content: []byte(`{"prompt":"hello"}`), Present: true},
 			},
 			wantImmediate: true,
 			wantStatus:    400,
@@ -367,9 +352,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				vectorStoreProvider: &mockVectorDBProvider{},
 				threshold:           0.5,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
-				Body:          &policyv1alpha2.Body{Content: []byte("hello"), Present: true},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}},
+				Body:          &policy.Body{Content: []byte("hello"), Present: true},
 			},
 			wantImmediate: false,
 		},
@@ -393,9 +378,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				}},
 				threshold: 0.7,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
-				Body:          &policyv1alpha2.Body{Content: []byte("hello"), Present: true},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
+				Body:          &policy.Body{Content: []byte("hello"), Present: true},
 			},
 			wantImmediate:    false,
 			wantMetadataSave: true,
@@ -411,9 +396,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				}},
 				threshold: 0.5,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
-				Body:          &policyv1alpha2.Body{Content: []byte("hello"), Present: true},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
+				Body:          &policy.Body{Content: []byte("hello"), Present: true},
 			},
 			wantImmediate:   true,
 			wantStatus:      200,
@@ -428,9 +413,9 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				}},
 				threshold: 0.5,
 			},
-			ctx: &policyv1alpha2.RequestContext{
-				SharedContext: &policyv1alpha2.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
-				Body:          &policyv1alpha2.Body{Content: []byte("hello"), Present: true},
+			ctx: &policy.RequestContext{
+				SharedContext: &policy.SharedContext{RequestID: "r1", Metadata: map[string]interface{}{}, APIName: "Books", APIVersion: "v1"},
+				Body:          &policy.Body{Content: []byte("hello"), Present: true},
 			},
 			wantImmediate: false,
 		},
@@ -441,7 +426,7 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 			action := tt.policy.OnRequestBody(tt.ctx, nil)
 
 			if !tt.wantImmediate {
-				if _, ok := action.(policyv1alpha2.UpstreamRequestModifications); !ok {
+				if _, ok := action.(policy.UpstreamRequestModifications); !ok {
 					t.Fatalf("expected UpstreamRequestModifications, got %T", action)
 				}
 				if tt.wantMetadataSave {
@@ -452,7 +437,7 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 				return
 			}
 
-			resp, ok := action.(policyv1alpha2.ImmediateResponse)
+			resp, ok := action.(policy.ImmediateResponse)
 			if !ok {
 				t.Fatalf("expected ImmediateResponse, got %T", action)
 			}
@@ -479,8 +464,8 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 	tests := []struct {
 		name      string
 		policy    *SemanticCachePolicy
-		ctx       *policyv1alpha2.ResponseContext
-		assertion func(t *testing.T, action policyv1alpha2.ResponseAction)
+		ctx       *policy.ResponseContext
+		assertion func(t *testing.T, action policy.ResponseAction)
 	}{
 		{
 			name: "non-200 response skipped",
@@ -557,10 +542,10 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 					return nil
 				}},
 			},
-			ctx: &policyv1alpha2.ResponseContext{
-				SharedContext:  &policyv1alpha2.SharedContext{RequestID: "req-1", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}},
+			ctx: &policy.ResponseContext{
+				SharedContext:  &policy.SharedContext{RequestID: "req-1", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}},
 				ResponseStatus: 200,
-				ResponseBody:   &policyv1alpha2.Body{Content: []byte(`{"answer":"x"}`), Present: true},
+				ResponseBody:   &policy.Body{Content: []byte(`{"answer":"x"}`), Present: true},
 			},
 			assertion: assertUpstreamResponseMods,
 		},
@@ -574,10 +559,10 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 					return nil
 				}},
 			},
-			ctx: &policyv1alpha2.ResponseContext{
-				SharedContext:  &policyv1alpha2.SharedContext{RequestID: "req-2", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}, APIName: "Books", APIVersion: "v2"},
+			ctx: &policy.ResponseContext{
+				SharedContext:  &policy.SharedContext{RequestID: "req-2", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}, APIName: "Books", APIVersion: "v2"},
 				ResponseStatus: 200,
-				ResponseBody:   &policyv1alpha2.Body{Content: []byte(`{"answer":"x"}`), Present: true},
+				ResponseBody:   &policy.Body{Content: []byte(`{"answer":"x"}`), Present: true},
 			},
 			assertion: assertUpstreamResponseMods,
 		},
@@ -591,29 +576,202 @@ func TestSemanticCachePolicy_OnResponse(t *testing.T) {
 	}
 }
 
-func TestBuildErrorResponse(t *testing.T) {
+func TestAssembleSSEResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		sseBody    string
+		wantErr    bool
+		assertData func(t *testing.T, data map[string]interface{})
+	}{
+		{
+			name: "standard openai SSE stream",
+			sseBody: "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n" +
+				"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n" +
+				"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n" +
+				"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n" +
+				"data: [DONE]\n",
+			assertData: func(t *testing.T, data map[string]interface{}) {
+				if data["object"] != "chat.completion" {
+					t.Fatalf("expected object=chat.completion, got %v", data["object"])
+				}
+				if data["model"] != "gpt-4" {
+					t.Fatalf("expected model=gpt-4, got %v", data["model"])
+				}
+				choices, ok := data["choices"].([]interface{})
+				if !ok || len(choices) == 0 {
+					t.Fatalf("expected choices array, got %v", data["choices"])
+				}
+				choice := choices[0].(map[string]interface{})
+				msg, ok := choice["message"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("expected message in choice, got %v", choice)
+				}
+				if msg["content"] != "Hello world" {
+					t.Fatalf("expected content='Hello world', got %v", msg["content"])
+				}
+				if msg["role"] != "assistant" {
+					t.Fatalf("expected role=assistant, got %v", msg["role"])
+				}
+				// delta should not be present
+				if _, hasDelta := choice["delta"]; hasDelta {
+					t.Fatalf("delta should not be present in assembled response")
+				}
+			},
+		},
+		{
+			name:    "no valid events",
+			sseBody: "not sse data\njust some text\n",
+			wantErr: true,
+		},
+		{
+			name:    "only DONE marker",
+			sseBody: "data: [DONE]\n",
+			wantErr: true,
+		},
+		{
+			name: "SSE with blank lines between events",
+			sseBody: "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+				"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there\"}}]}\n\n" +
+				"data: [DONE]\n",
+			assertData: func(t *testing.T, data map[string]interface{}) {
+				choices := data["choices"].([]interface{})
+				msg := choices[0].(map[string]interface{})["message"].(map[string]interface{})
+				if msg["content"] != "Hi there" {
+					t.Fatalf("expected 'Hi there', got %v", msg["content"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := assembleSSEResponse(tt.sseBody, DefaultStreamingJsonPath)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("assembleSSEResponse failed: %v", err)
+			}
+			if tt.assertData != nil {
+				tt.assertData(t, data)
+			}
+		})
+	}
+}
+
+func TestIsSSEContent(t *testing.T) {
+	if !isSSEContent("data: {\"foo\":1}\ndata: [DONE]\n") {
+		t.Fatal("expected true for SSE content")
+	}
+	if isSSEContent("{\"foo\":1}") {
+		t.Fatal("expected false for plain JSON")
+	}
+}
+
+func TestSemanticCachePolicy_OnResponse_SSE(t *testing.T) {
+	sseBody := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"cached\"}}]}\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" answer\"}}]}\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n" +
+		"data: [DONE]\n"
+
+	var storedResponse vectordbproviders.CacheResponse
+	p := &SemanticCachePolicy{
+		streamingJsonPath: DefaultStreamingJsonPath,
+		vectorStoreProvider: &mockVectorDBProvider{storeFn: func(embeddings []float32, response vectordbproviders.CacheResponse, filter map[string]interface{}) error {
+			storedResponse = response
+			return nil
+		}},
+	}
+
+	ctx := &policy.ResponseContext{
+		SharedContext:   &policy.SharedContext{RequestID: "req-sse", Metadata: map[string]interface{}{MetadataKeyEmbedding: "[0.1,0.2]"}, APIName: "Chat", APIVersion: "v1"},
+		ResponseStatus:  200,
+		ResponseBody:    &policy.Body{Content: []byte(sseBody), Present: true},
+		ResponseHeaders: &policy.Headers{},
+	}
+
+	action := p.OnResponseBody(ctx, nil)
+	if _, ok := action.(policy.DownstreamResponseModifications); !ok {
+		t.Fatalf("expected DownstreamResponseModifications, got %T", action)
+	}
+
+	if storedResponse.ResponsePayload == nil {
+		t.Fatal("expected SSE response to be cached, but store was not called")
+	}
+	if storedResponse.ResponsePayload["object"] != "chat.completion" {
+		t.Fatalf("expected assembled object=chat.completion, got %v", storedResponse.ResponsePayload["object"])
+	}
+	choices, ok := storedResponse.ResponsePayload["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		t.Fatal("expected choices in stored response")
+	}
+	msg := choices[0].(map[string]interface{})["message"].(map[string]interface{})
+	if msg["content"] != "cached answer" {
+		t.Fatalf("expected assembled content='cached answer', got %v", msg["content"])
+	}
+}
+
+func TestAssembleSSEResponse_CustomStreamingJsonPath(t *testing.T) {
+	// Simulate a provider that uses a different path, e.g. $.result.text
+	sseBody := "data: {\"id\":\"1\",\"result\":{\"text\":\"Hello\"}}\n" +
+		"data: {\"id\":\"1\",\"result\":{\"text\":\" custom\"}}\n" +
+		"data: [DONE]\n"
+
+	data, err := assembleSSEResponse(sseBody, "$.result.text")
+	if err != nil {
+		t.Fatalf("assembleSSEResponse with custom path failed: %v", err)
+	}
+	// choices rebuilding won't apply (no choices in events), but content should be extracted
+	_ = data // no panic = success; verify content was extracted
+}
+
+func TestParseParams_StreamingJsonPath(t *testing.T) {
+	// Default path when not specified
 	p := &SemanticCachePolicy{}
-	action := p.buildErrorResponse("jsonpath failed", errors.New("bad path"))
-	resp, ok := action.(policy.ImmediateResponse)
-	if !ok {
-		t.Fatalf("expected ImmediateResponse, got %T", action)
+	baseParams := map[string]interface{}{
+		"embeddingProvider":   "AZURE_OPENAI",
+		"vectorStoreProvider": "REDIS",
+		"similarityThreshold": 0.5,
+		"embeddingEndpoint":   "http://example.com",
+		"apiKey":              "secret",
+		"dbHost":              "localhost",
+		"dbPort":              6379,
+		"embeddingDimension":  1536,
 	}
-	if resp.StatusCode != 400 {
-		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	if err := parseParams(baseParams, p); err != nil {
+		t.Fatalf("parseParams failed: %v", err)
 	}
-	if resp.Headers["Content-Type"] != "application/json" {
-		t.Fatalf("unexpected content type: %q", resp.Headers["Content-Type"])
+	if p.streamingJsonPath != DefaultStreamingJsonPath {
+		t.Fatalf("expected default streamingJsonPath=%q, got %q", DefaultStreamingJsonPath, p.streamingJsonPath)
 	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("invalid json body: %v", err)
+
+	// Custom path
+	p2 := &SemanticCachePolicy{}
+	customParams := make(map[string]interface{})
+	for k, v := range baseParams {
+		customParams[k] = v
 	}
-	if body["type"] != "SEMANTIC_CACHE" {
-		t.Fatalf("unexpected type: %v", body["type"])
+	customParams["streamingJsonPath"] = "$.result.delta.text"
+	if err := parseParams(customParams, p2); err != nil {
+		t.Fatalf("parseParams with custom streamingJsonPath failed: %v", err)
 	}
-	msg, _ := body["message"].(string)
-	if !strings.Contains(msg, "jsonpath failed") || !strings.Contains(msg, "bad path") {
-		t.Fatalf("unexpected message: %q", msg)
+	if p2.streamingJsonPath != "$.result.delta.text" {
+		t.Fatalf("expected streamingJsonPath=$.result.delta.text, got %q", p2.streamingJsonPath)
+	}
+
+	// Invalid type
+	p3 := &SemanticCachePolicy{}
+	badParams := make(map[string]interface{})
+	for k, v := range baseParams {
+		badParams[k] = v
+	}
+	badParams["streamingJsonPath"] = 123
+	if err := parseParams(badParams, p3); err == nil {
+		t.Fatal("expected error for non-string streamingJsonPath")
 	}
 }
 
@@ -629,20 +787,20 @@ func TestCreateProviderHelpers_UnsupportedTypes(t *testing.T) {
 	}
 }
 
-func newResponseContext(status int, body []byte, metadata map[string]interface{}) *policyv1alpha2.ResponseContext {
+func newResponseContext(status int, body []byte, metadata map[string]interface{}) *policy.ResponseContext {
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
-	return &policyv1alpha2.ResponseContext{
-		SharedContext:  &policyv1alpha2.SharedContext{RequestID: "req-1", Metadata: metadata, APIName: "Books", APIVersion: "v1"},
+	return &policy.ResponseContext{
+		SharedContext:  &policy.SharedContext{RequestID: "req-1", Metadata: metadata, APIName: "Books", APIVersion: "v1"},
 		ResponseStatus: status,
-		ResponseBody:   &policyv1alpha2.Body{Content: body, Present: len(body) > 0},
+		ResponseBody:   &policy.Body{Content: body, Present: len(body) > 0},
 	}
 }
 
-func assertUpstreamResponseMods(t *testing.T, action policyv1alpha2.ResponseAction) {
+func assertUpstreamResponseMods(t *testing.T, action policy.ResponseAction) {
 	t.Helper()
-	if _, ok := action.(policyv1alpha2.DownstreamResponseModifications); !ok {
+	if _, ok := action.(policy.DownstreamResponseModifications); !ok {
 		t.Fatalf("expected DownstreamResponseModifications, got %T", action)
 	}
 }

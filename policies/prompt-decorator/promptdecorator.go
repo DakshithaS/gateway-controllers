@@ -25,9 +25,8 @@ import (
 	"strconv"
 	"strings"
 
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
-	utils "github.com/wso2/api-platform/sdk/utils"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 var arrayIndexRegex = regexp.MustCompile(`^([a-zA-Z0-9_]+)\[(-?\d+)\]$`)
@@ -65,10 +64,7 @@ type PromptDecoratorPolicyParams struct {
 	Append                bool
 }
 
-// GetPolicy is the v1alpha factory entry point (loaded by v1alpha kernels).
-// The returned concrete type also satisfies policyv1alpha2 phase interfaces
-// (StreamingResponsePolicy, RequestPolicy, ResponsePolicy), so v1alpha2 kernels
-// can discover those capabilities via type assertions even when using this factory.
+// GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
 func GetPolicy(
 	metadata policy.PolicyMetadata,
 	params map[string]interface{},
@@ -87,18 +83,22 @@ func GetPolicy(
 	return p, nil
 }
 
-// GetPolicyV2 is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
+// GetPolicyV2 delegates to GetPolicy.
 func GetPolicyV2(
-	metadata policyv1alpha2.PolicyMetadata,
+	metadata policy.PolicyMetadata,
 	params map[string]interface{},
-) (policyv1alpha2.Policy, error) {
-	return GetPolicy(policy.PolicyMetadata{
-		RouteName:  metadata.RouteName,
-		APIId:      metadata.APIId,
-		APIName:    metadata.APIName,
-		APIVersion: metadata.APIVersion,
-		AttachedTo: policy.Level(metadata.AttachedTo),
-	}, params)
+) (policy.Policy, error) {
+	return GetPolicy(metadata, params)
+}
+
+// Mode returns the processing mode for the prompt decorator policy.
+func (p *PromptDecoratorPolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeSkip,
+	}
 }
 
 // parseParams parses and validates parameters from map to struct
@@ -200,18 +200,98 @@ func parseParams(params map[string]interface{}) (PromptDecoratorPolicyParams, er
 	return result, nil
 }
 
-// Mode returns the processing mode for this policy
-func (p *PromptDecoratorPolicy) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess, // needed to catch empty-body requests
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeSkip,
+// createDecorationMessages creates decoration messages from promptDecoratorConfig.messages.
+func (p *PromptDecoratorPolicy) createDecorationMessages() ([]map[string]interface{}, error) {
+	if len(p.params.PromptDecoratorConfig.Messages) == 0 {
+		return nil, fmt.Errorf("promptDecoratorConfig.messages must be provided for chat prompt decoration")
 	}
+
+	decorationMessages := make([]map[string]interface{}, 0, len(p.params.PromptDecoratorConfig.Messages))
+	for _, item := range p.params.PromptDecoratorConfig.Messages {
+		decorationMessages = append(decorationMessages, map[string]interface{}{
+			"role":    item.Role,
+			"content": item.Content,
+		})
+	}
+	return decorationMessages, nil
 }
 
-// OnRequest decorates request body
-func (p *PromptDecoratorPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+// navigatePath navigates through a JSON structure using a key (which may contain array indices)
+func (p *PromptDecoratorPolicy) navigatePath(current interface{}, key string) interface{} {
+	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
+		arrayName := matches[1]
+		idxStr := matches[2]
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			return nil
+		}
+
+		if node, ok := current.(map[string]interface{}); ok {
+			if arrVal, exists := node[arrayName]; exists {
+				if arr, ok := arrVal.([]interface{}); ok {
+					if idx < 0 {
+						idx = len(arr) + idx
+					}
+					if idx < 0 || idx >= len(arr) {
+						return nil
+					}
+					return arr[idx]
+				}
+			}
+		}
+		return nil
+	}
+
+	if node, ok := current.(map[string]interface{}); ok {
+		if val, exists := node[key]; exists {
+			return val
+		}
+	}
+	return nil
+}
+
+// setValueAtPath sets a value at a path (key may contain array indices)
+func (p *PromptDecoratorPolicy) setValueAtPath(current interface{}, key string, value interface{}) error {
+	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
+		arrayName := matches[1]
+		idxStr := matches[2]
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			return fmt.Errorf("invalid array index: %s", idxStr)
+		}
+
+		if node, ok := current.(map[string]interface{}); ok {
+			if arrVal, exists := node[arrayName]; exists {
+				if arr, ok := arrVal.([]interface{}); ok {
+					if idx < 0 {
+						idx = len(arr) + idx
+					}
+					if idx < 0 || idx >= len(arr) {
+						return fmt.Errorf("array index out of range: %s", idxStr)
+					}
+					arr[idx] = value
+					return nil
+				}
+				return fmt.Errorf("not an array: %s", arrayName)
+			}
+			return fmt.Errorf("key not found: %s", arrayName)
+		}
+		return fmt.Errorf("invalid structure for key: %s", arrayName)
+	}
+
+	if node, ok := current.(map[string]interface{}); ok {
+		node[key] = value
+		return nil
+	}
+	return fmt.Errorf("invalid structure for key: %s", key)
+}
+
+// OnRequestBody decorates the request body.
+func (p *PromptDecoratorPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	return p.processRequestBody(ctx)
+}
+
+func (p *PromptDecoratorPolicy) processRequestBody(ctx *policy.RequestContext) policy.RequestAction {
 	var content []byte
 	if ctx.Body != nil {
 		content = ctx.Body.Content
@@ -344,64 +424,31 @@ func (p *PromptDecoratorPolicy) OnRequest(ctx *policy.RequestContext, params map
 	}
 }
 
-// createDecorationMessages creates decoration messages from promptDecoratorConfig.messages.
-func (p *PromptDecoratorPolicy) createDecorationMessages() ([]map[string]interface{}, error) {
-	if len(p.params.PromptDecoratorConfig.Messages) == 0 {
-		return nil, fmt.Errorf("promptDecoratorConfig.messages must be provided for chat prompt decoration")
+func (p *PromptDecoratorPolicy) buildErrorResponse(reason string, validationError error) policy.RequestAction {
+	errorMessage := reason
+	if validationError != nil {
+		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)
 	}
 
-	decorationMessages := make([]map[string]interface{}, 0, len(p.params.PromptDecoratorConfig.Messages))
-	for _, item := range p.params.PromptDecoratorConfig.Messages {
-		decorationMessages = append(decorationMessages, map[string]interface{}{
-			"role":    item.Role,
-			"content": item.Content,
-		})
-	}
-	return decorationMessages, nil
-}
-
-// updateStringAtPath updates a string value at the given JSONPath
-func (p *PromptDecoratorPolicy) updateStringAtPath(payloadData map[string]interface{}, jsonPath string, value string) policy.RequestAction {
-	path := jsonPath
-	if strings.HasPrefix(path, "$.") {
-		path = strings.TrimPrefix(path, "$.")
-	}
-	if path == "" {
-		return p.buildErrorResponse("Invalid JSONPath", fmt.Errorf("empty path"))
+	responseBody := map[string]interface{}{
+		"type":    "PROMPT_DECORATOR_ERROR",
+		"message": errorMessage,
 	}
 
-	pathComponents := strings.Split(path, ".")
-	current := interface{}(payloadData)
-
-	// Navigate to parent
-	for i := 0; i < len(pathComponents)-1; i++ {
-		key := pathComponents[i]
-		current = p.navigatePath(current, key)
-		if current == nil {
-			slog.Debug("PromptDecorator: Error navigating JSONPath", "jsonPath", jsonPath, "key", key)
-			return p.buildErrorResponse("Error navigating JSONPath", fmt.Errorf("key not found: %s", key))
-		}
-	}
-
-	// Update final key
-	finalKey := pathComponents[len(pathComponents)-1]
-	if err := p.setValueAtPath(current, finalKey, value); err != nil {
-		slog.Debug("PromptDecorator: Error updating JSONPath", "jsonPath", jsonPath, "error", err)
-		return p.buildErrorResponse("Error updating JSONPath", err)
-	}
-
-	updatedPayload, err := json.Marshal(payloadData)
+	bodyBytes, err := json.Marshal(responseBody)
 	if err != nil {
-		slog.Debug("PromptDecorator: Error marshaling updated JSON payload", "error", err)
-		return p.buildErrorResponse("Error marshaling updated JSON payload", err)
+		bodyBytes = []byte(`{"type":"PROMPT_DECORATOR_ERROR","message":"Internal error"}`)
 	}
 
-	return policy.UpstreamRequestModifications{
-		Body: updatedPayload,
+	return policy.ImmediateResponse{
+		StatusCode: 500,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: bodyBytes,
 	}
 }
 
-// updateArrayAtPath updates an array value at the given JSONPath
 func (p *PromptDecoratorPolicy) updateArrayAtPath(payloadData map[string]interface{}, jsonPath string, value []map[string]interface{}) policy.RequestAction {
 	path := jsonPath
 	if strings.HasPrefix(path, "$.") {
@@ -448,277 +495,13 @@ func (p *PromptDecoratorPolicy) updateArrayAtPath(payloadData map[string]interfa
 	}
 }
 
-// navigatePath navigates through a JSON structure using a key (which may contain array indices)
-func (p *PromptDecoratorPolicy) navigatePath(current interface{}, key string) interface{} {
-	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
-		arrayName := matches[1]
-		idxStr := matches[2]
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil {
-			return nil
-		}
-
-		if node, ok := current.(map[string]interface{}); ok {
-			if arrVal, exists := node[arrayName]; exists {
-				if arr, ok := arrVal.([]interface{}); ok {
-					if idx < 0 {
-						idx = len(arr) + idx
-					}
-					if idx < 0 || idx >= len(arr) {
-						return nil
-					}
-					return arr[idx]
-				}
-			}
-		}
-		return nil
-	}
-
-	if node, ok := current.(map[string]interface{}); ok {
-		if val, exists := node[key]; exists {
-			return val
-		}
-	}
-	return nil
-}
-
-// setValueAtPath sets a value at a path (key may contain array indices)
-func (p *PromptDecoratorPolicy) setValueAtPath(current interface{}, key string, value interface{}) error {
-	if matches := arrayIndexRegex.FindStringSubmatch(key); len(matches) == 3 {
-		arrayName := matches[1]
-		idxStr := matches[2]
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil {
-			return fmt.Errorf("invalid array index: %s", idxStr)
-		}
-
-		if node, ok := current.(map[string]interface{}); ok {
-			if arrVal, exists := node[arrayName]; exists {
-				if arr, ok := arrVal.([]interface{}); ok {
-					if idx < 0 {
-						idx = len(arr) + idx
-					}
-					if idx < 0 || idx >= len(arr) {
-						return fmt.Errorf("array index out of range: %s", idxStr)
-					}
-					arr[idx] = value
-					return nil
-				}
-				return fmt.Errorf("not an array: %s", arrayName)
-			}
-			return fmt.Errorf("key not found: %s", arrayName)
-		}
-		return fmt.Errorf("invalid structure for key: %s", arrayName)
-	}
-
-	if node, ok := current.(map[string]interface{}); ok {
-		node[key] = value
-		return nil
-	}
-	return fmt.Errorf("invalid structure for key: %s", key)
-}
-
-// OnResponse is not used for this policy
-func (p *PromptDecoratorPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	return policy.UpstreamResponseModifications{}
-}
-
-// buildErrorResponse builds an error response
-func (p *PromptDecoratorPolicy) buildErrorResponse(reason string, validationError error) policy.RequestAction {
-	errorMessage := reason
-	if validationError != nil {
-		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)
-	}
-
-	responseBody := map[string]interface{}{
-		"type":    "PROMPT_DECORATOR_ERROR",
-		"message": errorMessage,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"PROMPT_DECORATOR_ERROR","message":"Internal error"}`)
-	}
-
-	return policy.ImmediateResponse{
-		StatusCode: 500,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body: bodyBytes,
-	}
-}
-
-// OnRequestBody decorates the request body.
-func (p *PromptDecoratorPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map[string]interface{}) policyv1alpha2.RequestAction {
-	return p.processRequestBody(ctx)
-}
-
-func (p *PromptDecoratorPolicy) processRequestBody(ctx *policyv1alpha2.RequestContext) policyv1alpha2.RequestAction {
-	var content []byte
-	if ctx.Body != nil {
-		content = ctx.Body.Content
-	}
-
-	// Check for empty or nil content before unmarshaling
-	if ctx.Body == nil || len(content) == 0 {
-		return p.buildErrorResponseV2("Empty request body", nil)
-	}
-
-	// Parse JSON payload
-	var payloadData map[string]interface{}
-	if err := json.Unmarshal(content, &payloadData); err != nil {
-		slog.Debug("PromptDecorator: Error parsing JSON payload", "error", err)
-		return p.buildErrorResponseV2("Error parsing JSON payload", err)
-	}
-
-	// Extract value using JSONPath
-	extractedValue, err := utils.ExtractValueFromJsonpath(payloadData, p.params.JsonPath)
-	if err != nil {
-		slog.Debug("PromptDecorator: Error extracting value from JSONPath", "jsonPath", p.params.JsonPath, "error", err)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err)
-	}
-
-	// Check if we're decorating a string content field or an array of messages
-	switch v := extractedValue.(type) {
-	case string:
-		// Decorating a content string (for example, $.messages[-1].content)
-		if p.params.PromptDecoratorConfig.Text == nil {
-			return p.buildErrorResponseV2(
-				"Invalid configuration for string target",
-				fmt.Errorf("use promptDecoratorConfig.text when jsonPath resolves to a string"),
-			)
-		}
-		decorationStr := *p.params.PromptDecoratorConfig.Text
-
-		// Apply decoration (prepend or append)
-		var updatedContent string
-		if p.params.Append {
-			updatedContent = v + " " + decorationStr
-		} else {
-			updatedContent = decorationStr + " " + v
-		}
-
-		slog.Debug("PromptDecorator: Applied string decoration", "jsonPath", p.params.JsonPath, "append", p.params.Append, "originalLength", len(v), "updatedLength", len(updatedContent))
-		// Update the content field
-		return p.updateStringAtPathV2(payloadData, p.params.JsonPath, updatedContent)
-
-	case []interface{}:
-		// Decorating an array of messages (for example, $.messages)
-		if len(p.params.PromptDecoratorConfig.Messages) == 0 {
-			return p.buildErrorResponseV2(
-				"Invalid configuration for messages target",
-				fmt.Errorf("use promptDecoratorConfig.messages when jsonPath resolves to an array"),
-			)
-		}
-
-		messages := make([]map[string]interface{}, 0, len(v))
-		var malformedEntries []string
-
-		for i, item := range v {
-			if msg, ok := item.(map[string]interface{}); ok {
-				messages = append(messages, msg)
-			} else {
-				// Detect non-map entries and collect details for error reporting
-				elementType := fmt.Sprintf("%T", item)
-				elementValue := fmt.Sprintf("%v", item)
-				malformedEntries = append(malformedEntries, fmt.Sprintf("index %d: type=%s, value=%s", i, elementType, elementValue))
-				slog.Debug("PromptDecorator: Non-map element detected in messages array", "jsonPath", p.params.JsonPath, "index", i, "type", elementType, "value", elementValue)
-			}
-		}
-
-		// If malformed entries found, return error without modifying the slice
-		if len(malformedEntries) > 0 {
-			errorDetails := fmt.Sprintf("malformed entries at %s", strings.Join(malformedEntries, "; "))
-			return p.buildErrorResponseV2("Array contains non-map elements", fmt.Errorf("%s", errorDetails))
-		}
-
-		// Create decoration messages from decoration config
-		decorationMessages, err := p.createDecorationMessages()
-		if err != nil {
-			slog.Debug("PromptDecorator: Error creating decoration messages", "error", err)
-			return p.buildErrorResponseV2("Error creating decoration messages", err)
-		}
-
-		// Apply decoration (prepend or append)
-		var updatedMessages []map[string]interface{}
-		if p.params.Append {
-			updatedMessages = append(messages, decorationMessages...)
-		} else {
-			updatedMessages = append(decorationMessages, messages...)
-		}
-
-		slog.Debug("PromptDecorator: Applied array decoration", "jsonPath", p.params.JsonPath, "append", p.params.Append, "originalCount", len(messages), "decorationCount", len(decorationMessages), "updatedCount", len(updatedMessages))
-		// Update the messages array
-		return p.updateArrayAtPathV2(payloadData, p.params.JsonPath, updatedMessages)
-
-	case []map[string]interface{}:
-		// Already in the right format
-		if len(p.params.PromptDecoratorConfig.Messages) == 0 {
-			return p.buildErrorResponseV2(
-				"Invalid configuration for messages target",
-				fmt.Errorf("use promptDecoratorConfig.messages when jsonPath resolves to an array"),
-			)
-		}
-		messages := v
-
-		// Create decoration messages from decoration config
-		decorationMessages, err := p.createDecorationMessages()
-		if err != nil {
-			slog.Debug("PromptDecorator: Error creating decoration messages", "error", err)
-			return p.buildErrorResponseV2("Error creating decoration messages", err)
-		}
-
-		// Apply decoration (prepend or append)
-		var updatedMessages []map[string]interface{}
-		if p.params.Append {
-			updatedMessages = append(messages, decorationMessages...)
-		} else {
-			updatedMessages = append(decorationMessages, messages...)
-		}
-
-		slog.Debug("PromptDecorator: Applied array decoration", "jsonPath", p.params.JsonPath, "append", p.params.Append, "originalCount", len(messages), "decorationCount", len(decorationMessages), "updatedCount", len(updatedMessages))
-		// Update the messages array
-		return p.updateArrayAtPathV2(payloadData, p.params.JsonPath, updatedMessages)
-
-	default:
-		slog.Debug("PromptDecorator: Invalid extracted value type", "type", fmt.Sprintf("%T", extractedValue))
-		return p.buildErrorResponseV2("Extracted value must be a string or an array of message objects", fmt.Errorf("unexpected type: %T", extractedValue))
-	}
-}
-
-func (p *PromptDecoratorPolicy) buildErrorResponseV2(reason string, validationError error) policyv1alpha2.RequestAction {
-	errorMessage := reason
-	if validationError != nil {
-		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)
-	}
-
-	responseBody := map[string]interface{}{
-		"type":    "PROMPT_DECORATOR_ERROR",
-		"message": errorMessage,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"PROMPT_DECORATOR_ERROR","message":"Internal error"}`)
-	}
-
-	return policyv1alpha2.ImmediateResponse{
-		StatusCode: 500,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body: bodyBytes,
-	}
-}
-
-func (p *PromptDecoratorPolicy) updateArrayAtPathV2(payloadData map[string]interface{}, jsonPath string, value []map[string]interface{}) policyv1alpha2.RequestAction {
+func (p *PromptDecoratorPolicy) updateStringAtPath(payloadData map[string]interface{}, jsonPath string, value string) policy.RequestAction {
 	path := jsonPath
 	if strings.HasPrefix(path, "$.") {
 		path = strings.TrimPrefix(path, "$.")
 	}
 	if path == "" {
-		return p.buildErrorResponseV2("Invalid JSONPath", fmt.Errorf("empty path"))
+		return p.buildErrorResponse("Invalid JSONPath", fmt.Errorf("empty path"))
 	}
 
 	pathComponents := strings.Split(path, ".")
@@ -730,53 +513,7 @@ func (p *PromptDecoratorPolicy) updateArrayAtPathV2(payloadData map[string]inter
 		current = p.navigatePath(current, key)
 		if current == nil {
 			slog.Debug("PromptDecorator: Error navigating JSONPath", "jsonPath", jsonPath, "key", key)
-			return p.buildErrorResponseV2("Error navigating JSONPath", fmt.Errorf("key not found: %s", key))
-		}
-	}
-
-	// Convert []map[string]interface{} to []interface{}
-	valueInterface := make([]interface{}, len(value))
-	for i, v := range value {
-		valueInterface[i] = v
-	}
-
-	// Update final key
-	finalKey := pathComponents[len(pathComponents)-1]
-	if err := p.setValueAtPath(current, finalKey, valueInterface); err != nil {
-		slog.Debug("PromptDecorator: Error updating JSONPath", "jsonPath", jsonPath, "error", err)
-		return p.buildErrorResponseV2("Error updating JSONPath", err)
-	}
-
-	updatedPayload, err := json.Marshal(payloadData)
-	if err != nil {
-		slog.Debug("PromptDecorator: Error marshaling updated JSON payload", "error", err)
-		return p.buildErrorResponseV2("Error marshaling updated JSON payload", err)
-	}
-
-	return policyv1alpha2.UpstreamRequestModifications{
-		Body: updatedPayload,
-	}
-}
-
-func (p *PromptDecoratorPolicy) updateStringAtPathV2(payloadData map[string]interface{}, jsonPath string, value string) policyv1alpha2.RequestAction {
-	path := jsonPath
-	if strings.HasPrefix(path, "$.") {
-		path = strings.TrimPrefix(path, "$.")
-	}
-	if path == "" {
-		return p.buildErrorResponseV2("Invalid JSONPath", fmt.Errorf("empty path"))
-	}
-
-	pathComponents := strings.Split(path, ".")
-	current := interface{}(payloadData)
-
-	// Navigate to parent
-	for i := 0; i < len(pathComponents)-1; i++ {
-		key := pathComponents[i]
-		current = p.navigatePath(current, key)
-		if current == nil {
-			slog.Debug("PromptDecorator: Error navigating JSONPath", "jsonPath", jsonPath, "key", key)
-			return p.buildErrorResponseV2("Error navigating JSONPath", fmt.Errorf("key not found: %s", key))
+			return p.buildErrorResponse("Error navigating JSONPath", fmt.Errorf("key not found: %s", key))
 		}
 	}
 
@@ -784,16 +521,16 @@ func (p *PromptDecoratorPolicy) updateStringAtPathV2(payloadData map[string]inte
 	finalKey := pathComponents[len(pathComponents)-1]
 	if err := p.setValueAtPath(current, finalKey, value); err != nil {
 		slog.Debug("PromptDecorator: Error updating JSONPath", "jsonPath", jsonPath, "error", err)
-		return p.buildErrorResponseV2("Error updating JSONPath", err)
+		return p.buildErrorResponse("Error updating JSONPath", err)
 	}
 
 	updatedPayload, err := json.Marshal(payloadData)
 	if err != nil {
 		slog.Debug("PromptDecorator: Error marshaling updated JSON payload", "error", err)
-		return p.buildErrorResponseV2("Error marshaling updated JSON payload", err)
+		return p.buildErrorResponse("Error marshaling updated JSON payload", err)
 	}
 
-	return policyv1alpha2.UpstreamRequestModifications{
+	return policy.UpstreamRequestModifications{
 		Body: updatedPayload,
 	}
 }

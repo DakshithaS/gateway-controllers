@@ -23,16 +23,16 @@ import (
 	"log/slog"
 	"sort"
 
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	utils "github.com/wso2/api-platform/sdk/utils"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 // OnRequestBody is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
-func (p *SemanticToolFilteringPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map[string]interface{}) policyv1alpha2.RequestAction {
+func (p *SemanticToolFilteringPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return p.processRequestBody(ctx)
 }
 
-func (p *SemanticToolFilteringPolicy) processRequestBody(ctx *policyv1alpha2.RequestContext) policyv1alpha2.RequestAction {
+func (p *SemanticToolFilteringPolicy) processRequestBody(ctx *policy.RequestContext) policy.RequestAction {
 	var content []byte
 	if ctx.Body != nil {
 		content = ctx.Body.Content
@@ -40,45 +40,45 @@ func (p *SemanticToolFilteringPolicy) processRequestBody(ctx *policyv1alpha2.Req
 
 	if len(content) == 0 {
 		slog.Debug("SemanticToolFiltering: Empty request body")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Handle based on format type (JSON or Text)
 	if p.userQueryIsJson && p.toolsIsJson {
 		// Pure JSON mode
-		return p.handleJSONRequestV2(ctx, content)
+		return p.handleJSONRequest(ctx, content)
 	} else if !p.userQueryIsJson && !p.toolsIsJson {
 		// Pure Text mode
-		return p.handleTextRequestV2(ctx, content)
+		return p.handleTextRequest(ctx, content)
 	} else {
 		// Mixed mode
-		return p.handleMixedRequestV2(ctx, content)
+		return p.handleMixedRequest(ctx, content)
 	}
 }
 
-// handleJSONRequestV2 handles requests where both user query and tools are in JSON format (v1alpha2)
-func (p *SemanticToolFilteringPolicy) handleJSONRequestV2(ctx *policyv1alpha2.RequestContext, content []byte) policyv1alpha2.RequestAction {
+// handleJSONRequest handles requests where both user query and tools are in JSON format (v1alpha2)
+func (p *SemanticToolFilteringPolicy) handleJSONRequest(ctx *policy.RequestContext, content []byte) policy.RequestAction {
 	// Parse request body as JSON
 	var requestBody map[string]interface{}
 	if err := json.Unmarshal(content, &requestBody); err != nil {
-		return p.buildErrorResponseV2("Invalid JSON in request body", err)
+		return p.buildErrorResponse("Invalid JSON in request body", err)
 	}
 
 	// Extract user query using JSONPath
 	userQuery, err := utils.ExtractStringValueFromJsonpath(content, p.queryJSONPath)
 	if err != nil {
-		return p.buildErrorResponseV2("Error extracting user query from JSONPath", err)
+		return p.buildErrorResponse("Error extracting user query from JSONPath", err)
 	}
 
 	if userQuery == "" {
 		slog.Debug("SemanticToolFiltering: Empty user query")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Extract tools array using JSONPath
 	toolsJSON, err := utils.ExtractValueFromJsonpath(requestBody, p.toolsJSONPath)
 	if err != nil {
-		return p.buildErrorResponseV2("Error extracting tools from JSONPath", err)
+		return p.buildErrorResponse("Error extracting tools from JSONPath", err)
 	}
 
 	// Parse tools array
@@ -93,23 +93,23 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequestV2(ctx *policyv1alpha2.Re
 		var err error
 		toolsBytes, err = json.Marshal(v)
 		if err != nil {
-			return p.buildErrorResponseV2("Invalid tools format in request", err)
+			return p.buildErrorResponse("Invalid tools format in request", err)
 		}
 	}
 	if err := json.Unmarshal(toolsBytes, &tools); err != nil {
-		return p.buildErrorResponseV2("Invalid tools format in request", err)
+		return p.buildErrorResponse("Invalid tools format in request", err)
 	}
 
 	if len(tools) == 0 {
 		slog.Debug("SemanticToolFiltering: No tools to filter")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Generate embedding for user query
 	queryEmbedding, err := p.embeddingProvider.GetEmbedding(userQuery)
 	if err != nil {
 		slog.Error("SemanticToolFiltering: Error generating query embedding", "error", err)
-		return p.buildErrorResponseV2("Error generating query embedding", err)
+		return p.buildErrorResponse("Error generating query embedding", err)
 	}
 
 	// Get embedding cache instance
@@ -175,7 +175,7 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequestV2(ctx *policyv1alpha2.Re
 
 	if len(toolsWithScores) == 0 {
 		slog.Debug("SemanticToolFiltering: No valid tools after embedding generation")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Filter tools based on selection mode
@@ -188,44 +188,44 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequestV2(ctx *policyv1alpha2.Re
 
 	// Update request body with filtered tools
 	if err := updateToolsInRequestBody(&requestBody, p.toolsJSONPath, filteredTools); err != nil {
-		return p.buildErrorResponseV2("Error updating request body with filtered tools", err)
+		return p.buildErrorResponse("Error updating request body with filtered tools", err)
 	}
 
 	// Marshal modified request body
 	modifiedBody, err := json.Marshal(requestBody)
 	if err != nil {
-		return p.buildErrorResponseV2("Error marshaling modified request body", err)
+		return p.buildErrorResponse("Error marshaling modified request body", err)
 	}
 
-	return policyv1alpha2.UpstreamRequestModifications{
+	return policy.UpstreamRequestModifications{
 		Body: modifiedBody,
 	}
 }
 
-// handleTextRequestV2 handles requests where both user query and tools are in text format with tags (v1alpha2)
-func (p *SemanticToolFilteringPolicy) handleTextRequestV2(ctx *policyv1alpha2.RequestContext, content []byte) policyv1alpha2.RequestAction {
+// handleTextRequest handles requests where both user query and tools are in text format with tags (v1alpha2)
+func (p *SemanticToolFilteringPolicy) handleTextRequest(ctx *policy.RequestContext, content []byte) policy.RequestAction {
 	contentStr := string(content)
 
 	// Extract user query from <userq> tags
 	userQuery, err := extractUserQueryFromText(contentStr)
 	if err != nil {
-		return p.buildErrorResponseV2("Error extracting user query from text", err)
+		return p.buildErrorResponse("Error extracting user query from text", err)
 	}
 
 	if userQuery == "" {
 		slog.Debug("SemanticToolFiltering: Empty user query")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Extract tools from <toolname> and <tooldescription> tags
 	textTools, err := extractToolsFromText(contentStr)
 	if err != nil {
-		return p.buildErrorResponseV2("Error extracting tools from text", err)
+		return p.buildErrorResponse("Error extracting tools from text", err)
 	}
 
 	if len(textTools) == 0 {
 		slog.Debug("SemanticToolFiltering: No tools to filter")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Generate embedding for user query
@@ -233,7 +233,7 @@ func (p *SemanticToolFilteringPolicy) handleTextRequestV2(ctx *policyv1alpha2.Re
 
 	if err != nil {
 		slog.Error("SemanticToolFiltering: Error generating query embedding", "error", err)
-		return p.buildErrorResponseV2("Error generating query embedding", err)
+		return p.buildErrorResponse("Error generating query embedding", err)
 	}
 
 	// Get embedding cache instance
@@ -289,7 +289,7 @@ func (p *SemanticToolFilteringPolicy) handleTextRequestV2(ctx *policyv1alpha2.Re
 
 	if len(toolsWithScores) == 0 {
 		slog.Debug("SemanticToolFiltering: No valid tools after embedding generation")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Sort by score in descending order
@@ -326,13 +326,13 @@ func (p *SemanticToolFilteringPolicy) handleTextRequestV2(ctx *policyv1alpha2.Re
 		"filteredCount", len(filteredToolNames),
 		"selectionMode", p.selectionMode)
 
-	return policyv1alpha2.UpstreamRequestModifications{
+	return policy.UpstreamRequestModifications{
 		Body: []byte(modifiedContent),
 	}
 }
 
-// handleMixedRequestV2 handles requests where user query and tools have different formats (v1alpha2)
-func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.RequestContext, content []byte) policyv1alpha2.RequestAction {
+// handleMixedRequest handles requests where user query and tools have different formats (v1alpha2)
+func (p *SemanticToolFilteringPolicy) handleMixedRequest(ctx *policy.RequestContext, content []byte) policy.RequestAction {
 	// For mixed mode, parse based on each component's format
 	contentStr := string(content)
 	var userQuery string
@@ -342,29 +342,29 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 	if p.userQueryIsJson {
 		var requestBody map[string]interface{}
 		if err := json.Unmarshal(content, &requestBody); err != nil {
-			return p.buildErrorResponseV2("Invalid JSON in request body", err)
+			return p.buildErrorResponse("Invalid JSON in request body", err)
 		}
 		userQuery, err = utils.ExtractStringValueFromJsonpath(content, p.queryJSONPath)
 		if err != nil {
-			return p.buildErrorResponseV2("Error extracting user query from JSONPath", err)
+			return p.buildErrorResponse("Error extracting user query from JSONPath", err)
 		}
 	} else {
 		userQuery, err = extractUserQueryFromText(contentStr)
 		if err != nil {
-			return p.buildErrorResponseV2("Error extracting user query from text", err)
+			return p.buildErrorResponse("Error extracting user query from text", err)
 		}
 	}
 
 	if userQuery == "" {
 		slog.Debug("SemanticToolFiltering: Empty user query")
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	// Generate embedding for user query
 	queryEmbedding, err := p.embeddingProvider.GetEmbedding(userQuery)
 	if err != nil {
 		slog.Error("SemanticToolFiltering: Error generating query embedding", "error", err)
-		return p.buildErrorResponseV2("Error generating query embedding", err)
+		return p.buildErrorResponse("Error generating query embedding", err)
 	}
 
 	// Get embedding cache instance
@@ -378,12 +378,12 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 		// Tools are in JSON format
 		var requestBody map[string]interface{}
 		if err := json.Unmarshal(content, &requestBody); err != nil {
-			return p.buildErrorResponseV2("Invalid JSON in request body", err)
+			return p.buildErrorResponse("Invalid JSON in request body", err)
 		}
 
 		toolsJSON, err := utils.ExtractValueFromJsonpath(requestBody, p.toolsJSONPath)
 		if err != nil {
-			return p.buildErrorResponseV2("Error extracting tools from JSONPath", err)
+			return p.buildErrorResponse("Error extracting tools from JSONPath", err)
 		}
 
 		var tools []interface{}
@@ -397,16 +397,16 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 			var err error
 			toolsBytes, err = json.Marshal(v)
 			if err != nil {
-				return p.buildErrorResponseV2("Invalid tools format in request", err)
+				return p.buildErrorResponse("Invalid tools format in request", err)
 			}
 		}
 		if err := json.Unmarshal(toolsBytes, &tools); err != nil {
-			return p.buildErrorResponseV2("Invalid tools format in request", err)
+			return p.buildErrorResponse("Invalid tools format in request", err)
 		}
 
 		if len(tools) == 0 {
 			slog.Debug("SemanticToolFiltering: No tools to filter")
-			return policyv1alpha2.UpstreamRequestModifications{}
+			return policy.UpstreamRequestModifications{}
 		}
 
 		var embeddingRequests []toolEmbeddingRequest
@@ -459,33 +459,33 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 
 		if len(toolsWithScores) == 0 {
 			slog.Debug("SemanticToolFiltering: No valid tools after embedding generation")
-			return policyv1alpha2.UpstreamRequestModifications{}
+			return policy.UpstreamRequestModifications{}
 		}
 
 		filteredTools := p.filterTools(toolsWithScores)
 
 		if err := updateToolsInRequestBody(&requestBody, p.toolsJSONPath, filteredTools); err != nil {
-			return p.buildErrorResponseV2("Error updating request body with filtered tools", err)
+			return p.buildErrorResponse("Error updating request body with filtered tools", err)
 		}
 
 		modifiedBody, err := json.Marshal(requestBody)
 		if err != nil {
-			return p.buildErrorResponseV2("Error marshaling modified request body", err)
+			return p.buildErrorResponse("Error marshaling modified request body", err)
 		}
 
-		return policyv1alpha2.UpstreamRequestModifications{
+		return policy.UpstreamRequestModifications{
 			Body: modifiedBody,
 		}
 	} else {
 		// Tools are in text format
 		textTools, err := extractToolsFromText(contentStr)
 		if err != nil {
-			return p.buildErrorResponseV2("Error extracting tools from text", err)
+			return p.buildErrorResponse("Error extracting tools from text", err)
 		}
 
 		if len(textTools) == 0 {
 			slog.Debug("SemanticToolFiltering: No tools to filter")
-			return policyv1alpha2.UpstreamRequestModifications{}
+			return policy.UpstreamRequestModifications{}
 		}
 
 		var embeddingRequests []toolEmbeddingRequest
@@ -531,7 +531,7 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 
 		if len(toolsWithScores) == 0 {
 			slog.Debug("SemanticToolFiltering: No valid tools after embedding generation")
-			return policyv1alpha2.UpstreamRequestModifications{}
+			return policy.UpstreamRequestModifications{}
 		}
 
 		sort.Slice(toolsWithScores, func(i, j int) bool {
@@ -560,14 +560,14 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequestV2(ctx *policyv1alpha2.R
 		modifiedContent := rebuildTextWithFilteredTools(contentStr, textTools, filteredToolNames)
 		modifiedContent = stripAllTags(modifiedContent)
 
-		return policyv1alpha2.UpstreamRequestModifications{
+		return policy.UpstreamRequestModifications{
 			Body: []byte(modifiedContent),
 		}
 	}
 }
 
-// buildErrorResponseV2 builds an error response for v1alpha2
-func (p *SemanticToolFilteringPolicy) buildErrorResponseV2(message string, err error) policyv1alpha2.RequestAction {
+// buildErrorResponse builds an error response for v1alpha2
+func (p *SemanticToolFilteringPolicy) buildErrorResponse(message string, err error) policy.RequestAction {
 	// Log a warning with error details for diagnostics, but do not expose
 	// internal error details to clients. Continue the request unmodified.
 	if err != nil {
@@ -577,5 +577,5 @@ func (p *SemanticToolFilteringPolicy) buildErrorResponseV2(message string, err e
 	}
 
 	// Return a pass-through action so the original request proceeds unchanged.
-	return policyv1alpha2.UpstreamRequestModifications{}
+	return policy.UpstreamRequestModifications{}
 }

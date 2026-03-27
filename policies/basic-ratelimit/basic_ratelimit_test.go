@@ -5,46 +5,25 @@ import (
 	"strings"
 	"testing"
 
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 type stubDelegatePolicy struct {
-	mode policyv1alpha2.ProcessingMode
-
-	onRequestHeadersAction policyv1alpha2.RequestHeaderAction
-	onRequestHeadersCtx    *policyv1alpha2.RequestHeaderContext
+	onRequestHeadersAction policy.RequestHeaderAction
+	onRequestHeadersCtx    *policy.RequestHeaderContext
 	onRequestHeadersParams map[string]interface{}
 	onRequestHeadersCalls  int
 
-	onResponseHeadersAction policyv1alpha2.ResponseHeaderAction
-	onResponseHeadersCtx    *policyv1alpha2.ResponseHeaderContext
+	onResponseHeadersAction policy.ResponseHeaderAction
+	onResponseHeadersCtx    *policy.ResponseHeaderContext
 	onResponseHeadersParams map[string]interface{}
 	onResponseHeadersCalls  int
 }
 
-func (s *stubDelegatePolicy) Mode() policyv1alpha2.ProcessingMode {
-	return s.mode
-}
-
-func (s *stubDelegatePolicy) OnRequest(
-	ctx *policy.RequestContext,
-	params map[string]interface{},
-) policy.RequestAction {
-	return nil
-}
-
-func (s *stubDelegatePolicy) OnResponse(
-	ctx *policy.ResponseContext,
-	params map[string]interface{},
-) policy.ResponseAction {
-	return nil
-}
-
 func (s *stubDelegatePolicy) OnRequestHeaders(
-	ctx *policyv1alpha2.RequestHeaderContext,
+	ctx *policy.RequestHeaderContext,
 	params map[string]interface{},
-) policyv1alpha2.RequestHeaderAction {
+) policy.RequestHeaderAction {
 	s.onRequestHeadersCalls++
 	s.onRequestHeadersCtx = ctx
 	s.onRequestHeadersParams = params
@@ -52,9 +31,9 @@ func (s *stubDelegatePolicy) OnRequestHeaders(
 }
 
 func (s *stubDelegatePolicy) OnResponseHeaders(
-	ctx *policyv1alpha2.ResponseHeaderContext,
+	ctx *policy.ResponseHeaderContext,
 	params map[string]interface{},
-) policyv1alpha2.ResponseHeaderAction {
+) policy.ResponseHeaderAction {
 	s.onResponseHeadersCalls++
 	s.onResponseHeadersCtx = ctx
 	s.onResponseHeadersParams = params
@@ -434,34 +413,18 @@ func TestTransformToRatelimitParams_HandlesMissingOrMalformedLimitsWithoutPanic(
 	}
 }
 
-func TestBasicRateLimitPolicy_Mode_ProcessesHeadersAndSkipsBodies(t *testing.T) {
-	p := &BasicRateLimitPolicy{}
-	gotMode := p.Mode()
-
-	wantMode := policyv1alpha2.ProcessingMode{
-		RequestHeaderMode:  policyv1alpha2.HeaderModeProcess,
-		RequestBodyMode:    policyv1alpha2.BodyModeSkip,
-		ResponseHeaderMode: policyv1alpha2.HeaderModeProcess,
-		ResponseBodyMode:   policyv1alpha2.BodyModeSkip,
-	}
-
-	if gotMode != wantMode {
-		t.Fatalf("unexpected mode.\nwant=%+v\ngot=%+v", wantMode, gotMode)
-	}
-}
-
 func TestBasicRateLimitPolicy_OnRequestHeaders_ForwardsContextParamsAndActionUnchanged(t *testing.T) {
-	sentinel := policyv1alpha2.ImmediateResponse{StatusCode: 429}
+	sentinel := policy.ImmediateResponse{StatusCode: 429}
 	delegate := &stubDelegatePolicy{
 		onRequestHeadersAction: sentinel,
 	}
 	p := &BasicRateLimitPolicy{delegate: delegate}
 
-	ctx := &policyv1alpha2.RequestHeaderContext{
-		Headers: policyv1alpha2.NewHeaders(map[string][]string{
+	ctx := &policy.RequestHeaderContext{
+		Headers: policy.NewHeaders(map[string][]string{
 			"x-request-id": {"req-123"},
 		}),
-		SharedContext: &policyv1alpha2.SharedContext{
+		SharedContext: &policy.SharedContext{
 			Metadata: map[string]interface{}{
 				"user": "alice",
 			},
@@ -493,7 +456,7 @@ func TestBasicRateLimitPolicy_OnRequestHeaders_ForwardsContextParamsAndActionUnc
 }
 
 func TestBasicRateLimitPolicy_OnResponseHeaders_ForwardsContextParamsAndActionUnchanged(t *testing.T) {
-	sentinel := policyv1alpha2.DownstreamResponseHeaderModifications{
+	sentinel := policy.DownstreamResponseHeaderModifications{
 		HeadersToSet: map[string]string{
 			"x-rate-limit": "ok",
 		},
@@ -503,11 +466,11 @@ func TestBasicRateLimitPolicy_OnResponseHeaders_ForwardsContextParamsAndActionUn
 	}
 	p := &BasicRateLimitPolicy{delegate: delegate}
 
-	ctx := &policyv1alpha2.ResponseHeaderContext{
-		ResponseHeaders: policyv1alpha2.NewHeaders(map[string][]string{
+	ctx := &policy.ResponseHeaderContext{
+		ResponseHeaders: policy.NewHeaders(map[string][]string{
 			"x-response-id": {"res-123"},
 		}),
-		SharedContext: &policyv1alpha2.SharedContext{
+		SharedContext: &policy.SharedContext{
 			Metadata: map[string]interface{}{
 				"tenant": "foo",
 			},
@@ -538,8 +501,8 @@ func TestBasicRateLimitPolicy_OnResponseHeaders_ForwardsContextParamsAndActionUn
 	}
 }
 
-func TestGetPolicyV2_ReturnsBasicRateLimitPolicy_WhenDelegateCreationSucceeds(t *testing.T) {
-	metadata := policyv1alpha2.PolicyMetadata{
+func TestGetPolicy_ReturnsBasicRateLimitPolicy_WhenDelegateCreationSucceeds(t *testing.T) {
+	metadata := policy.PolicyMetadata{
 		RouteName: "unit-test-basic-ratelimit-getpolicy-success",
 	}
 
@@ -554,20 +517,20 @@ func TestGetPolicyV2_ReturnsBasicRateLimitPolicy_WhenDelegateCreationSucceeds(t 
 		"backend":   "memory",
 	}
 
-	p, err := GetPolicyV2(metadata, params)
+	p, err := GetPolicy(metadata, params)
 	if err != nil {
-		t.Fatalf("expected GetPolicyV2 success, got error: %v", err)
+		t.Fatalf("expected GetPolicy success, got error: %v", err)
 	}
 	if p == nil {
-		t.Fatalf("expected non-nil policy from GetPolicyV2")
+		t.Fatalf("expected non-nil policy from GetPolicy")
 	}
 	if _, ok := p.(*BasicRateLimitPolicy); !ok {
 		t.Fatalf("expected *BasicRateLimitPolicy, got %T", p)
 	}
 }
 
-func TestGetPolicyV2_PropagatesError_WhenDelegateCreationFails(t *testing.T) {
-	metadata := policyv1alpha2.PolicyMetadata{
+func TestGetPolicy_PropagatesError_WhenDelegateCreationFails(t *testing.T) {
+	metadata := policy.PolicyMetadata{
 		RouteName: "unit-test-basic-ratelimit-getpolicy-error",
 	}
 
@@ -581,20 +544,20 @@ func TestGetPolicyV2_PropagatesError_WhenDelegateCreationFails(t *testing.T) {
 		"backend": "memory",
 	}
 
-	p, err := GetPolicyV2(metadata, params)
+	p, err := GetPolicy(metadata, params)
 	if err == nil {
-		t.Fatalf("expected GetPolicyV2 error for invalid limit value type, got nil")
+		t.Fatalf("expected GetPolicy error for invalid limit value type, got nil")
 	}
 	if p != nil {
-		t.Fatalf("expected nil policy when GetPolicyV2 fails, got %T", p)
+		t.Fatalf("expected nil policy when GetPolicy fails, got %T", p)
 	}
 	if !strings.Contains(err.Error(), "limit must be a number") {
 		t.Fatalf("expected propagated delegate parse error to mention numeric limit, got: %v", err)
 	}
 }
 
-func TestGetPolicyV2_AcceptsLegacyLimitShape_ForDocsCompatibility(t *testing.T) {
-	metadata := policyv1alpha2.PolicyMetadata{
+func TestGetPolicy_AcceptsLegacyLimitShape_ForDocsCompatibility(t *testing.T) {
+	metadata := policy.PolicyMetadata{
 		RouteName: "unit-test-basic-ratelimit-getpolicy-legacy-limit",
 	}
 
@@ -609,9 +572,9 @@ func TestGetPolicyV2_AcceptsLegacyLimitShape_ForDocsCompatibility(t *testing.T) 
 		"backend":   "memory",
 	}
 
-	p, err := GetPolicyV2(metadata, params)
+	p, err := GetPolicy(metadata, params)
 	if err != nil {
-		t.Fatalf("expected GetPolicyV2 to accept legacy limit shape, got error: %v", err)
+		t.Fatalf("expected GetPolicy to accept legacy limit shape, got error: %v", err)
 	}
 	if p == nil {
 		t.Fatalf("expected non-nil policy for legacy limit shape")

@@ -25,9 +25,8 @@ import (
 	"strconv"
 	"strings"
 
-	policyv1alpha2 "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	policy "github.com/wso2/api-platform/sdk/gateway/policy/v1alpha"
-	utils "github.com/wso2/api-platform/sdk/utils"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 const (
@@ -69,10 +68,7 @@ type SentenceCountGuardrailPolicyParams struct {
 	ShowAssessment    bool
 }
 
-// GetPolicy is the v1alpha factory entry point (loaded by v1alpha kernels).
-// The returned concrete type also satisfies policyv1alpha2 phase interfaces
-// (StreamingResponsePolicy, RequestPolicy, ResponsePolicy), so v1alpha2 kernels
-// can discover those capabilities via type assertions even when using this factory.
+// GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
 func GetPolicy(
 	metadata policy.PolicyMetadata,
 	params map[string]interface{},
@@ -115,18 +111,21 @@ func GetPolicy(
 	return p, nil
 }
 
-// GetPolicyV2 is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
+// GetPolicyV2 delegates to GetPolicy.
 func GetPolicyV2(
-	metadata policyv1alpha2.PolicyMetadata,
+	metadata policy.PolicyMetadata,
 	params map[string]interface{},
-) (policyv1alpha2.Policy, error) {
-	return GetPolicy(policy.PolicyMetadata{
-		RouteName:  metadata.RouteName,
-		APIId:      metadata.APIId,
-		APIName:    metadata.APIName,
-		APIVersion: metadata.APIVersion,
-		AttachedTo: policy.Level(metadata.AttachedTo),
-	}, params)
+) (policy.Policy, error) {
+	return GetPolicy(metadata, params)
+}
+
+func (p *SentenceCountGuardrailPolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeStream,
+	}
 }
 
 func getFlowParams(params map[string]interface{}, flow string) (map[string]interface{}, bool, error) {
@@ -270,92 +269,6 @@ func extractInt(value interface{}) (int, error) {
 	}
 }
 
-// Mode returns the processing mode for this policy
-func (p *SentenceCountGuardrailPolicy) Mode() policy.ProcessingMode {
-	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess, // needed to catch empty-body requests
-		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeStream,
-	}
-}
-
-// OnRequest validates request body sentence count
-func (p *SentenceCountGuardrailPolicy) OnRequest(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
-	if !p.hasRequestParams || !p.requestParams.Enabled {
-		return policy.UpstreamRequestModifications{}
-	}
-
-	var content []byte
-	if ctx.Body != nil {
-		content = ctx.Body.Content
-	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
-}
-
-// OnResponse validates response body sentence count
-func (p *SentenceCountGuardrailPolicy) OnResponse(ctx *policy.ResponseContext, params map[string]interface{}) policy.ResponseAction {
-	if !p.hasResponseParams || !p.responseParams.Enabled {
-		return policy.UpstreamResponseModifications{}
-	}
-
-	var content []byte
-	if ctx.ResponseBody != nil {
-		content = ctx.ResponseBody.Content
-	}
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
-}
-
-// validatePayload validates payload sentence count
-func (p *SentenceCountGuardrailPolicy) validatePayload(payload []byte, params SentenceCountGuardrailPolicyParams, isResponse bool) interface{} {
-	// Extract value using JSONPath
-	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
-	if err != nil {
-		slog.Debug("SentenceCountGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
-	}
-
-	// Clean and trim
-	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
-	extractedValue = strings.TrimSpace(extractedValue)
-
-	// Split into sentences and count non-empty
-	sentences := sentenceSplitRegexCompiled.Split(extractedValue, -1)
-	sentenceCount := 0
-	for _, s := range sentences {
-		if s != "" {
-			sentenceCount++
-		}
-	}
-
-	// Check if within range
-	isWithinRange := sentenceCount >= params.Min && sentenceCount <= params.Max
-
-	var validationPassed bool
-	if params.Invert {
-		validationPassed = !isWithinRange // Inverted: pass if NOT in range
-	} else {
-		validationPassed = isWithinRange // Normal: pass if in range
-	}
-
-	if !validationPassed {
-		slog.Debug("SentenceCountGuardrail: Validation failed", "sentenceCount", sentenceCount, "min", params.Min, "max", params.Max, "invert", params.Invert, "isResponse", isResponse)
-		var reason string
-		if params.Invert {
-			reason = fmt.Sprintf("sentence count %d is within the excluded range %d-%d sentences", sentenceCount, params.Min, params.Max)
-		} else {
-			reason = fmt.Sprintf("sentence count %d is outside the allowed range %d-%d sentences", sentenceCount, params.Min, params.Max)
-		}
-		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
-	}
-
-	slog.Debug("SentenceCountGuardrail: Validation passed", "sentenceCount", sentenceCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
-	if isResponse {
-		return policy.UpstreamResponseModifications{}
-	}
-	return policy.UpstreamRequestModifications{}
-}
-
 func extractStringFromJSONPath(payload []byte, jsonPath string) (string, error) {
 	value, err := utils.ExtractStringValueFromJsonpath(payload, jsonPath)
 	if err == nil {
@@ -423,46 +336,6 @@ func normalizeExtractedValue(value interface{}) (string, error) {
 	}
 }
 
-// buildErrorResponse builds an error response for both request and response phases
-func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
-	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
-	analyticsMetadata := map[string]interface{}{
-		"isGuardrailHit": true,
-		"guardrailName":  "sentence-count-guardrail",
-	}
-
-	responseBody := map[string]interface{}{
-		"type":    "SENTENCE_COUNT_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"SENTENCE_COUNT_GUARDRAIL","message":"Internal error"}`)
-	}
-
-	if isResponse {
-		statusCode := GuardrailErrorCode
-		return policy.UpstreamResponseModifications{
-			StatusCode:        &statusCode,
-			Body:              bodyBytes,
-			AnalyticsMetadata: analyticsMetadata,
-			SetHeaders: map[string]string{
-				"Content-Type": "application/json",
-			},
-		}
-	}
-
-	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
-		AnalyticsMetadata: analyticsMetadata,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body: bodyBytes,
-	}
-}
-
 // buildAssessmentObject builds the assessment object
 func (p *SentenceCountGuardrailPolicy) buildAssessmentObject(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) map[string]interface{} {
 	assessment := map[string]interface{}{
@@ -500,16 +373,16 @@ func (p *SentenceCountGuardrailPolicy) buildAssessmentObject(reason string, vali
 }
 
 // OnRequestBody validates request body sentence count.
-func (p *SentenceCountGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.RequestContext, _ map[string]interface{}) policyv1alpha2.RequestAction {
+func (p *SentenceCountGuardrailPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if !p.hasRequestParams || !p.requestParams.Enabled {
-		return policyv1alpha2.UpstreamRequestModifications{}
+		return policy.UpstreamRequestModifications{}
 	}
 
 	var content []byte
 	if ctx.Body != nil {
 		content = ctx.Body.Content
 	}
-	return p.validatePayloadV2(content, p.requestParams, false).(policyv1alpha2.RequestAction)
+	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
 }
 
 // OnResponseBody validates response body sentence count.
@@ -518,9 +391,9 @@ func (p *SentenceCountGuardrailPolicy) OnRequestBody(ctx *policyv1alpha2.Request
 // by extracting the full assistant text from delta events and validating that
 // directly, bypassing the JSONPath extraction (which targets the non-streaming
 // response structure).
-func (p *SentenceCountGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.ResponseContext, _ map[string]interface{}) policyv1alpha2.ResponseAction {
+func (p *SentenceCountGuardrailPolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
 	if !p.hasResponseParams || !p.responseParams.Enabled {
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.DownstreamResponseModifications{}
 	}
 
 	var content []byte
@@ -537,12 +410,12 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBody(ctx *policyv1alpha2.Respon
 		return p.validateSentenceCountInText(text, p.responseParams, true)
 	}
 
-	return p.validatePayloadV2(content, p.responseParams, true).(policyv1alpha2.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
 }
 
 // validateSentenceCountInText validates sentence count on pre-extracted text,
 // bypassing JSONPath extraction. Used for SSE-buffered responses.
-func (p *SentenceCountGuardrailPolicy) validateSentenceCountInText(text string, params SentenceCountGuardrailPolicyParams, isResponse bool) policyv1alpha2.ResponseAction {
+func (p *SentenceCountGuardrailPolicy) validateSentenceCountInText(text string, params SentenceCountGuardrailPolicyParams, isResponse bool) policy.ResponseAction {
 	text = textCleanRegexCompiled.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 	count := countSentences(text)
@@ -562,18 +435,18 @@ func (p *SentenceCountGuardrailPolicy) validateSentenceCountInText(text string, 
 		}
 		slog.Debug("SentenceCountGuardrail: buffered SSE validation failed",
 			"count", count, "min", params.Min, "max", params.Max, "invert", params.Invert)
-		return p.buildErrorResponseV2(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max).(policyv1alpha2.ResponseAction)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max).(policy.ResponseAction)
 	}
 
-	return policyv1alpha2.DownstreamResponseModifications{}
+	return policy.DownstreamResponseModifications{}
 }
 
-// validatePayloadV2 validates payload sentence count, returning policyv1alpha2 actions.
-func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params SentenceCountGuardrailPolicyParams, isResponse bool) interface{} {
+// validatePayload validates payload sentence count, returning policy actions.
+func (p *SentenceCountGuardrailPolicy) validatePayload(payload []byte, params SentenceCountGuardrailPolicyParams, isResponse bool) interface{} {
 	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("SentenceCountGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponseV2("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -604,18 +477,18 @@ func (p *SentenceCountGuardrailPolicy) validatePayloadV2(payload []byte, params 
 		} else {
 			reason = fmt.Sprintf("sentence count %d is outside the allowed range %d-%d sentences", sentenceCount, params.Min, params.Max)
 		}
-		return p.buildErrorResponseV2(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
 	}
 
 	slog.Debug("SentenceCountGuardrail: Validation passed", "sentenceCount", sentenceCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
 	if isResponse {
-		return policyv1alpha2.DownstreamResponseModifications{}
+		return policy.DownstreamResponseModifications{}
 	}
-	return policyv1alpha2.UpstreamRequestModifications{}
+	return policy.UpstreamRequestModifications{}
 }
 
-// buildErrorResponseV2 builds a policyv1alpha2 error response for both request and response phases.
-func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
+// buildErrorResponse builds a policy error response for both request and response phases.
+func (p *SentenceCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
@@ -634,17 +507,17 @@ func (p *SentenceCountGuardrailPolicy) buildErrorResponseV2(reason string, valid
 
 	if isResponse {
 		statusCode := GuardrailErrorCode
-		return policyv1alpha2.DownstreamResponseModifications{
+		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
 			AnalyticsMetadata: analyticsMetadata,
-			DownstreamResponseHeaderModifications: policyv1alpha2.DownstreamResponseHeaderModifications{
+			DownstreamResponseHeaderModifications: policy.DownstreamResponseHeaderModifications{
 				HeadersToSet: map[string]string{"Content-Type": "application/json"},
 			},
 		}
 	}
 
-	return policyv1alpha2.ImmediateResponse{
+	return policy.ImmediateResponse{
 		StatusCode:        GuardrailErrorCode,
 		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
@@ -699,12 +572,12 @@ func (p *SentenceCountGuardrailPolicy) NeedsMoreResponseData(accumulated []byte)
 // OnResponseBodyChunk implements StreamingResponsePolicy.
 // Receives flushed batches from the kernel accumulator and validates them.
 // ctx.Metadata tracks the full accumulated text across windows for accuracy.
-func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.ResponseStreamContext, chunk *policyv1alpha2.StreamBody, params map[string]interface{}) policyv1alpha2.ResponseChunkAction {
+func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policy.ResponseStreamContext, chunk *policy.StreamBody, params map[string]interface{}) policy.ResponseChunkAction {
 	if !p.hasResponseParams || !p.responseParams.Enabled {
-		return policyv1alpha2.ResponseChunkAction{}
+		return policy.ResponseChunkAction{}
 	}
 	if chunk == nil || len(chunk.Chunk) == 0 {
-		return policyv1alpha2.ResponseChunkAction{}
+		return policy.ResponseChunkAction{}
 	}
 	chunkStr := string(chunk.Chunk)
 	if ctx.Metadata == nil {
@@ -717,7 +590,7 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 		full := prev + chunkStr
 		ctx.Metadata[metaKeyAccJsonBody] = full
 		if !chunk.EndOfStream {
-			return policyv1alpha2.ResponseChunkAction{}
+			return policy.ResponseChunkAction{}
 		}
 		// An empty or whitespace-only EndOfStream chunk is a bare sentinel that arrives after
 		// the SSE [DONE] event (common in many streaming frameworks). In this case all content
@@ -730,19 +603,19 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 			if !rp.Invert {
 				if count < rp.Min {
 					reason := fmt.Sprintf("sentence count %d is below minimum of %d sentences", count, rp.Min)
-					return policyv1alpha2.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
+					return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
 				}
 			} else if count >= rp.Min && count <= rp.Max {
 				reason := fmt.Sprintf("sentence count %d is within the excluded range %d-%d sentences", count, rp.Min, rp.Max)
-				return policyv1alpha2.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
+				return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
 			}
-			return policyv1alpha2.ResponseChunkAction{}
+			return policy.ResponseChunkAction{}
 		}
-		result := p.validatePayloadV2([]byte(full), p.responseParams, true)
-		if mod, ok := result.(policyv1alpha2.DownstreamResponseModifications); ok && mod.StatusCode != nil {
-			return policyv1alpha2.ResponseChunkAction{Body: mod.Body}
+		result := p.validatePayload([]byte(full), p.responseParams, true)
+		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
+			return policy.ResponseChunkAction{Body: mod.Body}
 		}
-		return policyv1alpha2.ResponseChunkAction{}
+		return policy.ResponseChunkAction{}
 	}
 
 	rp := p.responseParams
@@ -767,15 +640,15 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 			slog.Debug("SentenceCountGuardrail: max exceeded",
 				"count", count, "max", rp.Max, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("sentence count %d exceeded maximum of %d sentences", count, rp.Max)
-			return policyv1alpha2.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
 		}
 		if isDone && count < rp.Min {
 			slog.Debug("SentenceCountGuardrail: below min at stream end",
 				"count", count, "min", rp.Min, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("sentence count %d is below minimum of %d sentences", count, rp.Min)
-			return policyv1alpha2.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
 		}
-		return policyv1alpha2.ResponseChunkAction{}
+		return policy.ResponseChunkAction{}
 	}
 
 	// Invert mode: at [DONE], check if count falls within the excluded range.
@@ -784,10 +657,10 @@ func (p *SentenceCountGuardrailPolicy) OnResponseBodyChunk(ctx *policyv1alpha2.R
 			slog.Debug("SentenceCountGuardrail: invert violation at stream end",
 				"count", count, "min", rp.Min, "max", rp.Max, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("sentence count %d is within the excluded range %d-%d sentences", count, rp.Min, rp.Max)
-			return policyv1alpha2.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp)}
 		}
 	}
-	return policyv1alpha2.ResponseChunkAction{}
+	return policy.ResponseChunkAction{}
 }
 
 // isSSEChunk reports whether s contains at least one "data: " SSE line.

@@ -1,12 +1,11 @@
 module github.com/wso2/gateway-controllers/policies/advanced-ratelimit
 
-go 1.25.7
+go 1.26.1
 
 require (
 	github.com/google/cel-go v0.26.1
 	github.com/redis/go-redis/v9 v9.17.3
-	github.com/wso2/api-platform/sdk v0.4.5
-	github.com/wso2/api-platform/sdk/core v0.1.0
+	github.com/wso2/api-platform/sdk/core v0.1.2
 )
 
 require (
