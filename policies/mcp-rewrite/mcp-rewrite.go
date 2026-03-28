@@ -19,6 +19,7 @@
 package mcprewrite
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -249,7 +250,6 @@ func parseCapabilityConfig(params map[string]any, capabilityType string) (Capabi
 	return config, nil
 }
 
-
 // rewriteListItems filters and rewrites list items based on configured entries.
 func rewriteListItems(items []any, capabilityType string, config CapabilityConfig) ([]any, bool) {
 	keyField := getParamKey(capabilityType)
@@ -448,7 +448,7 @@ func (p *McpRewritePolicy) Mode() policy.ProcessingMode {
 }
 
 // OnRequestBody applies rewrite rules to the MCP request body.
-func (p *McpRewritePolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]any) policy.RequestAction {
+func (p *McpRewritePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]any) policy.RequestAction {
 	return p.processRequestBody(ctx)
 }
 
@@ -616,18 +616,18 @@ func (p *McpRewritePolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 }
 
 // OnResponseBody applies rewrite rules to the MCP response body.
-func (p *McpRewritePolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
-	if !isMcpPostRequest(ctx.RequestMethod, ctx.RequestPath) {
+func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
+	if !isMcpPostRequest(respCtx.RequestMethod, respCtx.RequestPath) {
 		return nil
 	}
 	slog.Debug("MCP Rewrite Policy: OnResponseBody started")
 
-	if ctx.Metadata == nil {
+	if respCtx.Metadata == nil {
 		return nil
 	}
 
-	capabilityType, _ := ctx.Metadata[metadataMcpCapabilityType].(string)
-	action, _ := ctx.Metadata[metadataMcpAction].(string)
+	capabilityType, _ := respCtx.Metadata[metadataMcpCapabilityType].(string)
+	action, _ := respCtx.Metadata[metadataMcpAction].(string)
 	if action != "list" {
 		slog.Debug("MCP Rewrite Policy: OnResponseBody skipped, action is not list", "capabilityType", capabilityType, "action", action)
 		return nil
@@ -638,12 +638,12 @@ func (p *McpRewritePolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[str
 		return nil
 	}
 
-	if ctx.ResponseBody == nil || !ctx.ResponseBody.Present {
+	if respCtx.ResponseBody == nil || !respCtx.ResponseBody.Present {
 		return nil
 	}
 
-	if isEventStream(ctx.ResponseHeaders) {
-		events := parseEventStream(ctx.ResponseBody.Content)
+	if isEventStream(respCtx.ResponseHeaders) {
+		events := parseEventStream(respCtx.ResponseBody.Content)
 		updated := false
 		for i, event := range events {
 			if strings.TrimSpace(event.data) == "" {
@@ -695,7 +695,7 @@ func (p *McpRewritePolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[str
 	}
 
 	var responsePayload map[string]any
-	if err := json.Unmarshal(ctx.ResponseBody.Content, &responsePayload); err != nil {
+	if err := json.Unmarshal(reqCtx.ResponseBody.Content, &responsePayload); err != nil {
 		slog.Debug("MCP Rewrite Policy: Failed to parse MCP response", "capabilityType", capabilityType, "error", err)
 		return nil
 	}

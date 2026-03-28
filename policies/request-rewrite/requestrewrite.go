@@ -18,6 +18,7 @@
 package requestrewrite
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -331,7 +332,7 @@ func isAllowedMethod(method string) bool {
 }
 
 // OnRequestHeaders applies request transformations in the header phase for v2alpha engine compatibility.
-func (p *RequestRewritePolicy) OnRequestHeaders(ctx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
+func (p *RequestRewritePolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
 	newPath, newMethod, err := p.computeRewrite(ctx, params)
 	if err != nil {
 		slog.Error("[Request Rewrite]: Configuration error", "error", err)

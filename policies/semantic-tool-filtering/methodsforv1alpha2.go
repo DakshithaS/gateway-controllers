@@ -18,6 +18,7 @@
 package semantictoolfiltering
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -28,7 +29,7 @@ import (
 )
 
 // OnRequestBody is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
-func (p *SemanticToolFilteringPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+func (p *SemanticToolFilteringPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return p.processRequestBody(ctx)
 }
 

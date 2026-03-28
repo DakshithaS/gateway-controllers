@@ -27,10 +27,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
-	utils "github.com/wso2/api-platform/sdk/core/utils"
 	embeddingproviders "github.com/wso2/api-platform/sdk/ai/embeddings"
 	vectordbproviders "github.com/wso2/api-platform/sdk/ai/vectordb"
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 const (
@@ -336,10 +336,10 @@ func createVectorDBProvider(config vectordbproviders.VectorDBProviderConfig) (ve
 }
 
 // OnRequestBody implements the v1alpha2 body-phase request handler.
-func (p *SemanticCachePolicy) OnRequestBody(ctx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
+func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	var content []byte
-	if ctx.Body != nil {
-		content = ctx.Body.Content
+	if reqCtx.Body != nil {
+		content = reqCtx.Body.Content
 	}
 
 	// Extract text from request body using JSONPath if specified
@@ -367,16 +367,16 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policy.RequestContext, params m
 	}
 
 	// Store embedding in metadata for response phase
-	if ctx.Metadata == nil {
-		ctx.Metadata = make(map[string]interface{})
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = make(map[string]interface{})
 	}
 	embeddingBytes, err := json.Marshal(embedding)
 	if err == nil {
-		ctx.Metadata[MetadataKeyEmbedding] = string(embeddingBytes)
+		reqCtx.Metadata[MetadataKeyEmbedding] = string(embeddingBytes)
 	}
 
 	// Get API ID from context (use APIName and APIVersion to create unique ID)
-	apiID := fmt.Sprintf("%s:%s", ctx.APIName, ctx.APIVersion)
+	apiID := fmt.Sprintf("%s:%s", reqCtx.APIName, reqCtx.APIVersion)
 
 	// Cosine similarity embedders (e.g. Mistral) have a floor of ~0.6 — even completely
 	// unrelated texts score that high. Map [0.6, 1.0] → [0, 1] so the user-supplied
@@ -426,8 +426,8 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx *policy.RequestContext, params m
 }
 
 // OnResponseBody handles response body processing for semantic caching.
-func (p *SemanticCachePolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
-	return p.processResponseBody(ctx)
+func (p *SemanticCachePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+	return p.processResponseBody(respCtx)
 }
 
 // processResponseBody handles response body processing for semantic caching.

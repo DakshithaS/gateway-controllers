@@ -19,6 +19,7 @@ package piimaskingregex
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -348,18 +349,18 @@ func (p *PIIMaskingRegexPolicy) updatePayloadWithMaskedContent(originalPayload [
 
 // OnRequestHeaders implements v2alpha.RequestHeaderPolicy.
 // PII masking operates on the body, so headers are passed through unchanged.
-func (p *PIIMaskingRegexPolicy) OnRequestHeaders(ctx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
+func (p *PIIMaskingRegexPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
 	return policy.UpstreamRequestHeaderModifications{}
 }
 
 // OnResponseHeaders implements v2alpha.ResponseHeaderPolicy.
 // PII masking operates on the body, so headers are passed through unchanged.
-func (p *PIIMaskingRegexPolicy) OnResponseHeaders(ctx *policy.ResponseHeaderContext, params map[string]interface{}) policy.ResponseHeaderAction {
+func (p *PIIMaskingRegexPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext, params map[string]interface{}) policy.ResponseHeaderAction {
 	return policy.DownstreamResponseHeaderModifications{}
 }
 
 // OnRequestBody masks PII in the request body before forwarding to upstream.
-func (p *PIIMaskingRegexPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+func (p *PIIMaskingRegexPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return p.processRequestBody(ctx, nil)
 }
 
@@ -413,8 +414,8 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(ctx *policy.RequestContext, p
 }
 
 // OnResponseBody restores PII placeholders in a buffered response body.
-func (p *PIIMaskingRegexPolicy) OnResponseBody(ctx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
-	return p.processResponseBody(ctx, nil)
+func (p *PIIMaskingRegexPolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]interface{}) policy.ResponseAction {
+	return p.processResponseBody(respCtx, nil)
 }
 
 // processResponseBody restores PII placeholders in a buffered response body.
@@ -514,7 +515,7 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 // LLMs always use Transfer-Encoding: chunked, so this method handles two formats:
 //   - SSE streaming: lines prefixed with "data: ", restores in choices[*].delta.content
 //   - Full JSON (non-streaming, chunked transfer): restores in raw JSON bytes
-func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx *policy.ResponseStreamContext, chunk *policy.StreamBody, params map[string]interface{}) policy.ResponseChunkAction {
+func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx *policy.ResponseStreamContext, chunk *policy.StreamBody, params map[string]interface{}) policy.ResponseChunkAction {
 	if p.params.RedactPII {
 		return policy.ResponseChunkAction{}
 	}
@@ -522,7 +523,7 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx *policy.ResponseStreamCo
 		return policy.ResponseChunkAction{}
 	}
 
-	maskedPII, exists := ctx.Metadata[MetadataKeyPIIEntities]
+	maskedPII, exists := respCtx.Metadata[MetadataKeyPIIEntities]
 	if !exists {
 		return policy.ResponseChunkAction{}
 	}
@@ -775,7 +776,6 @@ func restoreInChoices(jsonStr string, maskedMap map[string]string, choiceKey str
 	return string(updatedBytes), true
 }
 
-
 // extractSSEDeltaContentTracked concatenates choices[*].delta.content from all
 // complete SSE data lines in the accumulated buffer. It returns:
 //   - the concatenated content string
@@ -826,7 +826,6 @@ func extractSSEDeltaContentTracked(s string) (string, int, int) {
 	}
 	return sb.String(), lastOpenBracketDataLine, totalDataLines
 }
-
 
 // invertStringMap returns a new map with keys and values swapped.
 func invertStringMap(m map[string]string) map[string]string {

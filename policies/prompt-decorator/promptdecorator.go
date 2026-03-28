@@ -18,6 +18,7 @@
 package promptdecorator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -287,7 +288,7 @@ func (p *PromptDecoratorPolicy) setValueAtPath(current interface{}, key string, 
 }
 
 // OnRequestBody decorates the request body.
-func (p *PromptDecoratorPolicy) OnRequestBody(ctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+func (p *PromptDecoratorPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return p.processRequestBody(ctx)
 }
 
