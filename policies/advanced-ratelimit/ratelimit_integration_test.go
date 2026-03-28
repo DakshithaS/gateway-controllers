@@ -177,6 +177,65 @@ func assertImmediateResponse(t *testing.T, action interface{}, expectedStatus in
 	return resp
 }
 
+func newRequestHeaderCtx(headers map[string][]string, metadata map[string]interface{}) *policy.RequestHeaderContext {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	if headers == nil {
+		headers = map[string][]string{}
+	}
+	return &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			Metadata:   metadata,
+			APIName:    "petstore",
+			APIVersion: "v1",
+			APIId:      "api-id",
+			APIContext: "/petstore",
+		},
+		Headers: policy.NewHeaders(headers),
+		Path:    "/pets/123",
+		Method:  "GET",
+	}
+}
+
+func newResponseHeaderCtx(reqHeaders, respHeaders map[string][]string, metadata map[string]interface{}, status int) *policy.ResponseHeaderContext {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	if reqHeaders == nil {
+		reqHeaders = map[string][]string{}
+	}
+	if respHeaders == nil {
+		respHeaders = map[string][]string{}
+	}
+	return &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			Metadata:   metadata,
+			APIName:    "petstore",
+			APIVersion: "v1",
+			APIId:      "api-id",
+			APIContext: "/petstore",
+		},
+		RequestHeaders:  policy.NewHeaders(reqHeaders),
+		ResponseHeaders: policy.NewHeaders(respHeaders),
+		ResponseStatus:  status,
+	}
+}
+
+func assertResponseHeaderMods(t *testing.T, action interface{}, required map[string]string) policy.DownstreamResponseHeaderModifications {
+	t.Helper()
+	mods, ok := action.(policy.DownstreamResponseHeaderModifications)
+	if !ok {
+		t.Fatalf("expected policy.DownstreamResponseHeaderModifications, got %T", action)
+	}
+	for k, v := range required {
+		if mods.HeadersToSet[k] != v {
+			t.Fatalf("expected header %s=%q, got %q", k, v, mods.HeadersToSet[k])
+		}
+	}
+	return mods
+}
+
 func assertUpstreamResponseHeaders(t *testing.T, action interface{}, required map[string]string) policy.DownstreamResponseModifications {
 	t.Helper()
 	mods, ok := action.(policy.DownstreamResponseModifications)
@@ -830,16 +889,16 @@ func TestOnRequestBehavior(t *testing.T) {
 			return newResult(true, 10, 9, 0, time.Minute), nil
 		}}
 		p := basePolicy([]QuotaRuntime{{Name: "q1", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k1"}}, Limiter: lim, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}}})
-		ctx := newRequestCtx(nil, nil)
+		hctx := newRequestHeaderCtx(nil, nil)
 
-		action := p.OnRequestBody(ctx, nil)
-		if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-			t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+		action := p.OnRequestHeaders(hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 		}
-		if _, ok := ctx.Metadata[rateLimitResultKey]; !ok {
+		if _, ok := hctx.Metadata[rateLimitResultKey]; !ok {
 			t.Fatalf("expected %s metadata to be present", rateLimitResultKey)
 		}
-		if _, ok := ctx.Metadata[rateLimitKeysKey]; !ok {
+		if _, ok := hctx.Metadata[rateLimitKeysKey]; !ok {
 			t.Fatalf("expected %s metadata to be present", rateLimitKeysKey)
 		}
 		if lim.allowNCalls != 1 || lim.lastCost != 1 {
@@ -852,7 +911,7 @@ func TestOnRequestBehavior(t *testing.T) {
 			return newResult(false, 10, 0, 5*time.Second, time.Minute), nil
 		}}
 		p := basePolicy([]QuotaRuntime{{Name: "q1", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k1"}}, Limiter: lim, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}}})
-		action := p.OnRequestBody(newRequestCtx(nil, nil), nil)
+		action := p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil)
 		resp := assertImmediateResponse(t, action, 429)
 		if resp.Headers["x-ratelimit-quota"] != "q1" {
 			t.Fatalf("expected x-ratelimit-quota=q1, got %q", resp.Headers["x-ratelimit-quota"])
@@ -865,7 +924,7 @@ func TestOnRequestBehavior(t *testing.T) {
 	t.Run("standard limiter error fail-closed for memory", func(t *testing.T) {
 		lim := &fakeLimiter{allowNErr: errors.New("boom")}
 		p := basePolicy([]QuotaRuntime{{Name: "q1", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k1"}}, Limiter: lim, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}}})
-		action := p.OnRequestBody(newRequestCtx(nil, nil), nil)
+		action := p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil)
 		_ = assertImmediateResponse(t, action, 429)
 	})
 
@@ -874,11 +933,11 @@ func TestOnRequestBehavior(t *testing.T) {
 		p := basePolicy([]QuotaRuntime{{Name: "q1", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k1"}}, Limiter: lim, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}}})
 		p.backend = "redis"
 		p.redisFailOpen = true
-		ctx := newRequestCtx(nil, nil)
+		hctx := newRequestHeaderCtx(nil, nil)
 
-		action := p.OnRequestBody(ctx, nil)
-		if _, ok := action.(policy.UpstreamRequestModifications); !ok {
-			t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+		action := p.OnRequestHeaders(hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
+			t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 		}
 	})
 
@@ -895,7 +954,7 @@ func TestOnRequestBehavior(t *testing.T) {
 			{Name: "q2", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k2"}}, Limiter: lim2, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}},
 			{Name: "q3", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k3"}}, Limiter: lim3, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}},
 		})
-		action := p.OnRequestBody(newRequestCtx(nil, nil), nil)
+		action := p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil)
 		resp := assertImmediateResponse(t, action, 429)
 		if resp.Headers["x-ratelimit-quota"] != "q2" {
 			t.Fatalf("expected q2 violation, got %q", resp.Headers["x-ratelimit-quota"])
@@ -974,7 +1033,7 @@ func TestOnRequestBehavior(t *testing.T) {
 		}
 	})
 
-	t.Run("response phase pre-check available stores placeholder", func(t *testing.T) {
+	t.Run("response phase pre-check available allows request", func(t *testing.T) {
 		lim := &fakeLimiter{getAvailableFn: func(ctx context.Context, key string) (int64, error) { return 3, nil }}
 		ce := NewCostExtractor(CostExtractionConfig{
 			Enabled: true,
@@ -989,18 +1048,17 @@ func TestOnRequestBehavior(t *testing.T) {
 			CostExtractor:         ce,
 			CostExtractionEnabled: true,
 		}})
-		ctx := newRequestCtx(nil, nil)
+		hctx := newRequestHeaderCtx(nil, nil)
 
-		action := p.OnRequestBody(ctx, nil)
-		if _, ok := action.(policy.UpstreamRequestModifications); !ok {
+		action := p.OnRequestHeaders(hctx, nil)
+		if _, ok := action.(policy.UpstreamRequestHeaderModifications); !ok {
 			t.Fatalf("expected upstream action, got %T", action)
 		}
-		results, ok := ctx.Metadata[rateLimitResultKey].([]quotaResult)
-		if !ok || len(results) != 1 {
-			t.Fatalf("expected one stored quota result, got %#v", ctx.Metadata[rateLimitResultKey])
+		if lim.getAvailableCalls != 1 {
+			t.Fatalf("expected GetAvailable called once, got %d", lim.getAvailableCalls)
 		}
-		if results[0].Result != nil {
-			t.Fatal("expected placeholder nil result for response-phase extraction")
+		if keys, ok := hctx.Metadata[rateLimitKeysKey].(map[string]string); !ok || keys["rq"] == "" {
+			t.Fatalf("expected quota key stored in metadata, got %#v", hctx.Metadata[rateLimitKeysKey])
 		}
 	})
 
@@ -1015,7 +1073,7 @@ func TestOnRequestBehavior(t *testing.T) {
 			CostExtractor:         ce,
 			CostExtractionEnabled: true,
 		}})
-		resp := assertImmediateResponse(t, p.OnRequestBody(newRequestCtx(nil, nil), nil), 429)
+		resp := assertImmediateResponse(t, p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil), 429)
 		if resp.Headers["x-ratelimit-remaining"] != "0" {
 			t.Fatalf("expected x-ratelimit-remaining=0, got %q", resp.Headers["x-ratelimit-remaining"])
 		}
@@ -1034,7 +1092,7 @@ func TestOnRequestBehavior(t *testing.T) {
 		}})
 		p.backend = "redis"
 		p.redisFailOpen = true
-		if _, ok := p.OnRequestBody(newRequestCtx(nil, nil), nil).(policy.UpstreamRequestModifications); !ok {
+		if _, ok := p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil).(policy.UpstreamRequestHeaderModifications); !ok {
 			t.Fatalf("expected fail-open upstream action")
 		}
 	})
@@ -1050,10 +1108,10 @@ func TestOnRequestBehavior(t *testing.T) {
 			CostExtractor:         ce,
 			CostExtractionEnabled: true,
 		}})
-		_ = assertImmediateResponse(t, p.OnRequestBody(newRequestCtx(nil, nil), nil), 429)
+		_ = assertImmediateResponse(t, p.OnRequestHeaders(newRequestHeaderCtx(nil, nil), nil), 429)
 	})
 
-	t.Run("mixed quotas store both result and placeholder", func(t *testing.T) {
+	t.Run("mixed quotas standard consumed response key stored", func(t *testing.T) {
 		limStandard := &fakeLimiter{allowNFn: func(ctx context.Context, key string, n int64) (*limiter.Result, error) {
 			return newResult(true, 10, 9, 0, time.Minute), nil
 		}}
@@ -1064,14 +1122,18 @@ func TestOnRequestBehavior(t *testing.T) {
 			{Name: "standard", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k1"}}, Limiter: limStandard, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}},
 			{Name: "post", KeyExtraction: []KeyComponent{{Type: "constant", Key: "k2"}}, Limiter: limResponse, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}, CostExtractor: ce, CostExtractionEnabled: true},
 		})
-		ctx := newRequestCtx(nil, nil)
-		_ = p.OnRequestBody(ctx, nil)
-		results, ok := ctx.Metadata[rateLimitResultKey].([]quotaResult)
-		if !ok || len(results) != 2 {
-			t.Fatalf("expected 2 stored quota results, got %#v", ctx.Metadata[rateLimitResultKey])
+		hctx := newRequestHeaderCtx(nil, nil)
+		_ = p.OnRequestHeaders(hctx, nil)
+		results, ok := hctx.Metadata[rateLimitResultKey].([]quotaResult)
+		if !ok || len(results) != 1 {
+			t.Fatalf("expected 1 stored quota result (standard only), got %#v", hctx.Metadata[rateLimitResultKey])
 		}
-		if results[0].Result == nil || results[1].Result != nil {
-			t.Fatalf("expected first result non-nil and second nil placeholder, got %+v", results)
+		if results[0].QuotaName != "standard" || results[0].Result == nil {
+			t.Fatalf("expected standard quota result with non-nil Result, got %+v", results[0])
+		}
+		keys, ok := hctx.Metadata[rateLimitKeysKey].(map[string]string)
+		if !ok || keys["post"] == "" {
+			t.Fatalf("expected post quota key stored in metadata, got %#v", hctx.Metadata[rateLimitKeysKey])
 		}
 	})
 }
@@ -1090,18 +1152,18 @@ func TestOnResponseBehavior(t *testing.T) {
 
 	t.Run("no stored metadata returns nil", func(t *testing.T) {
 		p := mkPolicy(nil)
-		if action := p.OnResponseBody(newResponseCtx(nil, nil, nil, 200), nil); action != nil {
+		if action := p.OnResponseHeaders(newResponseHeaderCtx(nil, nil, nil, 200), nil); action != nil {
 			t.Fatalf("expected nil action, got %T", action)
 		}
 	})
 
 	t.Run("type-mismatched metadata safely ignored", func(t *testing.T) {
 		p := mkPolicy(nil)
-		ctx := newResponseCtx(nil, nil, map[string]interface{}{
+		hctx := newResponseHeaderCtx(nil, nil, map[string]interface{}{
 			rateLimitResultKey: "bad",
 			rateLimitKeysKey:   123,
 		}, 200)
-		if action := p.OnResponseBody(ctx, nil); action != nil {
+		if action := p.OnResponseHeaders(hctx, nil); action != nil {
 			t.Fatalf("expected nil action, got %T", action)
 		}
 	})
@@ -1109,13 +1171,13 @@ func TestOnResponseBehavior(t *testing.T) {
 	t.Run("standard quota uses stored request result", func(t *testing.T) {
 		lim := &fakeLimiter{}
 		p := mkPolicy([]QuotaRuntime{{Name: "q1", Limiter: lim, Limits: []LimitConfig{{Limit: 10, Duration: time.Minute}}}})
-		ctx := newResponseCtx(nil, nil, map[string]interface{}{
+		hctx := newResponseHeaderCtx(nil, nil, map[string]interface{}{
 			rateLimitResultKey: []quotaResult{{QuotaName: "q1", Key: "k1", Duration: time.Minute, Result: newResult(true, 10, 7, 0, time.Minute)}},
 			rateLimitKeysKey:   map[string]string{"q1": "k1"},
 		}, 200)
 
-		action := p.OnResponseBody(ctx, nil)
-		mods := assertUpstreamResponseHeaders(t, action, map[string]string{"x-ratelimit-limit": "10", "x-ratelimit-remaining": "7"})
+		action := p.OnResponseHeaders(hctx, nil)
+		mods := assertResponseHeaderMods(t, action, map[string]string{"x-ratelimit-limit": "10", "x-ratelimit-remaining": "7"})
 		if mods.HeadersToSet["ratelimit-policy"] == "" || mods.HeadersToSet["ratelimit"] == "" {
 			t.Fatalf("expected IETF headers to be present, got %+v", mods.HeadersToSet)
 		}
@@ -1262,10 +1324,10 @@ func TestOnResponseBehavior(t *testing.T) {
 
 	t.Run("all results nil returns nil", func(t *testing.T) {
 		p := mkPolicy([]QuotaRuntime{{Name: "q1"}})
-		ctx := newResponseCtx(nil, nil, map[string]interface{}{
+		hctx := newResponseHeaderCtx(nil, nil, map[string]interface{}{
 			rateLimitResultKey: []quotaResult{{QuotaName: "q1", Result: nil}},
 		}, 200)
-		if action := p.OnResponseBody(ctx, nil); action != nil {
+		if action := p.OnResponseHeaders(hctx, nil); action != nil {
 			t.Fatalf("expected nil action, got %T", action)
 		}
 	})
