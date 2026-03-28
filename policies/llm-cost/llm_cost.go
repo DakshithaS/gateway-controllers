@@ -54,6 +54,16 @@ const (
 	// accumulated across streaming chunks. Gives O(1) access to the first and
 	// last event without re-scanning raw bytes at EndOfStream.
 	metaKeySSEEvents = "x-llm-cost-sse-events"
+
+	// metaKeyIsSSE is set to true once the first SSE chunk is detected. It persists
+	// SSE mode across subsequent chunks that may not start with "data: " (e.g. the
+	// second half of an event split across two network packets).
+	metaKeyIsSSE = "x-llm-cost-is-sse"
+
+	// metaKeyLineRemainder stores an incomplete SSE line fragment from the previous
+	// chunk. It is prepended to the next chunk so that events split mid-line across
+	// network packets are reconstructed before JSON parsing.
+	metaKeyLineRemainder = "x-llm-cost-line-remainder"
 )
 
 // LLMCostPolicy calculates the cost of an LLM API call from the response body
@@ -112,23 +122,57 @@ func (p *LLMCostPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Resp
 
 	responseBody := respCtx.ResponseBody.Content
 
-	// If the response body is buffered SSE events rather than a single JSON
-	// object, merge all events into one JSON blob so the downstream calculators
-	// can parse it with a regular json.Unmarshal.
+	// If the response body is buffered SSE events, use the same event-array
+	// approach as OnResponseBodyChunk so that Anthropic's split usage
+	// (input_tokens in message_start, output_tokens in message_delta) is
+	// correctly merged by buildAnthropicSSEBody rather than lost by a
+	// shallow merge.
 	if isSSEContent(responseBody) {
-		merged, err := mergeSSEEvents(responseBody)
-		if err != nil {
-			slog.Warn("llm-cost: failed to merge SSE events", "error", err)
+		meta := make(map[string]interface{})
+		appendSSEEvents(meta, responseBody)
+		events, _ := meta[metaKeySSEEvents].([]json.RawMessage)
+		if len(events) == 0 {
+			slog.Warn("llm-cost: no valid SSE events found in response body")
 			return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
 		}
-		responseBody = merged
+		// Determine provider from the model in events[0] so buildSSEResponseBody
+		// can choose the right merge strategy (Anthropic vs others).
+		var sseProbe struct {
+			Model        string `json:"model"`
+			ModelVersion string `json:"modelVersion"`
+			Message      *struct {
+				Model string `json:"model"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(events[0], &sseProbe); err != nil {
+			slog.Warn("llm-cost: could not parse first SSE event", "error", err)
+			return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
+		}
+		sseModel := sseProbe.Model
+		if sseModel == "" {
+			sseModel = sseProbe.ModelVersion
+		}
+		if sseModel == "" && sseProbe.Message != nil {
+			sseModel = sseProbe.Message.Model
+		}
+		provider := ""
+		if sseModel != "" {
+			if entry, ok := lookupPricing(p.pricingMap, sseModel); ok {
+				provider = entry.Provider
+			}
+		}
+		built, err := buildSSEResponseBody(events, provider)
+		if err != nil {
+			slog.Warn("llm-cost: failed to build response body from SSE events", "error", err)
+			return setCostMetadata(respCtx, 0.0, costStatusNotCalculated)
+		}
+		responseBody = built
 	}
 
 	// Extract model name from response body.
 	// Providers place the model name in different locations:
-	//   $.model (OpenAI, Anthropic non-streaming, Mistral)
-	//   $.modelVersion (Gemini)
-	//   $.message.model (Anthropic streaming after SSE merge)
+	//   $.model        — OpenAI, Anthropic, Mistral (all paths)
+	//   $.modelVersion — Gemini
 	var probe struct {
 		Model        string `json:"model"`
 		ModelVersion string `json:"modelVersion"`
@@ -237,7 +281,15 @@ func (p *LLMCostPolicy) OnResponseBodyChunk(_ context.Context, respCtx *policy.R
 	}
 
 	if len(chunk.Chunk) > 0 {
-		if isSSEContent(chunk.Chunk) {
+		// Persist SSE mode once detected: a continuation chunk that starts mid-line
+		// (e.g. the second half of an event split across two TCP packets) won't begin
+		// with "data: " and would be misrouted to the raw-bytes path without this flag.
+		isSSE, _ := respCtx.Metadata[metaKeyIsSSE].(bool)
+		if !isSSE && isSSEContent(chunk.Chunk) {
+			isSSE = true
+			respCtx.Metadata[metaKeyIsSSE] = true
+		}
+		if isSSE {
 			appendSSEEvents(respCtx.Metadata, chunk.Chunk)
 		} else {
 			prev, _ := respCtx.Metadata[metaKeyAccBody].([]byte)
@@ -247,6 +299,12 @@ func (p *LLMCostPolicy) OnResponseBodyChunk(_ context.Context, respCtx *policy.R
 
 	if !chunk.EndOfStream {
 		return policy.ResponseChunkAction{}
+	}
+
+	// Flush any line fragment buffered from the last chunk (e.g. a stream that ends
+	// without a trailing newline, or an event whose newline arrives in a later packet).
+	if remainder, _ := respCtx.Metadata[metaKeyLineRemainder].(string); remainder != "" {
+		appendSSEEvents(respCtx.Metadata, []byte("\n"))
 	}
 
 	var requestBody []byte
@@ -462,9 +520,30 @@ func mergeSSEEvents(body []byte) ([]byte, error) {
 
 // appendSSEEvents parses the SSE lines in chunk, validates each as JSON, and
 // appends them to the []json.RawMessage slice stored at metadata[metaKeySSEEvents].
+//
+// It maintains a line-remainder buffer so that SSE events split mid-line across
+// network packets are reconstructed before JSON parsing. A chunk that does not end
+// with '\n' leaves the trailing fragment in metadata[metaKeyLineRemainder]; that
+// fragment is prepended to the next call's data automatically.
 func appendSSEEvents(metadata map[string]interface{}, chunk []byte) {
+	// Reconstruct any fragment that was left over from the previous chunk.
+	remainder, _ := metadata[metaKeyLineRemainder].(string)
+	data := remainder + string(chunk)
+
 	events, _ := metadata[metaKeySSEEvents].([]json.RawMessage)
-	for _, line := range strings.Split(string(chunk), "\n") {
+
+	lines := strings.Split(data, "\n")
+
+	// If data doesn't end with '\n' the last element is an incomplete line;
+	// save it for the next chunk rather than attempting to parse it now.
+	newRemainder := ""
+	completeLines := lines
+	if !strings.HasSuffix(data, "\n") && len(lines) > 0 {
+		newRemainder = lines[len(lines)-1]
+		completeLines = lines[:len(lines)-1]
+	}
+
+	for _, line := range completeLines {
 		line = strings.TrimRight(line, "\r")
 		var value string
 		if strings.HasPrefix(line, sseDataPrefix) {
@@ -482,7 +561,9 @@ func appendSSEEvents(metadata map[string]interface{}, chunk []byte) {
 			events = append(events, json.RawMessage(value))
 		}
 	}
+
 	metadata[metaKeySSEEvents] = events
+	metadata[metaKeyLineRemainder] = newRemainder
 }
 
 // buildSSEResponseBody constructs a JSON body suitable for the provider's
