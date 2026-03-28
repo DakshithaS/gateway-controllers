@@ -2,5 +2,5 @@ github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63Y
 github.com/golang-jwt/jwt/v5 v5.3.1/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/wso2/api-platform/sdk/core v0.2.0 h1:nv4Xa4l0cRZYdk5GU1d1gZkxLk5czb7tBjp4zKI3aCU=
 github.com/wso2/api-platform/sdk/core v0.2.0/go.mod h1:vgNVzR16g9k5cun3VXZ7wDg8UGbPxsVU2TW8EbRCv0o=
-github.com/wso2/gateway-controllers/policies/jwt-auth v0.10.1 h1:VGDX1e0ZYGUAdWu91AY49bbUx3fkZedA9RGHkVt7Adk=
-github.com/wso2/gateway-controllers/policies/jwt-auth v0.10.1/go.mod h1:5mINohNCZGh3gQz0oA85h1+o62woSZmenovk7Dj1tUw=
+github.com/wso2/gateway-controllers/policies/jwt-auth v1.0.0 h1:B0FnSgpMl+qJSyxJHu4I2zrJrPqypYWiJSAVhfZUrMs=
+github.com/wso2/gateway-controllers/policies/jwt-auth v1.0.0/go.mod h1:5mINohNCZGh3gQz0oA85h1+o62woSZmenovk7Dj1tUw=

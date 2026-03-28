@@ -37,7 +37,7 @@ This policy has no user parameters. All configuration is handled by the gateway 
 #### Sample System Configuration
 
 ```toml
-[policy_configurations.llm_cost_v0]
+[policy_configurations.llm_cost_v1]
 pricing_file = "/etc/gateway/pricing.json"
 ```
 

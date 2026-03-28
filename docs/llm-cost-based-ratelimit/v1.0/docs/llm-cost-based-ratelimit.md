@@ -83,14 +83,14 @@ When using in-memory backend, configure the following under `memory`:
 #### Sample System Configuration
 
 ```toml
-[policy_configurations.llm_cost_ratelimit_v0]
+[policy_configurations.llm_cost_ratelimit_v1]
 cost_scale_factor = 1000000000
 
-[policy_configurations.ratelimit_v0]
+[policy_configurations.ratelimit_v1]
 algorithm = "gcra"
 backend = "memory"
 
-[policy_configurations.ratelimit_v0.memory]
+[policy_configurations.ratelimit_v1.memory]
 max_entries = 10000
 cleanup_interval = "5m"
 ```
@@ -98,11 +98,11 @@ cleanup_interval = "5m"
 For distributed rate limiting across multiple gateway instances:
 
 ```toml
-[policy_configurations.ratelimit_v0]
+[policy_configurations.ratelimit_v1]
 algorithm = "gcra"
 backend = "redis"
 
-[policy_configurations.ratelimit_v0.redis]
+[policy_configurations.ratelimit_v1.redis]
 host = "redis.example.com"
 port = 6379
 password = "your-redis-password"
