@@ -20,6 +20,13 @@ type stubDelegatePolicy struct {
 	onResponseHeadersCalls  int
 }
 
+func (s *stubDelegatePolicy) Mode() policy.ProcessingMode {
+	return policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeProcess,
+		ResponseHeaderMode: policy.HeaderModeProcess,
+	}
+}
+
 func (s *stubDelegatePolicy) OnRequestHeaders(
 	ctx *policy.RequestHeaderContext,
 	params map[string]interface{},
