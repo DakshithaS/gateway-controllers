@@ -394,9 +394,6 @@ func (p *TokenBasedRateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx
 	type requestHeaderPolicer interface {
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
 	}
-	type requestBodyPolicer interface {
-		OnRequestBody(context.Context, *policy.RequestContext, map[string]interface{}) policy.RequestAction
-	}
 
 	slog.Debug("OnRequestHeaders: processing token-based rate limit",
 		"route", p.metadata.RouteName)
@@ -428,27 +425,6 @@ func (p *TokenBasedRateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx
 	if rl, ok := delegate.(requestHeaderPolicer); ok {
 		if action := rl.OnRequestHeaders(ctx, reqCtx, params); isBlockingHeaderAction(action) {
 			return action
-		}
-	}
-
-	// Phase 2: request-phase cost extraction — extracts cost from headers (e.g. X-Token-Cost)
-	// and consumes tokens. Uses a synthetic RequestContext so no body buffering is needed.
-	// ImmediateResponse implements RequestHeaderAction, so a 429 can be returned directly.
-	if rl, ok := delegate.(requestBodyPolicer); ok {
-		reqCtxDel := &policy.RequestContext{
-			SharedContext: reqCtx.SharedContext,
-			Headers:       reqCtx.Headers,
-			Body:          &policy.Body{Present: false},
-			Path:          reqCtx.Path,
-			Method:        reqCtx.Method,
-			Authority:     reqCtx.Authority,
-			Scheme:        reqCtx.Scheme,
-			Vhost:         reqCtx.Vhost,
-		}
-		if action := rl.OnRequestBody(ctx, reqCtxDel, nil); action != nil {
-			if ir, ok := action.(policy.ImmediateResponse); ok {
-				return ir
-			}
 		}
 	}
 
