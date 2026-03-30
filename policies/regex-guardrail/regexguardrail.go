@@ -133,6 +133,10 @@ func parseParams(params map[string]interface{}, defaultJSONPath string, defaultE
 		return result, fmt.Errorf("'regex' parameter is required")
 	}
 
+	if enabledExplicitlyFalse {
+		hasRegex = false
+	}
+
 	if hasRegex {
 		regexPattern, ok := regexRaw.(string)
 		if !ok {

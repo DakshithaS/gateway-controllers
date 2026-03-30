@@ -204,16 +204,25 @@ func TestRegexGuardrailPolicy_GetPolicy_Errors(t *testing.T) {
 func TestRegexGuardrailPolicy_ParseParams_DisabledFlow_DoesNotRequireRegex(t *testing.T) {
 	tests := []struct {
 		name            string
+		input           map[string]interface{}
 		defaultJSONPath string
 		defaultEnabled  bool
 	}{
 		{
 			name:            "request flow disabled",
+			input:           map[string]interface{}{"enabled": false},
 			defaultJSONPath: DefaultRequestJSONPath,
 			defaultEnabled:  RequestFlowEnabledByDefault,
 		},
 		{
 			name:            "response flow disabled",
+			input:           map[string]interface{}{"enabled": false},
+			defaultJSONPath: DefaultResponseJSONPath,
+			defaultEnabled:  ResponseFlowEnabledByDefault,
+		},
+		{
+			name:            "response flow disabled with empty regex",
+			input:           map[string]interface{}{"enabled": false, "regex": ""},
 			defaultJSONPath: DefaultResponseJSONPath,
 			defaultEnabled:  ResponseFlowEnabledByDefault,
 		},
@@ -221,7 +230,7 @@ func TestRegexGuardrailPolicy_ParseParams_DisabledFlow_DoesNotRequireRegex(t *te
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseParams(map[string]interface{}{"enabled": false}, tc.defaultJSONPath, tc.defaultEnabled)
+			got, err := parseParams(tc.input, tc.defaultJSONPath, tc.defaultEnabled)
 			if err != nil {
 				t.Fatalf("expected disabled flow params to parse without regex, got error: %v", err)
 			}
@@ -272,6 +281,25 @@ func TestRegexGuardrailPolicy_DisabledFlow_GetPolicyAndHandlers_NoRequiredParams
 		action := p.OnResponseBody(context.Background(), newResponseContextWithBody(`{"status":"ok"}`), nil)
 		if _, ok := action.(policy.DownstreamResponseModifications); !ok {
 			t.Fatalf("expected response no-op when response.enabled=false, got %T", action)
+		}
+	})
+
+	t.Run("response flow disabled with empty regex", func(t *testing.T) {
+		pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+			"response": map[string]interface{}{
+				"enabled": false,
+				"regex":   "",
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected disabled response flow with empty regex to be accepted, got %v", err)
+		}
+		p, ok := pRaw.(*RegexGuardrailPolicy)
+		if !ok {
+			t.Fatalf("expected *RegexGuardrailPolicy, got %T", pRaw)
+		}
+		if p.responseParams.Regex != "" {
+			t.Fatalf("expected disabled flow to ignore provided regex, got %q", p.responseParams.Regex)
 		}
 	})
 }

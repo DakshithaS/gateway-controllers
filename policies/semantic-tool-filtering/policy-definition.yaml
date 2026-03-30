@@ -1,5 +1,5 @@
 name: semantic-tool-filtering
-version: v1.0.0
+version: v1.0.1
 description: |
   Dynamically filters the tools provided within an API request based on their semantic relevance to the
   user query. This policy extracts both the query and the tool definitions from the incoming payload,
@@ -49,10 +49,11 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        JSONPath expression to extract the tools array from the request body (used when toolsIsJson is true).
-        Example: "$.tools"
+        JSONPath expression to extract the tools definition from the request body (used when toolsIsJson is true).
+        This can point to the tools array itself (for example, "$.tools") or to the iterated
+        object inside each array item using a single wildcard (for example, "$.tools[*].function").
       default: "$.tools"
-      pattern: '^(?:\$\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$'
+      pattern: '^\$\.([A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?\.)*[A-Za-z_][A-Za-z0-9_]*(\[(\d+|\*)\])?$'
     userQueryIsJson:
       type: boolean
       x-wso2-policy-advanced-param: true

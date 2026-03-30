@@ -148,6 +148,11 @@ func parseParams(params map[string]interface{}, isResponse bool) (ContentLengthG
 		}
 	}
 
+	if enabledExplicitlyFalse {
+		hasMin = false
+		hasMax = false
+	}
+
 	if hasMin {
 		min, err := extractInt(minRaw)
 		if err != nil {

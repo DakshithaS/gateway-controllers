@@ -27,7 +27,7 @@ This policy helps reduce token consumption and improve LLM response quality by s
 | limit | integer | No | `5` | The number of most relevant tools to include (used if selectionMode is `By Rank`). |
 | threshold | number | No | `0.7` | Similarity threshold for filtering (0.0 to 1.0). Only tools with a score above this value are included (used if selectionMode is `By Threshold`). |
 | queryJSONPath | string | Yes | `$.messages[-1].content` | JSONPath expression to extract the user's query from the request body. |
-| toolsJSONPath | string | Yes | `$.tools` | JSONPath expression to extract the tools array from the request body (used when `toolsIsJson` is true). |
+| toolsJSONPath | string | Yes | `$.tools` | JSONPath expression to extract the tools definition from the request body. It can point to the array itself, such as `$.tools`, or to the iterated object inside each array item, such as `$.tools[*].function`. |
 | userQueryIsJson | boolean | Yes | `true` | Specifies format of user query. `true`: use `queryJSONPath`. `false`: extract from text using `<userq>` tags. |
 | toolsIsJson | boolean | Yes | `true` | Specifies format of tools definition. `true`: use `toolsJSONPath`. `false`: extract from text using `<toolname>`/`<tooldescription>` tags. |
 
@@ -125,25 +125,9 @@ policies:
 
 The policy will interpret the request, calculate embeddings, and filter the `tools` array to include only the top 3 matches (e.g., `get_weather`, `book_venue`, `send_email`).
 
-### Scenario 2: Filtering Tools by Threshold
+### Scenario 1b: OpenAI/Mistral-style Function Wrappers
 
-In this scenario, only tools with a semantic similarity score of 0.7 or higher are included.
-
-**Configuration:**
-
-```yaml
-type: http
-policies:
-  - policy:
-      name: semantic-tool-filtering
-      parameters:
-        selectionMode: "By Threshold"
-        threshold: 0.7
-```
-
-### Scenario 3: Text Format (XML-like Tags)
-
-This scenario handles cases where the user query and tool definitions are embedded in a text payload using custom tags.
+If the request wraps each tool as an object with a nested `function`, configure the iterator path so the policy reads `name` and `description` from the nested object while still filtering the parent `tools` array.
 
 **Configuration:**
 
@@ -155,8 +139,75 @@ policies:
       parameters:
         selectionMode: "By Rank"
         limit: 3
+        queryJSONPath: "$.messages[-1].content"
+        toolsJSONPath: "$.tools[*].function"
+        userQueryIsJson: true
+        toolsIsJson: true
+```
+
+**Request:**
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What tools can help me check the weather?"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather"
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email notification"
+      }
+    }
+  ]
+}
+```
+
+### Scenario 2: Filtering Tools by Threshold
+
+In this scenario, only tools with a semantic similarity score of 0.7 or higher are included.
+
+**Configuration:**
+
+```yaml
+policies:
+  - policy:
+      name: semantic-tool-filtering
+      parameters:
+        selectionMode: "By Threshold"
+        threshold: 0.7
+        # Rest of the parameters
+```
+
+### Scenario 3: Text Format (XML-like Tags)
+
+This scenario handles cases where the user query and tool definitions are embedded in a text payload using custom tags.
+
+**Configuration:**
+
+```yaml
+policies:
+  - policy:
+      name: semantic-tool-filtering
+      parameters:
+        selectionMode: "By Rank"
+        limit: 3
         userQueryIsJson: false
         toolsIsJson: false
+        queryJSONPath: "$.messages[-1].content.text"
+        toolsJSONPath: "$.messages[-1].content.text"
+
 ```
 
 **Request Body:**

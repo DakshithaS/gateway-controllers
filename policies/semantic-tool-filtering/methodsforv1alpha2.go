@@ -28,6 +28,84 @@ import (
 	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
+type jsonToolEntry struct {
+	original map[string]interface{}
+	inspect  map[string]interface{}
+}
+
+func parseJSONArray(value interface{}) ([]interface{}, error) {
+	var items []interface{}
+	var itemsBytes []byte
+
+	switch v := value.(type) {
+	case []byte:
+		itemsBytes = v
+	case string:
+		itemsBytes = []byte(v)
+	default:
+		var err error
+		itemsBytes, err = json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := json.Unmarshal(itemsBytes, &items); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+func extractJSONToolEntries(requestBody map[string]interface{}, toolsPath string) ([]jsonToolEntry, string, error) {
+	spec, err := parseToolsJSONPath(toolsPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	toolsJSON, err := utils.ExtractValueFromJsonpath(requestBody, spec.arrayPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	items, err := parseJSONArray(toolsJSON)
+	if err != nil {
+		return nil, "", err
+	}
+
+	entries := make([]jsonToolEntry, 0, len(items))
+	for _, item := range items {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		inspectMap := itemMap
+		if spec.iteratedObjectSubpath != "" {
+			inspectValue, err := extractValueFromRelativePath(itemMap, spec.iteratedObjectSubpath)
+			if err != nil {
+				return nil, "", err
+			}
+			if inspectValue == nil {
+				continue
+			}
+
+			nestedMap, ok := inspectValue.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			inspectMap = nestedMap
+		}
+
+		entries = append(entries, jsonToolEntry{
+			original: itemMap,
+			inspect:  inspectMap,
+		})
+	}
+
+	return entries, spec.arrayPath, nil
+}
+
 // OnRequestBody is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
 func (p *SemanticToolFilteringPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	return p.processRequestBody(reqCtx)
@@ -76,32 +154,12 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequest(reqCtx *policy.RequestCo
 		return policy.UpstreamRequestModifications{}
 	}
 
-	// Extract tools array using JSONPath
-	toolsJSON, err := utils.ExtractValueFromJsonpath(requestBody, p.toolsJSONPath)
+	toolEntries, updatePath, err := extractJSONToolEntries(requestBody, p.toolsJSONPath)
 	if err != nil {
 		return p.buildErrorResponse("Error extracting tools from JSONPath", err)
 	}
 
-	// Parse tools array
-	var tools []interface{}
-	var toolsBytes []byte
-	switch v := toolsJSON.(type) {
-	case []byte:
-		toolsBytes = v
-	case string:
-		toolsBytes = []byte(v)
-	default:
-		var err error
-		toolsBytes, err = json.Marshal(v)
-		if err != nil {
-			return p.buildErrorResponse("Invalid tools format in request", err)
-		}
-	}
-	if err := json.Unmarshal(toolsBytes, &tools); err != nil {
-		return p.buildErrorResponse("Invalid tools format in request", err)
-	}
-
-	if len(tools) == 0 {
+	if len(toolEntries) == 0 {
 		slog.Debug("SemanticToolFiltering: No tools to filter")
 		return policy.UpstreamRequestModifications{}
 	}
@@ -121,24 +179,17 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequest(reqCtx *policy.RequestCo
 
 	// Prepare embedding requests for all valid tools
 	var embeddingRequests []toolEmbeddingRequest
-	toolDescMap := make(map[string]string)                   // hashKey -> toolDesc for similarity calculation
 	toolMapByHash := make(map[string]map[string]interface{}) // hashKey -> toolMap
 
-	for _, toolRaw := range tools {
-		toolMap, ok := toolRaw.(map[string]interface{})
-		if !ok {
-			slog.Warn("SemanticToolFiltering: Invalid tool format, skipping")
-			continue
-		}
-
-		toolDesc := extractToolDescription(toolMap)
+	for _, entry := range toolEntries {
+		toolName, toolDescription := extractToolNameAndDescription(entry.inspect)
+		toolDesc := buildToolEmbeddingText(toolName, toolDescription)
 		if toolDesc == "" {
 			slog.Warn("SemanticToolFiltering: No description found for tool, skipping",
-				"toolName", toolMap["name"])
+				"toolName", toolName)
 			continue
 		}
 
-		toolName, _ := toolMap["name"].(string)
 		descHash := p.getCacheKey(toolDesc)
 
 		embeddingRequests = append(embeddingRequests, toolEmbeddingRequest{
@@ -146,8 +197,7 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequest(reqCtx *policy.RequestCo
 			Description: toolDesc,
 			HashKey:     descHash,
 		})
-		toolDescMap[descHash] = toolDesc
-		toolMapByHash[descHash] = toolMap
+		toolMapByHash[descHash] = entry.original
 	}
 
 	// Process embeddings with proper cache management (avoids cascade evictions)
@@ -183,12 +233,12 @@ func (p *SemanticToolFilteringPolicy) handleJSONRequest(reqCtx *policy.RequestCo
 	filteredTools := p.filterTools(toolsWithScores)
 
 	slog.Debug("SemanticToolFiltering: Filtered tools",
-		"originalCount", len(tools),
+		"originalCount", len(toolEntries),
 		"filteredCount", len(filteredTools),
 		"selectionMode", p.selectionMode)
 
 	// Update request body with filtered tools
-	if err := updateToolsInRequestBody(&requestBody, p.toolsJSONPath, filteredTools); err != nil {
+	if err := updateToolsInRequestBody(&requestBody, updatePath, filteredTools); err != nil {
 		return p.buildErrorResponse("Error updating request body with filtered tools", err)
 	}
 
@@ -382,30 +432,12 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequest(reqCtx *policy.RequestC
 			return p.buildErrorResponse("Invalid JSON in request body", err)
 		}
 
-		toolsJSON, err := utils.ExtractValueFromJsonpath(requestBody, p.toolsJSONPath)
+		toolEntries, updatePath, err := extractJSONToolEntries(requestBody, p.toolsJSONPath)
 		if err != nil {
 			return p.buildErrorResponse("Error extracting tools from JSONPath", err)
 		}
 
-		var tools []interface{}
-		var toolsBytes []byte
-		switch v := toolsJSON.(type) {
-		case []byte:
-			toolsBytes = v
-		case string:
-			toolsBytes = []byte(v)
-		default:
-			var err error
-			toolsBytes, err = json.Marshal(v)
-			if err != nil {
-				return p.buildErrorResponse("Invalid tools format in request", err)
-			}
-		}
-		if err := json.Unmarshal(toolsBytes, &tools); err != nil {
-			return p.buildErrorResponse("Invalid tools format in request", err)
-		}
-
-		if len(tools) == 0 {
+		if len(toolEntries) == 0 {
 			slog.Debug("SemanticToolFiltering: No tools to filter")
 			return policy.UpstreamRequestModifications{}
 		}
@@ -413,20 +445,14 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequest(reqCtx *policy.RequestC
 		var embeddingRequests []toolEmbeddingRequest
 		toolMapByHash := make(map[string]map[string]interface{})
 
-		for _, toolRaw := range tools {
-			toolMap, ok := toolRaw.(map[string]interface{})
-			if !ok {
-				slog.Warn("SemanticToolFiltering: Invalid tool format, skipping")
-				continue
-			}
-
-			toolDesc := extractToolDescription(toolMap)
+		for _, entry := range toolEntries {
+			toolName, toolDescription := extractToolNameAndDescription(entry.inspect)
+			toolDesc := buildToolEmbeddingText(toolName, toolDescription)
 			if toolDesc == "" {
-				slog.Warn("SemanticToolFiltering: No description found for tool, skipping")
+				slog.Warn("SemanticToolFiltering: No description found for tool, skipping", "toolName", toolName)
 				continue
 			}
 
-			toolName, _ := toolMap["name"].(string)
 			descHash := p.getCacheKey(toolDesc)
 
 			embeddingRequests = append(embeddingRequests, toolEmbeddingRequest{
@@ -434,7 +460,7 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequest(reqCtx *policy.RequestC
 				Description: toolDesc,
 				HashKey:     descHash,
 			})
-			toolMapByHash[descHash] = toolMap
+			toolMapByHash[descHash] = entry.original
 		}
 
 		embeddingResults := p.processToolEmbeddingsWithCache(embeddingCache, apiId, embeddingRequests)
@@ -465,7 +491,7 @@ func (p *SemanticToolFilteringPolicy) handleMixedRequest(reqCtx *policy.RequestC
 
 		filteredTools := p.filterTools(toolsWithScores)
 
-		if err := updateToolsInRequestBody(&requestBody, p.toolsJSONPath, filteredTools); err != nil {
+		if err := updateToolsInRequestBody(&requestBody, updatePath, filteredTools); err != nil {
 			return p.buildErrorResponse("Error updating request body with filtered tools", err)
 		}
 

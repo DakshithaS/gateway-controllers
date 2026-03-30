@@ -1807,6 +1807,36 @@ func TestSetCostMetadataV2_Formatting(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// setStreamCostMetadata formatting
+// ---------------------------------------------------------------------------
+
+func TestSetStreamCostMetadata_Formatting(t *testing.T) {
+	cases := []struct {
+		cost     float64
+		expected string
+	}{
+		{0.0, "0.0000000000"},
+		{0.00004231, "0.0000423100"},
+		{1.23456789012345, "1.2345678901"},
+	}
+	for _, tc := range cases {
+		ctx := makeStreamResponseContext()
+		action := setStreamCostMetadata(ctx, tc.cost, costStatusCalculated)
+		if action.AnalyticsMetadata == nil {
+			t.Fatalf("expected AnalyticsMetadata in ResponseChunkAction")
+		}
+		got, _ := ctx.Metadata[MetadataLLMCost].(string)
+		if got != tc.expected {
+			t.Errorf("cost=%.15f: expected metadata %q, got %q", tc.cost, tc.expected, got)
+		}
+		gotStatus, _ := ctx.Metadata[MetadataLLMCostStatus].(string)
+		if gotStatus != costStatusCalculated {
+			t.Errorf("expected status %q, got %q", costStatusCalculated, gotStatus)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // OnResponseBody -- cost status
 // ---------------------------------------------------------------------------
 
@@ -1855,6 +1885,47 @@ func TestOnResponseBody_SuccessStatus_Calculated(t *testing.T) {
 	}
 }
 
+// TestOnResponseBody_FullJSON_* — verify exact costs for plain JSON responses
+// (the path taken when Envoy buffers a non-streaming LLM response).
+
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBody_FullJSON_OpenAI(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"gpt-4o-mini-2024-07-18","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000045000")
+}
+
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+func TestOnResponseBody_FullJSON_Anthropic(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_tokens":5}}`)
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000280000")
+}
+
+// gemini/gemini-1.5-flash: 10 * 7.5e-8 + 5 * 3e-7 = 2.25e-6 → "0.0000022500"
+func TestOnResponseBody_FullJSON_Gemini(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "gemini/gemini-1.5-flash"); !ok {
+		t.Skip("gemini/gemini-1.5-flash not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"modelVersion":"gemini/gemini-1.5-flash","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`)
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000022500")
+}
+
+// mistral-small-latest: 10 * 1e-7 + 5 * 3e-7 = 2.5e-6 → "0.0000025000"
+func TestOnResponseBody_FullJSON_Mistral(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "mistral/mistral-small-latest"); !ok {
+		t.Skip("mistral/mistral-small-latest not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"mistral-small-latest","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	ctx := makeResponseContext(body)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000025000")
+}
+
 func TestOnResponseBody_EmptyBody_NotCalculated(t *testing.T) {
 	p := &LLMCostPolicy{pricingMap: testPricingMap}
 	ctx := &policy.ResponseContext{
@@ -1882,6 +1953,76 @@ func TestOnResponseBody_UnknownModel_NotCalculated(t *testing.T) {
 	body := []byte(`{"model": "totally-unknown-model-xyz", "usage": {"prompt_tokens": 10}}`)
 	ctx := makeResponseContext(body)
 	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusNotCalculated, "0.0000000000")
+}
+
+// ---------------------------------------------------------------------------
+// OnResponseBodyChunk -- cost status
+// ---------------------------------------------------------------------------
+
+func makeStreamResponseContext() *policy.ResponseStreamContext {
+	return &policy.ResponseStreamContext{
+		SharedContext: &policy.SharedContext{
+			Metadata: make(map[string]interface{}),
+		},
+	}
+}
+
+func assertStreamCostMetadata(t *testing.T, respCtx *policy.ResponseStreamContext, action policy.ResponseChunkAction, wantStatus string, wantCost string) {
+	t.Helper()
+	gotStatus, _ := respCtx.Metadata[MetadataLLMCostStatus].(string)
+	if gotStatus != wantStatus {
+		t.Errorf("x-llm-cost-status: expected %q, got %q", wantStatus, gotStatus)
+	}
+	if wantCost != "" {
+		gotCost, _ := respCtx.Metadata[MetadataLLMCost].(string)
+		if gotCost != wantCost {
+			t.Errorf("x-llm-cost: expected %q, got %q", wantCost, gotCost)
+		}
+	}
+}
+
+func invokeWithBody(p *LLMCostPolicy, body []byte) (*policy.ResponseStreamContext, policy.ResponseChunkAction) {
+	ctx := makeStreamResponseContext()
+	action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{Chunk: body, EndOfStream: true}, nil)
+	return ctx, action
+}
+
+func TestOnResponseBodyChunk_SuccessStatus_Calculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{
+		"model": "gpt-4o-mini-2024-07-18",
+		"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+	}`)
+	ctx, action := invokeWithBody(p, body)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "")
+	// Also verify the cost metadata is non-empty (exact value tested in calculator tests).
+	if gotCost, _ := ctx.Metadata[MetadataLLMCost].(string); gotCost == "" {
+		t.Error("expected non-empty x-llm-cost in metadata")
+	}
+}
+
+func TestOnResponseBodyChunk_EmptyBody_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := invokeWithBody(p, nil)
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
+}
+
+func TestOnResponseBodyChunk_UnparsableBody_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := invokeWithBody(p, []byte("not json"))
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
+}
+
+func TestOnResponseBodyChunk_NoModelName_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := invokeWithBody(p, []byte(`{"usage": {"prompt_tokens": 10}}`))
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
+}
+
+func TestOnResponseBodyChunk_UnknownModel_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := invokeWithBody(p, []byte(`{"model": "totally-unknown-model-xyz", "usage": {"prompt_tokens": 10}}`))
+	assertStreamCostMetadata(t, ctx, action, costStatusNotCalculated, "0.0000000000")
 }
 
 // ---------------------------------------------------------------------------
@@ -2211,6 +2352,26 @@ func TestOnResponseBody_SSE_OpenAI_Calculated(t *testing.T) {
 	}
 }
 
+// TestOnResponseBody_SSE_Anthropic_InputTokensNotLost is the regression test for
+// the mergeSSEEvents bug: Anthropic's input_tokens live inside message_start's
+// message.usage envelope, while output_tokens arrive later in message_delta's
+// top-level usage. The old shallow-merge silently dropped input_tokens when
+// output_tokens was non-zero. buildSSEResponseBody must produce the correct total.
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+func TestOnResponseBody_SSE_Anthropic_InputTokensNotLost(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	sseBody := []byte(
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"model\":\"claude-3-5-haiku-20241022\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n" +
+			"data: {\"type\":\"message_stop\"}\n",
+	)
+	ctx := makeResponseContext(sseBody)
+	action := p.OnResponseBody(context.Background(), ctx, nil)
+	assertCostMetadata(t, ctx, action, costStatusCalculated, "0.0000280000")
+}
+
 func TestOnResponseBody_SSE_NoUsage_NotCalculated(t *testing.T) {
 	p := &LLMCostPolicy{pricingMap: testPricingMap}
 	// SSE stream without any usage block (include_usage was not set)
@@ -2223,4 +2384,361 @@ func TestOnResponseBody_SSE_NoUsage_NotCalculated(t *testing.T) {
 	action := p.OnResponseBody(context.Background(), ctx, nil)
 	// Without usage data, cost should be calculated as 0 tokens (not a parse failure)
 	assertCostMetadata(t, ctx, action, costStatusCalculated, "0.0000000000")
+}
+
+// TestOnResponseBody_SSE_* — verify OnResponseBody handles buffered SSE correctly
+// for all providers. Envoy buffers the full SSE stream before calling OnResponseBody
+// when ResponseBodyMode=Buffer (not used in production but tested for completeness).
+
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBody_SSE_OpenAI_ExactCost(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	sseBody := []byte(
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx := makeResponseContext(sseBody)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000045000")
+}
+
+// gemini/gemini-1.5-flash: 10 * 7.5e-8 + 5 * 3e-7 = 2.25e-6 → "0.0000022500"
+func TestOnResponseBody_SSE_Gemini(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "gemini/gemini-1.5-flash"); !ok {
+		t.Skip("gemini/gemini-1.5-flash not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	// Gemini reports cumulative usageMetadata in every event; last event wins.
+	sseBody := []byte(
+		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"}}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n" +
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" world\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n",
+	)
+	ctx := makeResponseContext(sseBody)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000022500")
+}
+
+// mistral-small-latest: 10 * 1e-7 + 5 * 3e-7 = 2.5e-6 → "0.0000025000"
+func TestOnResponseBody_SSE_Mistral(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "mistral/mistral-small-latest"); !ok {
+		t.Skip("mistral/mistral-small-latest not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	sseBody := []byte(
+		"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n" +
+			"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx := makeResponseContext(sseBody)
+	assertCostMetadata(t, ctx, p.OnResponseBody(context.Background(), ctx, nil), costStatusCalculated, "0.0000025000")
+}
+
+func TestOnResponseBodyChunk_SSE_OpenAI_Calculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	sseBody := []byte(
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini-2024-07-18\",\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini-2024-07-18\",\"service_tier\":\"default\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := invokeWithBody(p, sseBody)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "")
+	if gotCost, _ := ctx.Metadata[MetadataLLMCost].(string); gotCost == "" {
+		t.Error("expected non-empty x-llm-cost for SSE OpenAI response")
+	}
+}
+
+func TestOnResponseBodyChunk_SSE_NoUsage_NotCalculated(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	// SSE stream without any usage block (include_usage was not set)
+	sseBody := []byte(
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := invokeWithBody(p, sseBody)
+	// Without usage data, cost should be calculated as 0 tokens (not a parse failure)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000000000")
+}
+
+// ---------------------------------------------------------------------------
+// Multi-chunk SSE streaming tests — realistic Envoy delivery patterns
+// ---------------------------------------------------------------------------
+//
+// Envoy does not guarantee one SSE event per OnResponseBodyChunk call. It may:
+//   (a) coalesce many events into one large chunk
+//   (b) split a single event mid-line across two TCP packets
+//   (c) deliver an empty body chunk with EndOfStream=true
+//
+// The tests below cover these cases. The partial-line remainder buffer in
+// appendSSEEvents and the persisted metaKeyIsSSE flag handle (b) and (c).
+
+// sendChunks sends each byte slice as a separate non-EOS OnResponseBodyChunk call,
+// then sends a final EOS chunk (empty body). This is how Envoy delivers data —
+// the last HTTP/2 DATA frame with END_STREAM is often empty.
+func sendChunks(p *LLMCostPolicy, chunks [][]byte) (*policy.ResponseStreamContext, policy.ResponseChunkAction) {
+	ctx := makeStreamResponseContext()
+	var action policy.ResponseChunkAction
+	for i, c := range chunks {
+		action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+			Chunk: c,
+			Index: uint64(i),
+		}, nil)
+	}
+	action = p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       nil,
+		EndOfStream: true,
+		Index:       uint64(len(chunks)),
+	}, nil)
+	return ctx, action
+}
+
+// TestOnResponseBodyChunk_SSE_IntermediateChunksDoNotSetCost verifies that
+// non-EOS chunks never set cost metadata; only the EOS trigger does.
+func TestOnResponseBodyChunk_SSE_IntermediateChunksDoNotSetCost(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx := makeStreamResponseContext()
+
+	intermediates := [][]byte{
+		[]byte("data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"),
+		[]byte("data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n"),
+	}
+	for i, c := range intermediates {
+		action := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+			Chunk: c,
+			Index: uint64(i),
+		}, nil)
+		if _, ok := ctx.Metadata[MetadataLLMCostStatus]; ok {
+			t.Fatalf("chunk %d: cost status set before EndOfStream", i)
+		}
+		if len(action.AnalyticsMetadata) != 0 {
+			t.Fatalf("chunk %d: unexpected analytics metadata on intermediate chunk", i)
+		}
+	}
+
+	// Final chunk carries usage + [DONE], EOS triggers calculation.
+	eosAction := p.OnResponseBodyChunk(context.Background(), ctx, &policy.StreamBody{
+		Chunk:       []byte("data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\ndata: [DONE]\n"),
+		EndOfStream: true,
+		Index:       2,
+	}, nil)
+	assertStreamCostMetadata(t, ctx, eosAction, costStatusCalculated, "0.0000045000")
+}
+
+// TestOnResponseBodyChunk_SSE_OpenAI_AllEventsInOneChunk simulates Envoy coalescing
+// the entire SSE stream into a single non-EOS chunk followed by an empty EOS frame.
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBodyChunk_SSE_OpenAI_AllEventsInOneChunk(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	bigChunk := []byte(
+		"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{bigChunk})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000045000")
+}
+
+// TestOnResponseBodyChunk_SSE_OpenAI_EventSplitAcrossChunks simulates a TCP packet
+// boundary inside the first SSE event line. The model field ("gpt-4o-mini-2024-07-")
+// straddles the boundary; the remainder buffer must reconstruct it.
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBodyChunk_SSE_OpenAI_EventSplitAcrossChunks(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	chunks := [][]byte{
+		// First packet cuts the JSON mid-field — no trailing newline.
+		[]byte(`data: {"id":"chatcmpl-1","model":"gpt-4o-mini-2024-07-`),
+		// Second packet completes the first event and adds usage + done.
+		[]byte("18\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" +
+			"data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n"),
+	}
+	ctx, action := sendChunks(p, chunks)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000045000")
+}
+
+// TestOnResponseBodyChunk_SSE_Anthropic_AllEventsInOneChunk verifies the Anthropic
+// cross-event merge (input from message_start, output from message_delta) works
+// when Envoy delivers the full stream as one coalesced chunk.
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+func TestOnResponseBodyChunk_SSE_Anthropic_AllEventsInOneChunk(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	bigChunk := []byte(
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"model\":\"claude-3-5-haiku-20241022\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n" +
+			"data: {\"type\":\"message_stop\"}\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{bigChunk})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000280000")
+}
+
+// TestOnResponseBodyChunk_SSE_Anthropic_MessageStartSplitAcrossChunks is the
+// critical regression test: the message_start event (the only one carrying the
+// model name for Anthropic) is split across two TCP packets. Without the
+// remainder buffer + SSE-mode persistence this test produces not_calculated.
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+func TestOnResponseBodyChunk_SSE_Anthropic_MessageStartSplitAcrossChunks(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	chunks := [][]byte{
+		// Packet 1: message_start cut mid-JSON (before closing braces).
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_01","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_t`),
+		// Packet 2: rest of message_start + content events + message_delta with output_tokens.
+		[]byte("okens\":0}}}\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n" +
+			"data: {\"type\":\"message_stop\"}\n"),
+	}
+	ctx, action := sendChunks(p, chunks)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000280000")
+}
+
+// TestOnResponseBodyChunk_SSE_Gemini_AllEventsInOneChunk verifies Gemini cumulative
+// usageMetadata handling when all events arrive in a single chunk.
+// gemini/gemini-1.5-flash: 10 * 7.5e-8 + 5 * 3e-7 = 2.25e-6 → "0.0000022500"
+func TestOnResponseBodyChunk_SSE_Gemini_AllEventsInOneChunk(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "gemini/gemini-1.5-flash"); !ok {
+		t.Skip("gemini/gemini-1.5-flash not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	bigChunk := []byte(
+		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"}}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n" +
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" world\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{bigChunk})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000022500")
+}
+
+// TestOnResponseBodyChunk_SSE_Mistral_AllEventsInOneChunk verifies Mistral (OpenAI
+// wire format) when Envoy coalesces the full stream into one chunk.
+// mistral-small-latest: 10 * 1e-7 + 5 * 3e-7 = 2.5e-6 → "0.0000025000"
+func TestOnResponseBodyChunk_SSE_Mistral_AllEventsInOneChunk(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "mistral/mistral-small-latest"); !ok {
+		t.Skip("mistral/mistral-small-latest not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	bigChunk := []byte(
+		"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n" +
+			"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n" +
+			"data: {\"id\":\"cmpl-1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n" +
+			"data: [DONE]\n",
+	)
+	ctx, action := sendChunks(p, [][]byte{bigChunk})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000025000")
+}
+
+// ---------------------------------------------------------------------------
+// Full JSON (non-SSE) at EOS — all providers
+// ---------------------------------------------------------------------------
+// Envoy may deliver the full LLM JSON response as a single EOS chunk.
+// invokeWithBody models this: one chunk with EndOfStream=true.
+
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBodyChunk_FullJSON_OpenAI(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"gpt-4o-mini-2024-07-18","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	ctx, action := invokeWithBody(p, body)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000045000")
+}
+
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+func TestOnResponseBodyChunk_FullJSON_Anthropic(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_tokens":5}}`)
+	ctx, action := invokeWithBody(p, body)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000280000")
+}
+
+// gemini/gemini-1.5-flash: 10 * 7.5e-8 + 5 * 3e-7 = 2.25e-6 → "0.0000022500"
+func TestOnResponseBodyChunk_FullJSON_Gemini(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "gemini/gemini-1.5-flash"); !ok {
+		t.Skip("gemini/gemini-1.5-flash not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"modelVersion":"gemini/gemini-1.5-flash","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`)
+	ctx, action := invokeWithBody(p, body)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000022500")
+}
+
+// mistral-small-latest: 10 * 1e-7 + 5 * 3e-7 = 2.5e-6 → "0.0000025000"
+func TestOnResponseBodyChunk_FullJSON_Mistral(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "mistral/mistral-small-latest"); !ok {
+		t.Skip("mistral/mistral-small-latest not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	body := []byte(`{"model":"mistral-small-latest","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	ctx, action := invokeWithBody(p, body)
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000025000")
+}
+
+// ---------------------------------------------------------------------------
+// Multiple SSE data chunks → EOS — all providers
+// ---------------------------------------------------------------------------
+// Events arrive across several non-EOS chunks; EOS triggers final calculation.
+// Uses sendChunks with 2-3 data chunks so the accumulator is exercised across
+// multiple calls before the empty EOS frame.
+
+// gpt-4o-mini-2024-07-18: 10 * 1.5e-7 + 5 * 6e-7 = 4.5e-6 → "0.0000045000"
+func TestOnResponseBodyChunk_SSE_EOS_OpenAI(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := sendChunks(p, [][]byte{
+		[]byte("data: {\"id\":\"c1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"),
+		[]byte("data: {\"id\":\"c1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n"),
+		[]byte("data: {\"id\":\"c1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\ndata: [DONE]\n"),
+	})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000045000")
+}
+
+// claude-3-5-haiku-20241022: 10 * 8e-7 + 5 * 4e-6 = 28e-6 → "0.0000280000"
+// Critical: message_start (input tokens) arrives in chunk 1, message_delta
+// (output tokens) arrives in chunk 2 — verifies cross-chunk accumulation.
+func TestOnResponseBodyChunk_SSE_EOS_Anthropic(t *testing.T) {
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := sendChunks(p, [][]byte{
+		// Chunk 1: message_start (model + input tokens) + content events
+		[]byte(
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"model\":\"claude-3-5-haiku-20241022\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n" +
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n",
+		),
+		// Chunk 2: message_delta (output tokens) + message_stop
+		[]byte(
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n" +
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n" +
+				"data: {\"type\":\"message_stop\"}\n",
+		),
+	})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000280000")
+}
+
+// gemini/gemini-1.5-flash: 10 * 7.5e-8 + 5 * 3e-7 = 2.25e-6 → "0.0000022500"
+// Gemini sends cumulative usageMetadata in every chunk; last chunk's values win.
+func TestOnResponseBodyChunk_SSE_EOS_Gemini(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "gemini/gemini-1.5-flash"); !ok {
+		t.Skip("gemini/gemini-1.5-flash not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := sendChunks(p, [][]byte{
+		[]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"}}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n"),
+		[]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" world\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"modelVersion\":\"gemini/gemini-1.5-flash\",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n"),
+	})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000022500")
+}
+
+// mistral-small-latest: 10 * 1e-7 + 5 * 3e-7 = 2.5e-6 → "0.0000025000"
+func TestOnResponseBodyChunk_SSE_EOS_Mistral(t *testing.T) {
+	if _, ok := lookupPricing(testPricingMap, "mistral/mistral-small-latest"); !ok {
+		t.Skip("mistral/mistral-small-latest not in pricing map")
+	}
+	p := &LLMCostPolicy{pricingMap: testPricingMap}
+	ctx, action := sendChunks(p, [][]byte{
+		[]byte("data: {\"id\":\"c1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n"),
+		[]byte("data: {\"id\":\"c1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n"),
+		[]byte("data: {\"id\":\"c1\",\"model\":\"mistral-small-latest\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\ndata: [DONE]\n"),
+	})
+	assertStreamCostMetadata(t, ctx, action, costStatusCalculated, "0.0000025000")
 }

@@ -54,17 +54,20 @@ spec:
     - name: orders-v1
       basePath: /api/v1
       upstreams:
-        - url: http://orders-v1.internal:8080
+        - url: http://sample-backend-1:5000/api/v2
     - name: orders-v2
       basePath: /api/v2
       upstreams:
-        - url: http://orders-v2.internal:8080
+        - url: http://sample-backend:5000/api/v2
+  upstream:
+    main:
+      url: http://sample-backend-1:5000/api/v2
   operations:
     - method: GET
       path: /orders/*
       policies:
         - name: dynamic-endpoint
-          version: v0
+          version: v1
           params:
             targetUpstream: orders-v2
 ```
@@ -87,12 +90,13 @@ spec:
       basePath: /api/read
       upstreams:
         - url: http://customer-read.internal:8080
-          weight: 100
     - name: customer-write
       basePath: /api/write
       upstreams:
         - url: http://customer-write.internal:8080
-          weight: 100
+  upstream:
+    main:
+      url: http://sample-backend:5000/api/v2
   operations:
     - method: GET
       path: /profiles/*

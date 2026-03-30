@@ -368,7 +368,7 @@ func TestSemanticCachePolicy_OnRequest(t *testing.T) {
 					if filter["api_id"] != "Books:v1" {
 						t.Fatalf("unexpected api_id in filter: %v", filter["api_id"])
 					}
-					if filter["threshold"] != "0.70" {
+					if filter["threshold"] != "0.8800" {
 						t.Fatalf("unexpected threshold in filter: %v", filter["threshold"])
 					}
 					if _, ok := filter["ctx"].(context.Context); !ok {

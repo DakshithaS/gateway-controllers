@@ -195,21 +195,29 @@ func TestParseParams(t *testing.T) {
 func TestParseParams_DisabledFlow_DoesNotRequireMinMax(t *testing.T) {
 	tests := []struct {
 		name       string
+		input      map[string]interface{}
 		isResponse bool
 	}{
 		{
 			name:       "request flow disabled",
+			input:      map[string]interface{}{"enabled": false},
 			isResponse: false,
 		},
 		{
 			name:       "response flow disabled",
+			input:      map[string]interface{}{"enabled": false},
+			isResponse: true,
+		},
+		{
+			name:       "response flow disabled with invalid min max",
+			input:      map[string]interface{}{"enabled": false, "min": 0, "max": 0},
 			isResponse: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseParams(map[string]interface{}{"enabled": false}, tc.isResponse)
+			got, err := parseParams(tc.input, tc.isResponse)
 			if err != nil {
 				t.Fatalf("expected disabled flow params to parse without min/max, got error: %v", err)
 			}
@@ -264,6 +272,26 @@ func TestDisabledFlow_GetPolicyAndHandlers_NoRequiredParams(t *testing.T) {
 		}, nil)
 		if _, ok := action.(policy.DownstreamResponseModifications); !ok {
 			t.Fatalf("expected response no-op when response.enabled=false, got %T", action)
+		}
+	})
+
+	t.Run("response flow disabled with invalid min max", func(t *testing.T) {
+		pRaw, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+			"response": map[string]interface{}{
+				"enabled": false,
+				"min":     0,
+				"max":     0,
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected disabled response flow with invalid min/max to be accepted, got %v", err)
+		}
+		p, ok := pRaw.(*ContentLengthGuardrailPolicy)
+		if !ok {
+			t.Fatalf("expected *ContentLengthGuardrailPolicy, got %T", pRaw)
+		}
+		if p.responseParams.Min != 0 || p.responseParams.Max != 0 {
+			t.Fatalf("expected disabled flow to ignore provided min/max, got min=%d max=%d", p.responseParams.Min, p.responseParams.Max)
 		}
 	})
 }
