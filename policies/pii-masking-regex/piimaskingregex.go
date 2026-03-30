@@ -527,12 +527,6 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx
 
 	chunkStr := string(chunk.Chunk)
 
-	// If a preceding guardrail already emitted an error SSE event, pass it through
-	// unchanged — do not attempt PII restoration on the error payload.
-	if isGuardrailSSEErrorEvent(chunkStr) {
-		return policy.ResponseChunkAction{}
-	}
-
 	// maskedPIIMap is keyed original→placeholder (set by maskPIIFromContent).
 	// The restore helpers expect placeholder→original, so invert before use.
 	restoreMap := invertStringMap(maskedPIIMap)
@@ -547,26 +541,6 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx
 }
 
 // ─── SSE / Streaming helpers ─────────────────────────────────────────────────
-
-// isGuardrailSSEErrorEvent reports whether the chunk is an SSE error event emitted by
-// a preceding guardrail (identified by message.action == "GUARDRAIL_INTERVENED").
-func isGuardrailSSEErrorEvent(chunk string) bool {
-	for _, line := range strings.Split(chunk, "\n") {
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		data := strings.TrimPrefix(line, sseDataPrefix)
-		var m map[string]interface{}
-		if json.Unmarshal([]byte(data), &m) != nil {
-			continue
-		}
-		msg, _ := m["message"].(map[string]interface{})
-		if msg["action"] == "GUARDRAIL_INTERVENED" {
-			return true
-		}
-	}
-	return false
-}
 
 // isSSEChunk reports whether the chunk looks like SSE data (has at least one "data: " or "event:" line).
 func isSSEChunk(s string) bool {

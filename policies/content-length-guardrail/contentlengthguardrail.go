@@ -410,12 +410,6 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 
 	chunkStr := string(chunk.Chunk)
 
-	// If a preceding policy already emitted a guardrail SSE error event, pass it
-	// through unchanged — a second guardrail must not validate or override it.
-	if isGuardrailSSEErrorEvent(chunkStr) {
-		return policy.ResponseChunkAction{}
-	}
-
 	if !isSSEChunk(chunkStr) {
 		// Plain JSON via chunked transfer (e.g. OpenAI stream:false with Transfer-Encoding: chunked).
 		// Accumulate all chunks and validate the complete body at end of stream.
@@ -454,7 +448,7 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 		reason := fmt.Sprintf("content length %d bytes is outside the allowed range %d-%d bytes", running, rp.Min, rp.Max)
 		slog.Debug("ContentLengthGuardrail: streaming max violation",
 			"runningBytes", running, "max", rp.Max)
-		return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max)}
+		return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max), TerminateStream: true}
 	}
 
 	// At end of stream: perform the complete min/max/invert validation.
@@ -473,35 +467,11 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 			}
 			slog.Debug("ContentLengthGuardrail: streaming validation failed",
 				"runningBytes", running, "min", rp.Min, "max", rp.Max, "invert", rp.Invert)
-			return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max)}
+			return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max), TerminateStream: true}
 		}
 	}
 
 	return policy.ResponseChunkAction{}
-}
-
-// isGuardrailSSEErrorEvent returns true when the chunk is a guardrail SSE error
-// event emitted by a preceding policy in the chain. Such a chunk has an SSE
-// data line whose JSON payload carries a "type" field ending with "_GUARDRAIL".
-// These chunks must be passed through unchanged so the upstream error is
-// preserved and not overwritten by a subsequent guardrail.
-func isGuardrailSSEErrorEvent(s string) bool {
-	for _, line := range strings.SplitN(s, "\n", 5) {
-		line = strings.TrimRight(line, "\r")
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		data := strings.TrimPrefix(line, sseDataPrefix)
-		var m map[string]interface{}
-		if json.Unmarshal([]byte(data), &m) != nil {
-			continue
-		}
-		msg, _ := m["message"].(map[string]interface{})
-		if msg["action"] == "GUARDRAIL_INTERVENED" {
-			return true
-		}
-	}
-	return false
 }
 
 // isSSEChunk reports whether s looks like SSE data (has at least one "data: " or "event:" line).

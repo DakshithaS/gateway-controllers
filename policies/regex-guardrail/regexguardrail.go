@@ -334,12 +334,6 @@ func (p *RegexGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx 
 
 	chunkStr := string(chunk.Chunk)
 
-	// If a preceding policy already emitted a guardrail SSE error event, pass it
-	// through unchanged — a second guardrail must not validate or override it.
-	if isGuardrailSSEErrorEvent(chunkStr) {
-		return policy.ResponseChunkAction{}
-	}
-
 	if !isSSEChunk(chunkStr) {
 		// Plain JSON via chunked transfer (e.g. OpenAI stream:false with Transfer-Encoding: chunked).
 		// Accumulate all chunks and validate the complete body at end of stream.
@@ -393,34 +387,10 @@ func (p *RegexGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx 
 	if violated {
 		slog.Debug("RegexGuardrail: streaming validation failed",
 			"regex", rp.Regex, "invert", rp.Invert, "chunkIndex", chunk.Index)
-		return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(rp)}
+		return policy.ResponseChunkAction{Body: p.buildSSEErrorEvent(rp), TerminateStream: true}
 	}
 
 	return policy.ResponseChunkAction{}
-}
-
-// isGuardrailSSEErrorEvent returns true when the chunk is a guardrail SSE error
-// event emitted by a preceding policy in the chain. Such a chunk has an SSE
-// data line whose JSON payload carries a "type" field ending with "_GUARDRAIL".
-// These chunks must be passed through unchanged so the upstream error is
-// preserved and not overwritten by a subsequent guardrail.
-func isGuardrailSSEErrorEvent(s string) bool {
-	for _, line := range strings.SplitN(s, "\n", 5) {
-		line = strings.TrimRight(line, "\r")
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		data := strings.TrimPrefix(line, sseDataPrefix)
-		var m map[string]interface{}
-		if json.Unmarshal([]byte(data), &m) != nil {
-			continue
-		}
-		msg, _ := m["message"].(map[string]interface{})
-		if msg["action"] == "GUARDRAIL_INTERVENED" {
-			return true
-		}
-	}
-	return false
 }
 
 // isSSEChunk reports whether s looks like SSE data (has at least one "data: " or "event:" line).

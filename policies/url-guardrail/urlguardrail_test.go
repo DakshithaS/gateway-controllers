@@ -484,25 +484,6 @@ func TestOnRequestBodyAndOnResponseBody(t *testing.T) {
 
 // ─── OnResponseBodyChunk non-SSE (plain JSON chunked transfer) tests ─────────
 
-// TestOnResponseBodyChunk_GuardrailSSEError_PassesThrough verifies that when a
-// preceding policy in the chain has already emitted a guardrail SSE error event,
-// the URL guardrail passes it through unchanged without attempting validation or
-// overwriting the error with its own.
-func TestOnResponseBodyChunk_GuardrailSSEError_PassesThrough(t *testing.T) {
-	p := newStreamingURLPolicy(200)
-	ctx := context.Background()
-	respCtx := newStreamingRespCtx()
-
-	// Construct the SSE error event as it would arrive from a preceding guardrail.
-	precedingError := "data: " + `{"type":"SENTENCE_COUNT_GUARDRAIL","message":{"action":"GUARDRAIL_INTERVENED","interveningGuardrail":"sentence-count-guardrail"}}` + "\n\ndata: [DONE]\n\n"
-	chunk := &policy.StreamBody{Chunk: []byte(precedingError)}
-	got := p.OnResponseBodyChunk(ctx, respCtx, chunk, nil)
-
-	if got.Body != nil {
-		t.Fatalf("expected passthrough (Body=nil) for guardrail SSE error event, got %q", got.Body)
-	}
-}
-
 // TestOnResponseBodyChunk_NonSSE_InvalidURL_ReturnsError verifies that the
 // non-SSE path correctly detects and blocks invalid URLs when JSONPath extraction
 // succeeds and the extracted text contains an unreachable URL.
@@ -545,10 +526,10 @@ func newStreamingURLPolicy(timeout int) *URLGuardrailPolicy {
 	}
 }
 
-// TestOnResponseBodyChunk_InvalidURL_EmitsErrorAndDONE verifies that when a
-// chunk contains an invalid URL, OnResponseBodyChunk replaces it with an SSE
-// error event immediately followed by data: [DONE] for clean stream termination.
-func TestOnResponseBodyChunk_InvalidURL_EmitsErrorAndDONE(t *testing.T) {
+// TestOnResponseBodyChunk_InvalidURL_EmitsErrorAndTerminates verifies that when
+// a chunk contains an invalid URL, OnResponseBodyChunk returns an SSE error
+// event with TerminateStream set so the engine closes the stream cleanly.
+func TestOnResponseBodyChunk_InvalidURL_EmitsErrorAndTerminates(t *testing.T) {
 	p := newStreamingURLPolicy(200)
 	ctx := context.Background()
 	respCtx := newStreamingRespCtx()
@@ -567,44 +548,18 @@ func TestOnResponseBodyChunk_InvalidURL_EmitsErrorAndDONE(t *testing.T) {
 	if got.Body == nil {
 		t.Fatal("expected error body on invalid URL, got nil")
 	}
+	if !got.TerminateStream {
+		t.Fatal("expected TerminateStream=true on invalid URL violation")
+	}
 	if !strings.Contains(string(got.Body), "URL_GUARDRAIL") {
 		t.Fatalf("expected URL_GUARDRAIL in error body, got: %s", got.Body)
 	}
-	if !strings.HasSuffix(string(got.Body), "data: [DONE]\n\n") {
-		t.Fatalf("expected body to end with 'data: [DONE]\\n\\n', got: %q", got.Body)
-	}
-	// Parse the first SSE event and verify guardrail action fields.
-	parts := strings.SplitN(string(got.Body), "\n\n", 2)
-	msg := mustMessageMap(t, []byte(strings.TrimPrefix(parts[0], "data: ")))
+	// Parse the SSE event and verify guardrail action fields.
+	msg := mustMessageMap(t, []byte(strings.TrimPrefix(strings.TrimSuffix(string(got.Body), "\n\n"), "data: ")))
 	if msg["action"] != "GUARDRAIL_INTERVENED" {
 		t.Fatalf("expected action=GUARDRAIL_INTERVENED, got %#v", msg["action"])
 	}
 	if msg["interveningGuardrail"] != "url-guardrail" {
 		t.Fatalf("expected interveningGuardrail=url-guardrail, got %#v", msg["interveningGuardrail"])
-	}
-}
-
-// TestOnResponseBodyChunk_InvalidURL_SubsequentChunksSuppressed verifies that
-// after an invalid-URL error is emitted, all subsequent chunks are suppressed
-// (Body is non-nil but empty) rather than passed through to the client.
-func TestOnResponseBodyChunk_InvalidURL_SubsequentChunksSuppressed(t *testing.T) {
-	p := newStreamingURLPolicy(200)
-	ctx := context.Background()
-	respCtx := newStreamingRespCtx()
-
-	// Trigger violation.
-	invalid := &policy.StreamBody{Chunk: sseContentChunk("see http://127.0.0.1:1")}
-	p.OnResponseBodyChunk(ctx, respCtx, invalid, nil)
-
-	// All subsequent chunks must be suppressed — Body must be []byte{}, not nil.
-	for i, content := range []string{"more text", "even more", "the end"} {
-		next := &policy.StreamBody{Chunk: sseContentChunk(content)}
-		got := p.OnResponseBodyChunk(ctx, respCtx, next, nil)
-		if got.Body == nil {
-			t.Fatalf("chunk %d %q: expected suppression (Body=[]byte{}), got nil (passthrough)", i, content)
-		}
-		if len(got.Body) != 0 {
-			t.Fatalf("chunk %d %q: expected empty suppressed body, got %q", i, content, got.Body)
-		}
 	}
 }

@@ -675,29 +675,11 @@ func newStreamingRespCtx() *policy.ResponseStreamContext {
 	return &policy.ResponseStreamContext{SharedContext: &policy.SharedContext{}}
 }
 
-// TestOnResponseBodyChunk_GuardrailSSEError_PassesThrough verifies that when a
-// preceding policy in the chain has already emitted a guardrail SSE error event,
-// the sentence-count guardrail passes it through unchanged without attempting
-// validation or overwriting the error with its own.
-func TestOnResponseBodyChunk_GuardrailSSEError_PassesThrough(t *testing.T) {
-	p := newStreamingPolicy(1, 100)
-	ctx := context.Background()
-	respCtx := newStreamingRespCtx()
-
-	precedingError := "data: " + `{"type":"URL_GUARDRAIL","message":{"action":"GUARDRAIL_INTERVENED","interveningGuardrail":"url-guardrail"}}` + "\n\ndata: [DONE]\n\n"
-	chunk := &policy.StreamBody{Chunk: []byte(precedingError)}
-	got := p.OnResponseBodyChunk(ctx, respCtx, chunk, nil)
-
-	if got.Body != nil {
-		t.Fatalf("expected passthrough (Body=nil) for guardrail SSE error event, got %q", got.Body)
-	}
-}
-
-// TestOnResponseBodyChunk_MaxViolation_EmitsErrorAndDONE verifies that when the
-// accumulated sentence count exceeds max mid-stream, OnResponseBodyChunk replaces
-// the offending chunk with an SSE error event immediately followed by
-// data: [DONE] so the client receives a clean stream termination.
-func TestOnResponseBodyChunk_MaxViolation_EmitsErrorAndDONE(t *testing.T) {
+// TestOnResponseBodyChunk_MaxViolation_EmitsErrorAndTerminates verifies that
+// when the accumulated sentence count exceeds max mid-stream, OnResponseBodyChunk
+// returns an SSE error event with TerminateStream set so the engine closes the
+// stream cleanly.
+func TestOnResponseBodyChunk_MaxViolation_EmitsErrorAndTerminates(t *testing.T) {
 	p := newStreamingPolicy(1, 2)
 	ctx := context.Background()
 	respCtx := newStreamingRespCtx()
@@ -711,51 +693,25 @@ func TestOnResponseBodyChunk_MaxViolation_EmitsErrorAndDONE(t *testing.T) {
 		}
 	}
 
-	// Third sentence pushes count to 3, exceeding max=2 — must emit error + [DONE].
+	// Third sentence pushes count to 3, exceeding max=2 — must emit error with TerminateStream.
 	chunk := &policy.StreamBody{Chunk: []byte(sseEvent(" Bye."))}
 	got := p.OnResponseBodyChunk(ctx, respCtx, chunk, nil)
 
 	if got.Body == nil {
 		t.Fatal("expected error body on max violation, got nil")
 	}
+	if !got.TerminateStream {
+		t.Fatal("expected TerminateStream=true on max violation")
+	}
 	if !strings.Contains(string(got.Body), "SENTENCE_COUNT_GUARDRAIL") {
 		t.Fatalf("expected SENTENCE_COUNT_GUARDRAIL in error body, got: %s", got.Body)
 	}
-	if !strings.HasSuffix(string(got.Body), "data: [DONE]\n\n") {
-		t.Fatalf("expected body to end with 'data: [DONE]\\n\\n', got: %q", got.Body)
-	}
-	// Parse the first SSE event and verify guardrail action fields.
-	parts := strings.SplitN(string(got.Body), "\n\n", 2)
-	msg := mustMessageMap(t, []byte(strings.TrimPrefix(parts[0], "data: ")))
+	// Parse the SSE event and verify guardrail action fields.
+	msg := mustMessageMap(t, []byte(strings.TrimPrefix(strings.TrimSuffix(string(got.Body), "\n\n"), "data: ")))
 	if msg["action"] != "GUARDRAIL_INTERVENED" {
 		t.Fatalf("expected action=GUARDRAIL_INTERVENED, got %#v", msg["action"])
 	}
 	if msg["interveningGuardrail"] != "sentence-count-guardrail" {
 		t.Fatalf("expected interveningGuardrail=sentence-count-guardrail, got %#v", msg["interveningGuardrail"])
-	}
-}
-
-// TestOnResponseBodyChunk_MaxViolation_SubsequentChunksSuppressed verifies that
-// after a max-violation error is emitted, all subsequent chunks are suppressed
-// (Body is non-nil but empty) rather than passed through to the client.
-func TestOnResponseBodyChunk_MaxViolation_SubsequentChunksSuppressed(t *testing.T) {
-	p := newStreamingPolicy(1, 1)
-	ctx := context.Background()
-	respCtx := newStreamingRespCtx()
-
-	// Trigger violation: 2 sentences exceed max=1.
-	chunk := &policy.StreamBody{Chunk: []byte(sseEvent("Hello. World."))}
-	p.OnResponseBodyChunk(ctx, respCtx, chunk, nil)
-
-	// All subsequent chunks must be suppressed — Body must be []byte{}, not nil.
-	for i, sentence := range []string{" Bye.", " See you.", " Later."} {
-		next := &policy.StreamBody{Chunk: []byte(sseEvent(sentence))}
-		got := p.OnResponseBodyChunk(ctx, respCtx, next, nil)
-		if got.Body == nil {
-			t.Fatalf("chunk %d %q: expected suppression (Body=[]byte{}), got nil (passthrough)", i, sentence)
-		}
-		if len(got.Body) != 0 {
-			t.Fatalf("chunk %d %q: expected empty suppressed body, got %q", i, sentence, got.Body)
-		}
 	}
 }
