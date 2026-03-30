@@ -99,7 +99,6 @@ func GetPolicy(
 	return ins, nil
 }
 
-
 func (p *McpAclListPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
@@ -586,6 +585,9 @@ func (p *McpAclListPolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 			"message": reason,
 		},
 	}
+	analyticsMetadata := map[string]any{
+		"mcpErrorCode": jsonRpcCode,
+	}
 	body, err := json.Marshal(responseBody)
 	if err != nil {
 		slog.Debug("MCP ACL List Policy: Failed to marshal event-stream error response", "error", err)
@@ -607,9 +609,10 @@ func (p *McpAclListPolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: statusCode,
-		Headers:    headers,
-		Body:       streamBody,
+		StatusCode:        statusCode,
+		Headers:           headers,
+		Body:              streamBody,
+		AnalyticsMetadata: analyticsMetadata,
 	}
 }
 
@@ -622,6 +625,9 @@ func (p *McpAclListPolicy) buildErrorResponse(statusCode int, jsonRpcCode int, r
 			"code":    jsonRpcCode,
 			"message": reason,
 		},
+	}
+	analyticsMetadata := map[string]any{
+		"mcpErrorCode": jsonRpcCode,
 	}
 	body, err := json.Marshal(responseBody)
 	if err != nil {
@@ -641,9 +647,10 @@ func (p *McpAclListPolicy) buildErrorResponse(statusCode int, jsonRpcCode int, r
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: statusCode,
-		Headers:    headers,
-		Body:       body,
+		StatusCode:        statusCode,
+		Headers:           headers,
+		Body:              body,
+		AnalyticsMetadata: analyticsMetadata,
 	}
 }
 
