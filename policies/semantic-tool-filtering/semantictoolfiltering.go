@@ -237,7 +237,6 @@ func GetPolicy(
 	return p, nil
 }
 
-
 // Mode returns the processing mode for the semantic tool filtering policy.
 func (p *SemanticToolFilteringPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
@@ -466,10 +465,14 @@ func extractBool(value interface{}) (bool, error) {
 	}
 }
 
-// simpleJSONPathPattern validates that a JSONPath is a simple dotted path with optional array indices
-// Supports patterns like: $.tools, $.data.items, $.results[0].tools, $.a.b[1].c[2].d
-// Does NOT support: complex JSONPath expressions like $..[*], $..book[?(@.price<10)], etc.
-var simpleJSONPathPattern = regexp.MustCompile(`^\$\.([a-zA-Z_][a-zA-Z0-9_]*(\[\d+\])?\.)*[a-zA-Z_][a-zA-Z0-9_]*(\[\d+\])?$`)
+// jsonPathSegmentPattern validates a single JSONPath segment with an optional
+// numeric array index or a single wildcard iterator marker.
+var jsonPathSegmentPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\[(\d+|\*)\])?$`)
+
+type toolsPathSpec struct {
+	arrayPath             string
+	iteratedObjectSubpath string
+}
 
 // validateSimpleJSONPath validates that the given JSONPath is a simple dotted path
 // that can be handled by updateToolsInRequestBody
@@ -483,12 +486,105 @@ func validateSimpleJSONPath(path string) error {
 		return fmt.Errorf("path must start with '$.' prefix, got: %s", path)
 	}
 
-	// Validate against the simple pattern
-	if !simpleJSONPathPattern.MatchString(path) {
-		return fmt.Errorf("path contains unsupported JSONPath syntax; only simple dotted paths with optional array indices are supported (e.g., '$.tools', '$.data.items', '$.results[0].tools'); got: %s", path)
+	segments := strings.Split(strings.TrimPrefix(path, "$."), ".")
+	wildcardCount := 0
+
+	for _, segment := range segments {
+		if segment == "" {
+			return fmt.Errorf("path contains an empty segment: %s", path)
+		}
+		if !jsonPathSegmentPattern.MatchString(segment) {
+			return fmt.Errorf("path contains unsupported JSONPath syntax; only simple dotted paths with optional array indices or a single iterator wildcard are supported (e.g., '$.tools', '$.results[0].tools', '$.tools[*].function'); got: %s", path)
+		}
+		if strings.Contains(segment, "[*]") {
+			wildcardCount++
+		}
+	}
+
+	if wildcardCount > 1 {
+		return fmt.Errorf("path can contain at most one iterator wildcard [*]: %s", path)
 	}
 
 	return nil
+}
+
+func parseToolsJSONPath(path string) (toolsPathSpec, error) {
+	if err := validateSimpleJSONPath(path); err != nil {
+		return toolsPathSpec{}, err
+	}
+
+	spec := toolsPathSpec{arrayPath: path}
+	wildcardIdx := strings.Index(path, "[*]")
+	if wildcardIdx == -1 {
+		return spec, nil
+	}
+
+	spec.arrayPath = path[:wildcardIdx]
+	suffix := path[wildcardIdx+3:]
+	if suffix == "" {
+		return spec, nil
+	}
+	if !strings.HasPrefix(suffix, ".") {
+		return toolsPathSpec{}, fmt.Errorf("invalid tools path after iterator wildcard: %s", path)
+	}
+
+	spec.iteratedObjectSubpath = strings.TrimPrefix(suffix, ".")
+	return spec, nil
+}
+
+func extractValueFromRelativePath(root interface{}, relativePath string) (interface{}, error) {
+	if relativePath == "" {
+		return root, nil
+	}
+
+	segments := strings.Split(relativePath, ".")
+	current := root
+
+	for _, segment := range segments {
+		if segment == "" {
+			return nil, fmt.Errorf("relative path contains an empty segment: %s", relativePath)
+		}
+		if strings.Contains(segment, "[*]") {
+			return nil, fmt.Errorf("relative path cannot contain iterator wildcard [*]: %s", relativePath)
+		}
+		if !jsonPathSegmentPattern.MatchString(segment) {
+			return nil, fmt.Errorf("relative path contains unsupported syntax: %s", relativePath)
+		}
+
+		field := segment
+		index := -1
+		if openIdx := strings.Index(segment, "["); openIdx != -1 && strings.HasSuffix(segment, "]") {
+			field = segment[:openIdx]
+			indexValue, err := strconv.Atoi(segment[openIdx+1 : len(segment)-1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid array index in relative path: %s", segment)
+			}
+			index = indexValue
+		}
+
+		currentMap, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, nil
+		}
+
+		next, ok := currentMap[field]
+		if !ok {
+			return nil, nil
+		}
+
+		if index == -1 {
+			current = next
+			continue
+		}
+
+		array, ok := next.([]interface{})
+		if !ok || index < 0 || index >= len(array) {
+			return nil, nil
+		}
+		current = array[index]
+	}
+
+	return current, nil
 }
 
 // createEmbeddingProvider creates a new embedding provider based on the config
@@ -644,36 +740,51 @@ func cleanupWhitespace(content string) string {
 	return content
 }
 
-// extractToolDescription extracts description text from a tool definition
-func extractToolDescription(tool map[string]interface{}) string {
-	// Try common fields for tool description
-	fields := []string{"description", "desc", "summary", "info"}
-
-	for _, field := range fields {
-		if desc, ok := tool[field].(string); ok && desc != "" {
-			return desc
-		}
-	}
-
-	// If no description field, try to use name + function description
+func extractToolNameAndDescription(tool map[string]interface{}) (string, string) {
 	name, _ := tool["name"].(string)
 
-	// Check for function/parameters structure (OpenAI format)
-	if function, ok := tool["function"].(map[string]interface{}); ok {
-		if desc, ok := function["description"].(string); ok && desc != "" {
-			if name != "" {
-				return fmt.Sprintf("%s: %s", name, desc)
-			}
-			return desc
+	fields := []string{"description", "desc", "summary", "info"}
+	description := ""
+	for _, field := range fields {
+		if desc, ok := tool[field].(string); ok && desc != "" {
+			description = desc
+			break
 		}
 	}
 
-	// Fallback to just name if available
-	if name != "" {
-		return name
+	// Support OpenAI-style wrappers such as {"type":"function","function":{...}}
+	if function, ok := tool["function"].(map[string]interface{}); ok {
+		if name == "" {
+			if nestedName, ok := function["name"].(string); ok && nestedName != "" {
+				name = nestedName
+			}
+		}
+		if description == "" {
+			for _, field := range fields {
+				if desc, ok := function[field].(string); ok && desc != "" {
+					description = desc
+					break
+				}
+			}
+		}
 	}
 
-	return ""
+	return name, description
+}
+
+func buildToolEmbeddingText(name, description string) string {
+	if name != "" && description != "" {
+		return fmt.Sprintf("%s: %s", name, description)
+	}
+	if description != "" {
+		return description
+	}
+	return name
+}
+
+// extractToolDescription extracts the text used to represent a tool for embedding generation.
+func extractToolDescription(tool map[string]interface{}) string {
+	return buildToolEmbeddingText(extractToolNameAndDescription(tool))
 }
 
 // cosineSimilarity calculates cosine similarity between two embeddings
@@ -734,8 +845,13 @@ func (p *SemanticToolFilteringPolicy) filterTools(toolsWithScores []ToolWithScor
 
 // updateToolsInRequestBody updates the tools array in the request body
 func updateToolsInRequestBody(requestBody *map[string]interface{}, toolsPath string, tools []map[string]interface{}) error {
+	spec, err := parseToolsJSONPath(toolsPath)
+	if err != nil {
+		return err
+	}
+
 	// Remove leading "$." if present
-	path := strings.TrimPrefix(toolsPath, "$.")
+	path := strings.TrimPrefix(spec.arrayPath, "$.")
 	parts := strings.Split(path, ".")
 
 	if len(parts) == 0 {
