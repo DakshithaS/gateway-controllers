@@ -48,7 +48,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: api-key-auth
-  gomodule: github.com/wso2/gateway-controllers/policies/api-key-auth@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/api-key-auth@v1
 ```
 
 ## Reference Scenarios

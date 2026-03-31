@@ -58,7 +58,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: pii-masking-regex
-  gomodule: github.com/wso2/gateway-controllers/policies/pii-masking-regex@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/pii-masking-regex@v1
 ```
 
 ## Reference Scenarios

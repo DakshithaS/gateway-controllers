@@ -90,7 +90,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: prompt-template
-  gomodule: github.com/wso2/gateway-controllers/policies/prompt-template@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/prompt-template@v1
 ```
 
 ## Reference Scenarios

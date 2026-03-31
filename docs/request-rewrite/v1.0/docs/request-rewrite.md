@@ -109,7 +109,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: request-rewrite
-  gomodule: github.com/wso2/gateway-controllers/policies/request-rewrite@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/request-rewrite@v1
 ```
 
 ## Reference Scenarios

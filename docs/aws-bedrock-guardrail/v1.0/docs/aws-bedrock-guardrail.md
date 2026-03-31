@@ -104,7 +104,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: aws-bedrock-guardrail
-  gomodule: github.com/wso2/gateway-controllers/policies/aws-bedrock-guardrail@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/aws-bedrock-guardrail@v1
 ```
 
 ## Reference Scenarios

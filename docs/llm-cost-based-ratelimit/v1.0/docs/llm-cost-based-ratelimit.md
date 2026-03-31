@@ -120,9 +120,9 @@ Inside the `gateway/build.yaml`, ensure both policy modules are added under `pol
 
 ```yaml
 - name: llm-cost
-  gomodule: github.com/wso2/gateway-controllers/policies/llm-cost@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/llm-cost@v1
 - name: llm-cost-based-ratelimit
-  gomodule: github.com/wso2/gateway-controllers/policies/llm-cost-based-ratelimit@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/llm-cost-based-ratelimit@v1
 ```
 
 ## Reference Scenarios

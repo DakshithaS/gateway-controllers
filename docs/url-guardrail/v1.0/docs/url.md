@@ -72,7 +72,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: url-guardrail
-  gomodule: github.com/wso2/gateway-controllers/policies/url-guardrail@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/url-guardrail@v1
 ```
 
 ## Reference Scenarios

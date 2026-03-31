@@ -49,7 +49,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: respond
-  gomodule: github.com/wso2/gateway-controllers/policies/respond@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/respond@v1
 ```
 
 ## Reference Scenarios:

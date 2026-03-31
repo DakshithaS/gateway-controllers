@@ -55,7 +55,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: model-round-robin
-  gomodule: github.com/wso2/gateway-controllers/policies/model-round-robin@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/model-round-robin@v1
 ```
 
 ## Reference Scenarios

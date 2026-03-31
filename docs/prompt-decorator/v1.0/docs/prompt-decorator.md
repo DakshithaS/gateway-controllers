@@ -55,7 +55,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: prompt-decorator
-  gomodule: github.com/wso2/gateway-controllers/policies/prompt-decorator@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/prompt-decorator@v1
 ```
 
 ## Reference Scenarios

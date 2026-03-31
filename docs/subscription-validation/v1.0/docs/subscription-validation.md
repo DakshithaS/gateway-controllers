@@ -70,7 +70,7 @@ Inside `gateway/build.yaml`, ensure the policy module is added under `policies`:
 
 ```yaml
 - name: subscription-validation
-  gomodule: github.com/wso2/gateway-controllers/policies/subscription-validation@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/subscription-validation@v1
 ```
 
 ## Reference Scenarios

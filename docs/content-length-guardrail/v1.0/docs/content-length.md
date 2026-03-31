@@ -74,7 +74,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: content-length-guardrail
-  gomodule: github.com/wso2/gateway-controllers/policies/content-length-guardrail@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/content-length-guardrail@v1
 ```
 
 ## Reference Scenarios

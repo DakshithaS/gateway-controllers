@@ -126,7 +126,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: mcp-auth
-  gomodule: github.com/wso2/gateway-controllers/policies/mcp-auth@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/mcp-auth@v1
 ```
 
 ## Reference Scenarios

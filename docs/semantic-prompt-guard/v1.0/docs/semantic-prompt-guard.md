@@ -81,7 +81,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: semantic-prompt-guard
-  gomodule: github.com/wso2/gateway-controllers/policies/semantic-prompt-guard@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/semantic-prompt-guard@v1
 ```
 
 ## Reference Scenarios

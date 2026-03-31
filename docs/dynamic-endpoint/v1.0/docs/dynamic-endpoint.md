@@ -32,7 +32,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: dynamic-endpoint
-  gomodule: github.com/wso2/gateway-controllers/policies/dynamic-endpoint@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/dynamic-endpoint@v1
 ```
 
 ## Reference Scenarios

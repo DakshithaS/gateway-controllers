@@ -40,7 +40,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: json-xml-mediator
-  gomodule: github.com/wso2/gateway-controllers/policies/json-xml-mediator@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/json-xml-mediator@v1
 ```
 
 ## Reference Scenarios

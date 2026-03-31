@@ -60,7 +60,7 @@ Add the following entry to the `policies` section in `/gateway/build.yaml`:
 
 ```yaml
 - name: semantic-tool-filtering
-  gomodule: github.com/wso2/gateway-controllers/policies/semantic-tool-filtering@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/semantic-tool-filtering@v1
 ```
 
 ## Reference Scenarios

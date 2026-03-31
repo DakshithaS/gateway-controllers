@@ -75,7 +75,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: mcp-acl-list
-  gomodule: github.com/wso2/gateway-controllers/policies/mcp-acl-list@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/mcp-acl-list@v1
 ```
 
 ## Reference Scenarios

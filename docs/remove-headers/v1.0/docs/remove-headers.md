@@ -47,7 +47,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: remove-headers
-  gomodule: github.com/wso2/gateway-controllers/policies/remove-headers@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/remove-headers@v1
 ```
 
 ## Reference Scenarios:

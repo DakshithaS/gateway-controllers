@@ -74,7 +74,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: sentence-count-guardrail
-  gomodule: github.com/wso2/gateway-controllers/policies/sentence-count-guardrail@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/sentence-count-guardrail@v1
 ```
 
 ## Reference Scenarios

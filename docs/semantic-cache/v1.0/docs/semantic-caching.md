@@ -100,7 +100,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: semantic-cache
-  gomodule: github.com/wso2/gateway-controllers/policies/semantic-cache@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/semantic-cache@v1
 ```
 
 ## Reference Scenarios

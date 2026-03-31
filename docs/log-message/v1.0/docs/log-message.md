@@ -50,7 +50,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: log-message
-  gomodule: github.com/wso2/gateway-controllers/policies/log-message@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/log-message@v1
 ```
 
 ## Reference Scenarios

@@ -80,7 +80,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: basic-ratelimit
-  gomodule: github.com/wso2/gateway-controllers/policies/basic-ratelimit@v0
+  gomodule: github.com/wso2/gateway-controllers/policies/basic-ratelimit@v1
 ```
 
 ## Reference Scenarios
