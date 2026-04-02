@@ -123,7 +123,6 @@ func GetPolicy(
 	return ins, nil
 }
 
-
 func (p *JwtAuthPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
@@ -1456,11 +1455,12 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 
 	slog.Debug("JWT Auth Policy: All validations passed, authentication successful")
 
-	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, claims, userClaimMappings, userIdClaim)
+	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, claims, userClaimMappings, userIdClaim, headerName)
 }
 
 // handleAuthSuccessHeaders handles successful JWT authentication in the header phase.
-func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, claims jwt.MapClaims, claimMappings map[string]string, userIdClaim string) policy.RequestHeaderAction {
+func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, claims jwt.MapClaims, claimMappings map[string]string,
+	userIdClaim string, headerName string) policy.RequestHeaderAction {
 	sub, _ := claims["sub"].(string)
 	iss, _ := claims["iss"].(string)
 
@@ -1487,6 +1487,8 @@ func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, c
 
 	modifications := policy.UpstreamRequestHeaderModifications{
 		HeadersToSet: make(map[string]string),
+		// Drop the original auth header to prevent it from being sent upstream
+		HeadersToRemove: []string{http.CanonicalHeaderKey(headerName)},
 	}
 
 	for claimName, headerName := range claimMappings {
