@@ -32,14 +32,20 @@ DOCS_DIR = Path(__file__).parent.parent / "docs"
 OUTPUT = DOCS_DIR / "README.md"
 
 
-def latest_version(versions):
-    def key(v):
-        return [int(x) for x in v.lstrip("v").split(".")]
-    return sorted(versions, key=key)[-1]
+def latest_version(policy, versions):
+    valid = [v for v in versions if re.match(r"^v\d+\.\d+$", v)]
+    invalid = set(versions) - set(valid)
+    for v in invalid:
+        print(f"warning: {policy}: skipping unrecognised version directory '{v}'", file=sys.stderr)
+    if not valid:
+        raise ValueError(f"{policy}: no valid vX.Y version directories found in {versions}")
+    return sorted(valid, key=lambda v: [int(x) for x in v.lstrip("v").split(".")])[-1]
 
 
 def first_sentence(text):
     flat = re.sub(r"\s+", " ", text.strip())
+    if not flat:
+        return ""
     m = re.search(r"^(.+?[.!?])\s", flat)
     return m.group(1) if m else flat.split(".")[0].strip() + "."
 
@@ -54,13 +60,17 @@ def build_catalog():
         if not versions:
             continue
 
-        ver = latest_version(versions)
+        ver = latest_version(entry.name, versions)
         meta_path = entry / ver / "metadata.json"
         if not meta_path.exists():
             continue
 
-        with open(meta_path) as f:
-            meta = json.load(f)
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"warning: skipping {meta_path}: malformed JSON: {e}", file=sys.stderr)
+            continue
 
         docs_subdir = entry / ver / "docs"
         doc_files = sorted(docs_subdir.glob("*.md")) if docs_subdir.exists() else []
