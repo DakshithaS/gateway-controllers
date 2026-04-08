@@ -1,0 +1,14 @@
+name: Validate Policy Catalog
+
+on:
+  pull_request:
+
+jobs:
+  validate:
+    name: Validate docs/README.md is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate policy catalog
+        run: make validate-catalog
