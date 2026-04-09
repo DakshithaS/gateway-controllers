@@ -70,7 +70,6 @@ func GetPolicy(
 	}, nil
 }
 
-
 // Mode returns the processing mode for this policy.
 // ResponseBodyMode is Stream so that OnResponseBodyChunk is called for each chunk,
 // delegating to the advanced-ratelimit instance which reads x-llm-cost from
@@ -584,13 +583,24 @@ func transformToRatelimitParams(params map[string]interface{}) map[string]interf
 		},
 	}
 
+	consumerBased, _ := params["consumerBased"].(bool)
+	var keyExtraction []interface{}
+	if consumerBased {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id"},
+		}
+	} else {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+		}
+	}
+
 	// Build the quota
 	quota := map[string]interface{}{
-		"name":   "llm_cost_quota",
-		"limits": limits,
-		"keyExtraction": []interface{}{
-			map[string]interface{}{"type": "routename"},
-		},
+		"name":          "llm_cost_quota",
+		"limits":        limits,
+		"keyExtraction": keyExtraction,
 	}
 
 	quota["costExtraction"] = map[string]interface{}{
