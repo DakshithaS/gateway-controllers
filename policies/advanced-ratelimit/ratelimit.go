@@ -101,6 +101,7 @@ type RateLimitPolicy struct {
 	apiVersion     string         // From metadata, API version
 	attachedTo     policy.Level   // From metadata, whether policy is attached at API or route level
 	baseCacheKey   string         // Base cache key for tracking limiters in memory backend
+	instanceID     string         // Unique per-instance suffix for SharedContext.Metadata keys
 	statusCode     int
 	responseBody   string
 	responseFormat string
@@ -389,6 +390,24 @@ func GetPolicy(
 		"algorithm", algorithm,
 		"quotaCount", len(quotas))
 
+	// Compute a short deterministic instance ID from the quota names and key extraction
+	// types. This namespaces all SharedContext.Metadata keys so that multiple
+	// advanced-ratelimit instances in the same request chain do not overwrite each other.
+	var idBuf strings.Builder
+	for i, q := range quotas {
+		idBuf.WriteString(q.Name)
+		idBuf.WriteString(":")
+		for _, ke := range q.KeyExtraction {
+			idBuf.WriteString(ke.Type)
+			idBuf.WriteString(ke.Key)
+		}
+		if i < len(quotas)-1 {
+			idBuf.WriteString("|")
+		}
+	}
+	idHash := sha256.Sum256([]byte(idBuf.String()))
+	instanceID := hex.EncodeToString(idHash[:])[:8]
+
 	// Return configured policy instance
 	return &RateLimitPolicy{
 		quotas:         quotas,
@@ -398,6 +417,7 @@ func GetPolicy(
 		apiVersion:     apiVersion,
 		attachedTo:     metadata.AttachedTo,
 		baseCacheKey:   baseCacheKey,
+		instanceID:     instanceID,
 		statusCode:     statusCode,
 		responseBody:   responseBody,
 		responseFormat: responseFormat,
@@ -410,6 +430,11 @@ func GetPolicy(
 	}, nil
 }
 
+// metaKey returns an instance-specific metadata key to avoid collisions when
+// multiple advanced-ratelimit instances are present in the same request chain.
+func (p *RateLimitPolicy) metaKey(base string) string {
+	return base + ":" + p.instanceID
+}
 
 func (p *RateLimitPolicy) Mode() policy.ProcessingMode {
 	requestBodyMode := policy.BodyModeSkip
@@ -958,7 +983,6 @@ func (p *RateLimitPolicy) requiresRequestBody() bool {
 	return false
 }
 
-
 // requiresAnyResponseBodyMode returns true if any quota has a response-phase cost
 // source that is not response_header. This is the single gating check used by
 // Mode() to request BodyModeStream and by OnResponseBody to guard the buffered
@@ -1301,9 +1325,9 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 		}
 	}
 
-	reqCtx.Metadata[rateLimitResultKey] = quotaResults
-	reqCtx.Metadata[rateLimitKeysKey] = quotaKeys
-	reqCtx.Metadata[rateLimitHeaderHandledKey] = handledQuotas
+	reqCtx.Metadata[p.metaKey(rateLimitResultKey)] = quotaResults
+	reqCtx.Metadata[p.metaKey(rateLimitKeysKey)] = quotaKeys
+	reqCtx.Metadata[p.metaKey(rateLimitHeaderHandledKey)] = handledQuotas
 
 	return policy.UpstreamRequestHeaderModifications{}
 }
@@ -1413,7 +1437,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 		// Retrieve results stored by OnRequestHeaders so header-only quota results
 		// (consumed in OnRequestHeaders) can be carried forward.
 		storedResultsMap := make(map[string]quotaResult)
-		if prev, ok := reqCtx.Metadata[rateLimitResultKey].([]quotaResult); ok {
+		if prev, ok := reqCtx.Metadata[p.metaKey(rateLimitResultKey)].([]quotaResult); ok {
 			for _, r := range prev {
 				storedResultsMap[r.QuotaName] = r
 			}
@@ -1424,7 +1448,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 		// header phase unconditionally, so if OnRequestBody also runs (because another
 		// quota needs the body), they must not be charged again.
 		handledInHeaderPhase := make(map[string]bool)
-		if prev, ok := reqCtx.Metadata[rateLimitHeaderHandledKey].(map[string]bool); ok {
+		if prev, ok := reqCtx.Metadata[p.metaKey(rateLimitHeaderHandledKey)].(map[string]bool); ok {
 			handledInHeaderPhase = prev
 		}
 
@@ -1620,8 +1644,8 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 		}
 
 		// Store results and keys in metadata for response phase
-		reqCtx.Metadata[rateLimitResultKey] = quotaResults
-		reqCtx.Metadata[rateLimitKeysKey] = quotaKeys
+		reqCtx.Metadata[p.metaKey(rateLimitResultKey)] = quotaResults
+		reqCtx.Metadata[p.metaKey(rateLimitKeysKey)] = quotaKeys
 
 		return policy.UpstreamRequestModifications{}
 	} else {
@@ -1639,7 +1663,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 		"quotaCount", len(p.quotas))
 
 	// Retrieve stored keys for cost extraction
-	quotaKeysRaw, hasKeys := respCtx.Metadata[rateLimitKeysKey]
+	quotaKeysRaw, hasKeys := respCtx.Metadata[p.metaKey(rateLimitKeysKey)]
 	quotaKeys := make(map[string]string)
 	if hasKeys {
 		if keys, ok := quotaKeysRaw.(map[string]string); ok {
@@ -1654,7 +1678,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 	isStreaming := isStreamingResponse(respCtx.ResponseHeaders)
 
 	// Retrieve stored results from request phase
-	resultsRaw, hasResults := respCtx.Metadata[rateLimitResultKey]
+	resultsRaw, hasResults := respCtx.Metadata[p.metaKey(rateLimitResultKey)]
 	var storedResults []quotaResult
 	if hasResults {
 		if results, ok := resultsRaw.([]quotaResult); ok {
@@ -1683,7 +1707,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 		// Skip quotas that require the response body — those are handled exclusively
 		// in OnResponseBody to avoid double consumption.
 		if q.CostExtractionEnabled && q.CostExtractor != nil &&
-			 q.CostExtractor.HasResponsePhaseSources() && q.CostExtractor.HasResponseHeaderOnlyCostSources() {
+			q.CostExtractor.HasResponsePhaseSources() && q.CostExtractor.HasResponseHeaderOnlyCostSources() {
 			slog.Debug("Processing response-header-phase cost extraction",
 				"quota", quotaName)
 
@@ -1818,7 +1842,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 
 	// Store updated results so OnResponseBody can carry forward response_header
 	// quota results and avoid re-consuming them.
-	respCtx.Metadata[rateLimitResultKey] = allQuotaResults
+	respCtx.Metadata[p.metaKey(rateLimitResultKey)] = allQuotaResults
 
 	// For buffered responses with body-phase sources, defer header emission to
 	// OnResponseBody which has the full body and can report accurate post-consumption
@@ -1866,7 +1890,7 @@ func (p *RateLimitPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Re
 			"quotaCount", len(p.quotas))
 
 		// Retrieve stored keys for cost extraction
-		quotaKeysRaw, hasKeys := respCtx.Metadata[rateLimitKeysKey]
+		quotaKeysRaw, hasKeys := respCtx.Metadata[p.metaKey(rateLimitKeysKey)]
 		quotaKeys := make(map[string]string)
 		if hasKeys {
 			if keys, ok := quotaKeysRaw.(map[string]string); ok {
@@ -1875,7 +1899,7 @@ func (p *RateLimitPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Re
 		}
 
 		// Retrieve stored results from request phase
-		resultsRaw, hasResults := respCtx.Metadata[rateLimitResultKey]
+		resultsRaw, hasResults := respCtx.Metadata[p.metaKey(rateLimitResultKey)]
 		var storedResults []quotaResult
 		if hasResults {
 			if results, ok := resultsRaw.([]quotaResult); ok {
@@ -2145,14 +2169,14 @@ func (p *RateLimitPolicy) extractIPAddress(headers *policy.Headers) string {
 // creating and storing it if this is the first chunk of the request.
 // Each quota gets its own streamQuotaState entry keyed by quota name.
 func (p *RateLimitPolicy) getOrInitStreamState(metadata map[string]interface{}) map[string]*streamQuotaState {
-	if existing, ok := metadata[rateLimitStreamStateKey].(map[string]*streamQuotaState); ok {
+	if existing, ok := metadata[p.metaKey(rateLimitStreamStateKey)].(map[string]*streamQuotaState); ok {
 		return existing
 	}
 	state := make(map[string]*streamQuotaState, len(p.quotas))
 	for i := range p.quotas {
 		state[quotaNameFor(&p.quotas[i], i)] = &streamQuotaState{}
 	}
-	metadata[rateLimitStreamStateKey] = state
+	metadata[p.metaKey(rateLimitStreamStateKey)] = state
 	return state
 }
 
@@ -2195,7 +2219,7 @@ func (p *RateLimitPolicy) OnResponseBodyChunk(
 		state[quotaName] = qs
 	}
 	// Persist updated state so the next chunk call sees the accumulated bytes for each quota.
-	respCtx.Metadata[rateLimitStreamStateKey] = state
+	respCtx.Metadata[p.metaKey(rateLimitStreamStateKey)] = state
 
 	// EOS: all chunks have arrived. Finalize JSON extraction (SSE values are
 	// already up-to-date from per-chunk parsing) and consume tokens.
@@ -2234,7 +2258,7 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 ) {
 	// quotaKeys were written to metadata during the request phase (OnRequestHeaders /
 	// OnRequestBody) and carry the rate-limit key for each quota into the response phase.
-	quotaKeys, _ := respCtx.Metadata[rateLimitKeysKey].(map[string]string)
+	quotaKeys, _ := respCtx.Metadata[p.metaKey(rateLimitKeysKey)].(map[string]string)
 
 	for i := range p.quotas {
 		q := &p.quotas[i]
