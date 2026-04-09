@@ -588,7 +588,7 @@ func transformToRatelimitParams(params map[string]interface{}) map[string]interf
 	if consumerBased {
 		keyExtraction = []interface{}{
 			map[string]interface{}{"type": "routename"},
-			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id"},
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
 		}
 	} else {
 		keyExtraction = []interface{}{

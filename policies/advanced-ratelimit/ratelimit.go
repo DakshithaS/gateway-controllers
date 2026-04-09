@@ -71,6 +71,7 @@ type KeyComponent struct {
 	Type       string // "header", "metadata", "ip", "apiname", "apiversion", "routename", "cel"
 	Key        string // header name or metadata key (required for header/metadata)
 	Expression string // CEL expression (required for cel type)
+	Fallback   string // value to use when the key is missing (optional; defaults to a "_missing_*_" placeholder)
 }
 
 // LimitConfig holds parsed rate limit configuration
@@ -857,6 +858,15 @@ func parseKeyExtraction(raw interface{}) ([]KeyComponent, error) {
 			}
 		}
 
+		// Parse optional fallback value
+		if fallbackRaw, ok := compMap["fallback"]; ok {
+			if fallbackStr, ok := fallbackRaw.(string); ok {
+				comp.Fallback = fallbackStr
+			} else {
+				return nil, fmt.Errorf("keyExtraction[%d].fallback must be a string", i)
+			}
+		}
+
 		// Validate: CEL type requires expression
 		if compType == "cel" && comp.Expression == "" {
 			return nil, fmt.Errorf("keyExtraction[%d]: type 'cel' requires 'expression' field", i)
@@ -1382,6 +1392,9 @@ func (p *RateLimitPolicy) extractKeyComponentFromHeaderCtx(reqCtx *policy.Reques
 			if strVal, ok := val.(string); ok && strVal != "" {
 				return strVal
 			}
+		}
+		if comp.Fallback != "" {
+			return comp.Fallback
 		}
 		placeholder := fmt.Sprintf("_missing_metadata_%s_", comp.Key)
 		slog.Warn("Metadata key not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)
@@ -2094,6 +2107,9 @@ func (p *RateLimitPolicy) extractKeyComponent(reqCtx *policy.RequestContext, com
 			if strVal, ok := val.(string); ok && strVal != "" {
 				return strVal
 			}
+		}
+		if comp.Fallback != "" {
+			return comp.Fallback
 		}
 		placeholder := fmt.Sprintf("_missing_metadata_%s_", comp.Key)
 		slog.Warn("Metadata key not found for rate limit key, using placeholder", "key", comp.Key, "type", comp.Type, "placeholder", placeholder)

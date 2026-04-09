@@ -612,4 +612,7 @@ func TestTransformToRatelimitParams_ConsumerBased_True(t *testing.T) {
 	if second["key"] != "x-wso2-application-id" {
 		t.Errorf("Expected second entry key 'x-wso2-application-id', got %v", second["key"])
 	}
+	if second["fallback"] != "default" {
+		t.Errorf("Expected second entry fallback 'default', got %v", second["fallback"])
+	}
 }
