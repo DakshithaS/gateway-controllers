@@ -92,7 +92,7 @@ func (p *ModelRoundRobinPolicy) Mode() policy.ProcessingMode {
 		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeProcess,
-		ResponseBodyMode:   policy.BodyModeBuffer,
+		ResponseBodyMode:   policy.BodyModeSkip,
 	}
 }
 

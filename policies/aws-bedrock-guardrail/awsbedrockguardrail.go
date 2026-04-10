@@ -170,14 +170,13 @@ func GetPolicy(
 	return p, nil
 }
 
-
 // Mode returns the processing mode for the AWS Bedrock guardrail policy.
 func (p *AWSBedrockGuardrailPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeSkip,
-		ResponseBodyMode:   policy.BodyModeStream,
+		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }
 

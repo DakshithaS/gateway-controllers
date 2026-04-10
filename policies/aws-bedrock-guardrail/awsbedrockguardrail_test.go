@@ -13,6 +13,20 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
+func TestAWSBedrockGuardrailPolicy_Mode(t *testing.T) {
+	p := &AWSBedrockGuardrailPolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeBuffer,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 type mockBedrockClient struct {
 	output    *bedrockruntime.ApplyGuardrailOutput
 	err       error

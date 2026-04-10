@@ -105,7 +105,6 @@ func GetPolicy(
 	return ins, nil
 }
 
-
 // parseAuthority extracts host and port from an authority string (e.g., "example.com:8080")
 func parseAuthority(authority string) (host string, port int) {
 	if authority == "" {
@@ -337,7 +336,7 @@ func ensureRequestMetadata(reqCtx *policy.RequestContext) {
 
 func (p *McpAuthPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeSkip,
 		ResponseBodyMode:   policy.BodyModeSkip,

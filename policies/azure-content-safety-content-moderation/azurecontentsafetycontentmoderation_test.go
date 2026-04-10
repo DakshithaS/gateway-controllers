@@ -11,6 +11,20 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
+func TestAzureContentSafetyContentModerationPolicy_Mode(t *testing.T) {
+	p := &AzureContentSafetyContentModerationPolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeBuffer,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 func TestValidateAzureConfigParams(t *testing.T) {
 	tests := []struct {
 		name           string

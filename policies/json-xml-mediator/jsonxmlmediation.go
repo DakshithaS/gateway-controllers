@@ -69,12 +69,11 @@ func GetPolicy(
 	}, nil
 }
 
-
 func (p *JSONXMLMediationPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
-		ResponseHeaderMode: policy.HeaderModeProcess,
+		ResponseHeaderMode: policy.HeaderModeSkip,
 		ResponseBodyMode:   policy.BodyModeBuffer,
 	}
 }

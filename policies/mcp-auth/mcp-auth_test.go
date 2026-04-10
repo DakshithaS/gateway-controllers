@@ -36,6 +36,20 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
+func TestMcpAuthPolicy_Mode(t *testing.T) {
+	p := &McpAuthPolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeSkip,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 func TestGetPolicy(t *testing.T) {
 	p, err := GetPolicy(policy.PolicyMetadata{}, nil)
 	if err != nil {
