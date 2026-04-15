@@ -78,10 +78,9 @@ func GetPolicy(
 	return newPolicy(params)
 }
 
-
 func (p *WordCountGuardrailPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestHeaderMode:  policy.HeaderModeSkip,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeSkip,
 		ResponseBodyMode:   policy.BodyModeStream,

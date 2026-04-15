@@ -86,7 +86,6 @@ func GetPolicy(
 	return instance, instanceErr
 }
 
-
 // Mode declares the SDK processing requirements:
 //   - RequestBodyMode=Buffer: buffer the request so ctx.RequestBody is available
 //     in OnResponseBody (needed for Anthropic speed parameter).
@@ -95,8 +94,10 @@ func GetPolicy(
 //     at end-of-stream, which covers the buffered path too (single chunk, EOS=true).
 func (p *LLMCostPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestBodyMode:  policy.BodyModeBuffer,
-		ResponseBodyMode: policy.BodyModeStream,
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeStream,
 	}
 }
 

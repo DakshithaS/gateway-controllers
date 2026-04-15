@@ -30,6 +30,20 @@ import (
 
 const floatTolerance = 1e-12
 
+func TestLLMCostPolicy_Mode(t *testing.T) {
+	p := &LLMCostPolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeStream,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 // testPricingMap is loaded once from the pinned testdata/model_prices.json fixture.
 var testPricingMap map[string]ModelPricing
 

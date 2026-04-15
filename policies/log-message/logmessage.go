@@ -55,11 +55,10 @@ func GetPolicy(
 	return ins, nil
 }
 
-
 func (p *LogMessagePolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
-		RequestBodyMode:    policy.BodyModeBuffer,
+		RequestBodyMode:    policy.BodyModeStream,
 		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeStream,
 	}

@@ -32,6 +32,20 @@ import (
 
 var slogMessagePattern = regexp.MustCompile(`msg="((?:\\.|[^"])*)"`)
 
+func TestLogMessagePolicy_Mode(t *testing.T) {
+	p := &LogMessagePolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeProcess,
+		RequestBodyMode:    policy.BodyModeStream,
+		ResponseHeaderMode: policy.HeaderModeProcess,
+		ResponseBodyMode:   policy.BodyModeStream,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 func createTestHeaders(headers map[string]string) *policy.Headers {
 	headerMap := make(map[string][]string)
 	for key, value := range headers {

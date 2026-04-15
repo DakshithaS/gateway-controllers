@@ -9,6 +9,20 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
+func TestWordCountGuardrailPolicy_Mode(t *testing.T) {
+	p := &WordCountGuardrailPolicy{}
+	got := p.Mode()
+	want := policy.ProcessingMode{
+		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestBodyMode:    policy.BodyModeBuffer,
+		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseBodyMode:   policy.BodyModeStream,
+	}
+	if got != want {
+		t.Fatalf("unexpected mode: got %+v, want %+v", got, want)
+	}
+}
+
 func mustMessageMap(t *testing.T, body []byte) map[string]interface{} {
 	t.Helper()
 
@@ -780,17 +794,17 @@ func TestNeedsMoreResponseData_NormalMode_GatesUntilMin(t *testing.T) {
 	// Note: "[EMAIL_0001]" arrives as 6 separate fragments in the real stream;
 	// we consolidate them here to keep the test readable.
 	fragments := []string{
-		"You",         // 1
-		" provided",   // 2
-		" a",          // 3
-		" dummy",      // 4
-		" email",      // 5
-		" address",    // 6
-		" as",         // 7
-		" [EMAIL",     // 8  ← "[EMAIL" is one whitespace-delimited token
-		"_0001]",      // 8  (still 8; no space, extends "[EMAIL_0001]")
-		" and",        // 9
-		" a",          // 10
+		"You",       // 1
+		" provided", // 2
+		" a",        // 3
+		" dummy",    // 4
+		" email",    // 5
+		" address",  // 6
+		" as",       // 7
+		" [EMAIL",   // 8  ← "[EMAIL" is one whitespace-delimited token
+		"_0001]",    // 8  (still 8; no space, extends "[EMAIL_0001]")
+		" and",      // 9
+		" a",        // 10
 	}
 
 	var events []string
@@ -935,23 +949,23 @@ func TestNeedsMoreResponseData_UserSSEStream(t *testing.T) {
 		expectedWords int
 	}
 	steps := []step{
-		{sseInitEvent(), 0},       // role:assistant, content:"" → 0 words
-		{sseEvent("You"), 1},      // 1
+		{sseInitEvent(), 0},        // role:assistant, content:"" → 0 words
+		{sseEvent("You"), 1},       // 1
 		{sseEvent(" provided"), 2}, // 2
-		{sseEvent(" a"), 3},       // 3
-		{sseEvent(" dummy"), 4},   // 4
-		{sseEvent(" email"), 5},   // 5
-		{sseEvent(" address"), 6}, // 6
-		{sseEvent(" as"), 7},      // 7
-		{sseEvent(" ["), 8},       // 8  ("[" is a whitespace-separated token)
-		{sseEvent("EMAIL"), 8},    // still 8 (no space, extends "[EMAIL")
-		{sseEvent("_"), 8},        // still 8
-		{sseEvent("000"), 8},      // still 8
-		{sseEvent("1"), 8},        // still 8
-		{sseEvent("]"), 8},        // still 8 ("[EMAIL_0001]" = one token)
-		{sseEvent(" and"), 9},     // 9
-		{sseEvent(" a"), 10},      // 10 ← gate must open here
-		{sseFinishEvent(), 10},    // finish_reason:stop, delta:{} → no new words
+		{sseEvent(" a"), 3},        // 3
+		{sseEvent(" dummy"), 4},    // 4
+		{sseEvent(" email"), 5},    // 5
+		{sseEvent(" address"), 6},  // 6
+		{sseEvent(" as"), 7},       // 7
+		{sseEvent(" ["), 8},        // 8  ("[" is a whitespace-separated token)
+		{sseEvent("EMAIL"), 8},     // still 8 (no space, extends "[EMAIL")
+		{sseEvent("_"), 8},         // still 8
+		{sseEvent("000"), 8},       // still 8
+		{sseEvent("1"), 8},         // still 8
+		{sseEvent("]"), 8},         // still 8 ("[EMAIL_0001]" = one token)
+		{sseEvent(" and"), 9},      // 9
+		{sseEvent(" a"), 10},       // 10 ← gate must open here
+		{sseFinishEvent(), 10},     // finish_reason:stop, delta:{} → no new words
 	}
 
 	var acc strings.Builder
