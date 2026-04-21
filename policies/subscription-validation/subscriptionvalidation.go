@@ -15,11 +15,15 @@ import (
 )
 
 const (
-	defaultSubscriptionKeyHeader = "Subscription-Key"
-	defaultSubscriptionKeyCookie = ""
-	applicationIDMetadataKey     = "x-wso2-application-id"
-	forbiddenStatusCode          = 403
-	forbiddenMessage             = "Subscription required for this API"
+	defaultSubscriptionKeyHeader     = "Subscription-Key"
+	defaultSubscriptionKeyCookie     = ""
+	applicationIDMetadataKey         = "x-wso2-application-id"
+	forbiddenStatusCode              = 403
+	forbiddenMessage                 = "Subscription required for this API"
+	billingCustomerIDMetadataKey     = "x-wso2-billing-customer-id"
+	billingSubscriptionIDMetadataKey = "x-wso2-billing-subscription-id"
+	subscriptionStatusMetadataKey    = "x-wso2-subscription-status"
+	subscriptionPlanNameMetadataKey  = "x-wso2-subscription-plan-name"
 
 	// Eviction TTL: entries not seen in this duration are removed to prevent unbounded growth.
 	rateLimitEvictionTTL     = 2 * time.Hour
@@ -95,7 +99,6 @@ func GetPolicy(
 	}
 	return p, nil
 }
-
 
 // mergeConfig merges raw parameters from the policy configuration into a base config.
 func mergeConfig(base PolicyConfig, params map[string]interface{}) PolicyConfig {
@@ -222,19 +225,21 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if len(headerValues) > 0 {
 			token := strings.TrimSpace(headerValues[0])
 			if token != "" {
-				result := p.validateByToken(apiID, token)
-				if result == nil {
+				block, subscription := p.validateByToken(apiID, token)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{
 						HeadersToRemove: []string{normalizeHeaderName(p.cfg.SubscriptionKeyHeader)},
 					}
 				}
-				return result.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 		if p.cfg.SubscriptionKeyCookie != "" {
 			if token := getCookieValue(reqCtx.Headers, p.cfg.SubscriptionKeyCookie); token != "" {
-				result := p.validateByToken(apiID, token)
-				if result == nil {
+				block, subscription := p.validateByToken(apiID, token)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					cookieValues := reqCtx.Headers.Get("Cookie")
 					updated, removed := stripCookie(cookieValues, p.cfg.SubscriptionKeyCookie)
 					if removed {
@@ -249,7 +254,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 					}
 					return policy.UpstreamRequestHeaderModifications{}
 				}
-				return result.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 	}
@@ -259,11 +264,12 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if rawAppID, ok := metadata[applicationIDMetadataKey]; ok {
 			appID := strings.TrimSpace(fmt.Sprint(rawAppID))
 			if appID != "" {
-				result := p.validateByApplication(apiID, appID)
-				if result == nil {
+				block, subscription := p.validateByApplication(apiID, appID)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{}
 				}
-				return result.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 	}
@@ -296,24 +302,24 @@ func (p *SubscriptionValidationPolicy) forbiddenResponse(detail string) policy.R
 	}
 }
 
-// validateByToken checks the token against the store, then enforces rate limits.
-// The store uses hashed tokens; we hash the incoming token before lookup.
-func (p *SubscriptionValidationPolicy) validateByToken(apiID, token string) policy.RequestAction {
+// validateByToken looks up the subscription entry for the given token and enforces
+// plan-based rate limits. Returns (nil, entry) on success, (action, nil) on failure.
+func (p *SubscriptionValidationPolicy) validateByToken(apiID, token string) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
 	hashedToken := policyenginev1.HashSubscriptionToken(token)
 	active, entry := p.store.IsActiveByToken(apiID, hashedToken)
 	if !active {
 		slog.Info("subscriptionValidation: no active subscription found (token)",
 			"apiId", apiID)
-		return p.forbiddenResponse("")
+		return p.forbiddenResponse(""), nil
 	}
 
 	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
 		if blocked := p.checkRateLimit(apiID, token, entry); blocked != nil {
-			return blocked
+			return blocked, nil
 		}
 	}
 
-	return nil
+	return nil, entry
 }
 
 // checkRateLimit enforces the plan's throttle limit for the given token.
@@ -356,24 +362,48 @@ func (p *SubscriptionValidationPolicy) checkRateLimit(apiID, token string, entry
 	return nil
 }
 
-// validateByApplication checks the application ID against the store, then enforces rate limits.
-// This is the legacy path; it now recovers quota/throttle metadata from the store.
-func (p *SubscriptionValidationPolicy) validateByApplication(apiID, appID string) policy.RequestAction {
+// validateByApplication looks up the subscription entry for the given application ID and
+// enforces plan-based rate limits. Returns (nil, entry) on success, (action, nil) on failure.
+func (p *SubscriptionValidationPolicy) validateByApplication(apiID, appID string) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
 	active, entry := p.store.IsActiveByApplication(apiID, appID)
 	if !active {
 		slog.Info("subscriptionValidation: no active subscription found (appId fallback)",
 			"apiId", apiID,
 			"applicationId", appID)
-		return p.forbiddenResponse("")
+		return p.forbiddenResponse(""), nil
 	}
 
 	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
 		if blocked := p.checkRateLimit(apiID, appID, entry); blocked != nil {
-			return blocked
+			return blocked, nil
 		}
 	}
 
-	return nil
+	return nil, entry
+}
+
+// writeSubscriptionMetadata copies billing and plan fields from entry into
+// sc.Metadata so downstream policies can access them without an additional store
+// lookup. It is a no-op when sc or entry is nil.
+func writeSubscriptionMetadata(sc *policy.SharedContext, entry *policyenginev1.SubscriptionEntry) {
+	if sc == nil || entry == nil {
+		return
+	}
+	if sc.Metadata == nil {
+		sc.Metadata = make(map[string]interface{})
+	}
+	if entry.BillingCustomerID != nil {
+		sc.Metadata[billingCustomerIDMetadataKey] = *entry.BillingCustomerID
+	}
+	if entry.BillingSubscriptionID != nil {
+		sc.Metadata[billingSubscriptionIDMetadataKey] = *entry.BillingSubscriptionID
+	}
+	if entry.Status != "" {
+		sc.Metadata[subscriptionStatusMetadataKey] = entry.Status
+	}
+	if entry.PlanName != "" {
+		sc.Metadata[subscriptionPlanNameMetadataKey] = entry.PlanName
+	}
 }
 
 // getCookieValue parses the Cookie header and returns the value for the given cookie name.

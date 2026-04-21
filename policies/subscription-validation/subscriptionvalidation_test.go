@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
-	"testing"
 	"strings"
+	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 	policyenginev1 "github.com/wso2/api-platform/sdk/core/policyengine"
@@ -309,7 +309,7 @@ func TestOnRequestHeaders_HeaderTakesPrecedenceOverCookie(t *testing.T) {
 		},
 		Headers: policy.NewHeaders(map[string][]string{
 			defaultSubscriptionKeyHeader: {"tok-1"},
-			"Cookie":                    {"sub-key=wrong-token"},
+			"Cookie":                     {"sub-key=wrong-token"},
 		}),
 	}
 	// Header value should be used; tok-1 is valid
@@ -519,4 +519,130 @@ func TestOnRequestHeaders_NilStore(t *testing.T) {
 	p := newPolicy(defaultCfg(), nil)
 	ctx := headerCtxWithToken("api-1", "tok-1", "")
 	assertImmediate(t, p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{})), 403, "forbidden")
+}
+
+// --- billing metadata in SharedContext.Metadata -----------------------------
+
+func billingStr(s string) *string { return &s }
+
+func TestOnRequestHeaders_WritesBillingMetadataOnTokenSuccess(t *testing.T) {
+	custID := "cust-123"
+	subID := "sub-456"
+	store := newStore([]policyenginev1.SubscriptionData{
+		{
+			APIId:                 "api-1",
+			SubscriptionToken:     policyenginev1.HashSubscriptionToken("tok-1"),
+			Status:                "ACTIVE",
+			PlanName:              "Pro",
+			BillingCustomerId:     billingStr(custID),
+			BillingSubscriptionId: billingStr(subID),
+		},
+	})
+	p := newPolicy(defaultCfg(), store)
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	action := p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{}))
+	assertSuccess(t, action)
+
+	md := ctx.SharedContext.Metadata
+	if got, ok := md[billingCustomerIDMetadataKey].(string); !ok || got != custID {
+		t.Fatalf("expected %s=%q in metadata, got %v", billingCustomerIDMetadataKey, custID, md[billingCustomerIDMetadataKey])
+	}
+	if got, ok := md[billingSubscriptionIDMetadataKey].(string); !ok || got != subID {
+		t.Fatalf("expected %s=%q in metadata, got %v", billingSubscriptionIDMetadataKey, subID, md[billingSubscriptionIDMetadataKey])
+	}
+	if got, ok := md[subscriptionStatusMetadataKey].(string); !ok || got != "ACTIVE" {
+		t.Fatalf("expected %s=%q in metadata, got %v", subscriptionStatusMetadataKey, "ACTIVE", md[subscriptionStatusMetadataKey])
+	}
+	if got, ok := md[subscriptionPlanNameMetadataKey].(string); !ok || got != "Pro" {
+		t.Fatalf("expected %s=%q in metadata, got %v", subscriptionPlanNameMetadataKey, "Pro", md[subscriptionPlanNameMetadataKey])
+	}
+}
+
+func TestOnRequestHeaders_WritesBillingMetadataOnCookieSuccess(t *testing.T) {
+	custID := "cust-cookie"
+	store := newStore([]policyenginev1.SubscriptionData{
+		{
+			APIId:             "api-1",
+			SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"),
+			Status:            "ACTIVE",
+			PlanName:          "Basic",
+			BillingCustomerId: billingStr(custID),
+		},
+	})
+	cfg := defaultCfg()
+	cfg.SubscriptionKeyCookie = "sub-key"
+	p := newPolicy(cfg, store)
+	ctx := headerCtxWithCookie("api-1", "tok-1", "sub-key")
+	action := p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{}))
+	assertSuccess(t, action)
+
+	md := ctx.SharedContext.Metadata
+	if got, ok := md[billingCustomerIDMetadataKey].(string); !ok || got != custID {
+		t.Fatalf("expected %s=%q in metadata, got %v", billingCustomerIDMetadataKey, custID, md[billingCustomerIDMetadataKey])
+	}
+	if got, ok := md[subscriptionPlanNameMetadataKey].(string); !ok || got != "Basic" {
+		t.Fatalf("expected %s=%q in metadata, got %v", subscriptionPlanNameMetadataKey, "Basic", md[subscriptionPlanNameMetadataKey])
+	}
+}
+
+func TestOnRequestHeaders_WritesBillingMetadataOnAppIDSuccess(t *testing.T) {
+	subID := "sub-app"
+	store := newStore([]policyenginev1.SubscriptionData{
+		{
+			APIId:                 "api-1",
+			ApplicationId:         "app-1",
+			Status:                "ACTIVE",
+			BillingSubscriptionId: billingStr(subID),
+		},
+	})
+	p := newPolicy(defaultCfg(), store)
+	ctx := headerCtxWithAppID("api-1", "app-1")
+	action := p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{}))
+	assertSuccess(t, action)
+
+	md := ctx.SharedContext.Metadata
+	if got, ok := md[billingSubscriptionIDMetadataKey].(string); !ok || got != subID {
+		t.Fatalf("expected %s=%q in metadata, got %v", billingSubscriptionIDMetadataKey, subID, md[billingSubscriptionIDMetadataKey])
+	}
+}
+
+func TestOnRequestHeaders_NoBillingMetadataOnFailure(t *testing.T) {
+	store := newStore([]policyenginev1.SubscriptionData{
+		{APIId: "api-1", SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"), Status: "ACTIVE"},
+	})
+	p := newPolicy(defaultCfg(), store)
+	ctx := headerCtxWithToken("api-1", "wrong-token", "")
+	action := p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{}))
+	assertImmediate(t, action, 403, "forbidden")
+
+	md := ctx.SharedContext.Metadata
+	if _, ok := md[billingCustomerIDMetadataKey]; ok {
+		t.Fatalf("expected no billing metadata on failure, got %v", md[billingCustomerIDMetadataKey])
+	}
+}
+
+func TestOnRequestHeaders_PartialBillingMetadata(t *testing.T) {
+	// Only PlanName is set; nil billing IDs must not appear in metadata.
+	store := newStore([]policyenginev1.SubscriptionData{
+		{
+			APIId:             "api-1",
+			SubscriptionToken: policyenginev1.HashSubscriptionToken("tok-1"),
+			Status:            "ACTIVE",
+			PlanName:          "Free",
+		},
+	})
+	p := newPolicy(defaultCfg(), store)
+	ctx := headerCtxWithToken("api-1", "tok-1", "")
+	p.OnRequestHeaders(context.Background(), ctx, make(map[string]interface{}))
+
+	md := ctx.SharedContext.Metadata
+	if got, ok := md[subscriptionPlanNameMetadataKey].(string); !ok || got != "Free" {
+		t.Fatalf("expected plan name in metadata, got %v", md[subscriptionPlanNameMetadataKey])
+	}
+	if _, ok := md[billingCustomerIDMetadataKey]; ok {
+		t.Fatalf("expected billingCustomerID absent when nil, got %v", md[billingCustomerIDMetadataKey])
+	}
+	if _, ok := md[billingSubscriptionIDMetadataKey]; ok {
+		t.Fatalf("expected billingSubscriptionID absent when nil, got %v", md[billingSubscriptionIDMetadataKey])
+	}
 }
