@@ -225,21 +225,21 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if len(headerValues) > 0 {
 			token := strings.TrimSpace(headerValues[0])
 			if token != "" {
-				action, entry := p.validateByToken(apiID, token)
-				if action == nil {
-					writeSubscriptionMetadata(reqCtx.SharedContext, entry)
+				block, subscription := p.validateByToken(apiID, token)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{
 						HeadersToRemove: []string{normalizeHeaderName(p.cfg.SubscriptionKeyHeader)},
 					}
 				}
-				return action.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 		if p.cfg.SubscriptionKeyCookie != "" {
 			if token := getCookieValue(reqCtx.Headers, p.cfg.SubscriptionKeyCookie); token != "" {
-				action, entry := p.validateByToken(apiID, token)
-				if action == nil {
-					writeSubscriptionMetadata(reqCtx.SharedContext, entry)
+				block, subscription := p.validateByToken(apiID, token)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					cookieValues := reqCtx.Headers.Get("Cookie")
 					updated, removed := stripCookie(cookieValues, p.cfg.SubscriptionKeyCookie)
 					if removed {
@@ -254,7 +254,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 					}
 					return policy.UpstreamRequestHeaderModifications{}
 				}
-				return action.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 	}
@@ -264,12 +264,12 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if rawAppID, ok := metadata[applicationIDMetadataKey]; ok {
 			appID := strings.TrimSpace(fmt.Sprint(rawAppID))
 			if appID != "" {
-				action, entry := p.validateByApplication(apiID, appID)
-				if action == nil {
-					writeSubscriptionMetadata(reqCtx.SharedContext, entry)
+				block, subscription := p.validateByApplication(apiID, appID)
+				if block == nil {
+					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{}
 				}
-				return action.(policy.ImmediateResponse)
+				return block.(policy.ImmediateResponse)
 			}
 		}
 	}
