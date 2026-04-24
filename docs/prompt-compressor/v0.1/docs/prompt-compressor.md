@@ -258,3 +258,15 @@ Upstream request after the policy runs:
 Only the tagged region is compressed. The opening and closing compression tags are removed before the request is sent upstream.
 
 When compression is applied, the policy publishes summary metrics, including status flags, segment counts, and input/output token estimates as dynamic metadata.
+
+## Notes
+
+- **Semantic Preservation**: Aggressive compression may reduce semantic meaning. This can be mitigated through conservative defaults and configurability, such as specifying higher retention ratios or targeting specific regions.
+- **Compression Efficiency**: There is a considerable gap between the expected level of prompt size reduction and the actual reduction achieved by the policy, often resulting in a prompt that is longer than expected.
+- **Protected Content**: To maintain structural and factual integrity, the underlying compression engine automatically detects and protects specific types of semantic content. The following elements are not compressed:
+  - Code blocks
+  - JSON blocks and objects
+  - File paths and URLs
+  - Technical identifiers (e.g., `CamelCase`, `snake_case`, `UPPER_SNAKE_CASE`)
+  - Hashes and large numerical values
+  - Content enclosed in brackets, braces, or parentheses
