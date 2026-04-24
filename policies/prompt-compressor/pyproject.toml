@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "prompt-compressor"
+name = "prompt-compressor-v0"
 version = "0.1.0"
 description = "WSO2 AI Gateway prompt compression policy for the Python executor"
 readme = "README.md"
@@ -26,11 +26,11 @@ classifiers = [
 ]
 
 [tool.setuptools]
-packages = ["prompt_compressor"]
+packages = ["prompt_compressor_v0"]
 include-package-data = true
 
 [tool.setuptools.package-dir]
-prompt_compressor = "."
+prompt_compressor_v0 = "."
 
 [tool.setuptools.package-data]
-prompt_compressor = ["policy-definition.yaml"]
+prompt_compressor_v0 = ["policy-definition.yaml"]

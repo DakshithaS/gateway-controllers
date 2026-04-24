@@ -8,7 +8,7 @@ from typing import Any
 
 from compression_prompt import Compressor, CompressorConfig
 from compression_prompt.compressor import CompressionError, InputTooShortError, NegativeGainError
-from wso2_gateway_policy_sdk import (
+from apip_sdk_core import (
     BodyProcessingMode,
     ProcessingMode,
     RequestPolicy,
