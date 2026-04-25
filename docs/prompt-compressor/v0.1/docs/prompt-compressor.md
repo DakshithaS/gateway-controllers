@@ -13,7 +13,7 @@ Use this policy when prompts include long instructions, retrieved context, conve
 
 - Compresses selected prompt text in the request body before the upstream LLM call
 - Targets a single JSON string field with configurable `jsonPath`
-- Supports ordered compression rules based on estimated token count
+- Supports ordered compression rules based on estimated input token count
 - Supports `ratio` mode for retained-size compression and `token` mode for target-token compression
 - Supports selective compression via `<APIP-COMPRESS>`...`</APIP-COMPRESS>` tags to compress only marked prompt regions
 - Removes selective compression tags before forwarding the request upstream
