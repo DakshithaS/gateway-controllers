@@ -91,18 +91,32 @@ Every policy documentation MUST include a subsection under `Configuration` that 
 - `build.yaml` path: `/gateway/build.yaml`
 - Reference: https://github.com/wso2/api-platform/blob/main/gateway/build.yaml
 
-Use this format (replace `<policy-name>`):
+Use this format depending on the runtime (replace `<policy-name>`):
 
+For Go policies:
 ```yaml
 - name: <policy-name>
   gomodule: github.com/wso2/gateway-controllers/policies/<policy-name>@v0
 ```
 
-Example:
+For Python policies:
+```yaml
+- name: <policy-name>
+  pipPackage: github.com/wso2/gateway-controllers/policies/<policy-name>@v0
+```
+
+Example (Go):
 
 ```yaml
 - name: add-headers
   gomodule: github.com/wso2/gateway-controllers/policies/add-headers@v0
+```
+
+Example (Python):
+
+```yaml
+- name: prompt-compressor
+  pipPackage: github.com/wso2/gateway-controllers/policies/prompt-compressor@v0
 ```
 
 ## Workflow: Create New Documentation
