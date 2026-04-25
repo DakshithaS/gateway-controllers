@@ -91,22 +91,28 @@ jobs:
           DIR="${{ steps.meta.outputs.target_dir }}"
 
           [[ -d "$DIR" ]] || { echo "❌ Missing directory: $DIR"; exit 1; }
+          [[ -f "$DIR/policy-definition.yaml" ]] || { echo "❌ Missing policy-definition.yaml in $DIR"; exit 1; }
 
-          for f in go.mod policy-definition.yaml; do
-            [[ -f "$DIR/$f" ]] || { echo "❌ Missing $f in $DIR"; exit 1; }
-          done
+          if [[ -f "$DIR/go.mod" ]]; then
+            echo "RUNTIME=go" >> "$GITHUB_ENV"
+            EXPECTED="${{ steps.meta.outputs.module_path }}"
+            ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
-          EXPECTED="${{ steps.meta.outputs.module_path }}"
-          ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
-
-          [[ "$EXPECTED" == "$ACTUAL" ]] || {
-            echo "❌ go.mod module mismatch"
-            echo "Expected: $EXPECTED"
-            echo "Actual:   $ACTUAL"
+            [[ "$EXPECTED" == "$ACTUAL" ]] || {
+              echo "❌ go.mod module mismatch"
+              echo "Expected: $EXPECTED"
+              echo "Actual:   $ACTUAL"
+              exit 1
+            }
+            echo "✅ Go Policy structure valid"
+          elif [[ -f "$DIR/pyproject.toml" ]]; then
+            echo "RUNTIME=python" >> "$GITHUB_ENV"
+            [[ -f "$DIR/policy.py" ]] || { echo "❌ Missing policy.py in $DIR"; exit 1; }
+            echo "✅ Python Policy structure valid"
+          else
+            echo "❌ Current implementation requires either go.mod or pyproject.toml"
             exit 1
-          }
-
-          echo "✅ Policy structure valid"
+          fi
 
       # ------------------------------------------------------------
       # Validate version consistency
@@ -143,9 +149,20 @@ jobs:
       # Setup Go
       # ------------------------------------------------------------
       - name: Setup Go
+        if: env.RUNTIME == 'go'
         uses: actions/setup-go@v5
         with:
           go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
+          cache: false
+
+      # ------------------------------------------------------------
+      # Setup Python
+      # ------------------------------------------------------------
+      - name: Setup Python
+        if: env.RUNTIME == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
           cache: false
 
       # ------------------------------------------------------------
@@ -156,7 +173,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -v -race ./...
+          if [[ "${RUNTIME}" == "go" ]]; then
+            go test -v -race ./...
+          elif [[ "${RUNTIME}" == "python" ]]; then
+            if [[ -f "requirements.txt" ]]; then
+              pip install -r requirements.txt
+            fi
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -p 'test_*.py' -v
+          fi
 
       # ------------------------------------------------------------
       # Git hygiene
@@ -205,12 +229,18 @@ jobs:
 
           DIR="${{ steps.meta.outputs.target_dir }}"
 
+          if [[ "${RUNTIME}" == "python" ]]; then
+            PACKAGE_FIELD="-F pip_package=${{ steps.meta.outputs.module_path }}"
+          else
+            PACKAGE_FIELD="-F module_path=${{ steps.meta.outputs.module_path }}"
+          fi
+
           RESPONSE=$(curl -sSL -w "HTTPSTATUS:%{http_code}" \
             -X POST "$POLICY_HUB_URL/policies/register" \
             -H "Authorization: Bearer $POLICY_HUB_TOKEN" \
             -F "policy=${{ github.event.inputs.policy }}" \
             -F "version=${{ github.event.inputs.version }}" \
-            -F "module_path=${{ steps.meta.outputs.module_path }}" \
+            $PACKAGE_FIELD \
             -F "repository=${{ github.repository }}" \
             -F "policy_definition=@$DIR/policy-definition.yaml;type=application/yaml")
 
@@ -305,28 +335,28 @@ jobs:
               HUB="✅ Policy Hub registration successful"
               ACTION=""
               TAG_STATUS="✅ Git tag created"
-              MODULE_STATUS="✅ Go module verified"
+              MODULE_STATUS="✅ Package verified"
               ;;
             skipped)
               TITLE="🎉 Policy Released Successfully"
               HUB="ℹ️ Policy Hub registration skipped (not configured)"
               ACTION=""
               TAG_STATUS="✅ Git tag created"
-              MODULE_STATUS="✅ Go module verified"
+              MODULE_STATUS="✅ Package verified"
               ;;
             failed)
               TITLE="❌ Policy Release Failed"
               HUB="❌ Policy Hub registration failed"
               ACTION="**Fix:** Review Policy Hub error details above and retry."
               TAG_STATUS="❌ Git tag not created"
-              MODULE_STATUS="❌ Go module not verified"
+              MODULE_STATUS="❌ Package not verified"
               ;;
             *)
               TITLE="❌ Policy Release Failed"
               HUB="❌ Unknown Policy Hub state"
               ACTION="**Fix:** Inspect workflow logs."
               TAG_STATUS="❌ Git tag not created"
-              MODULE_STATUS="❌ Go module not verified"
+              MODULE_STATUS="❌ Package not verified"
               ;;
           esac
 
@@ -338,7 +368,7 @@ jobs:
           | Policy | \`${{ github.event.inputs.policy }}\` |
           | Version | \`${{ github.event.inputs.version }}\` |
           | Tag | \`${{ steps.meta.outputs.tag_name }}\` |
-          | Go Module | \`${{ steps.meta.outputs.module_path }}\` |
+          | Package Path | \`${{ steps.meta.outputs.module_path }}\` |
 
           ## Status
           ✅ Tests passed  
