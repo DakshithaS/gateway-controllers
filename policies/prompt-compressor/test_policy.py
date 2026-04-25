@@ -229,7 +229,7 @@ class PromptCompressorPolicyTest(unittest.TestCase):
 
         action = instance.on_request_body(
             execution_ctx=None,
-            ctx=request_context({"messages": [{"role": "user", "content": original_text}]}),
+            req_ctx=request_context({"messages": [{"role": "user", "content": original_text}]}),
             params={},
         )
 
@@ -261,7 +261,7 @@ class PromptCompressorPolicyTest(unittest.TestCase):
 
         action = instance.on_request_body(
             execution_ctx=None,
-            ctx=request_context({"prompt": {"text": original_text}}),
+            req_ctx=request_context({"prompt": {"text": original_text}}),
             params={},
         )
 
@@ -279,7 +279,7 @@ class PromptCompressorPolicyTest(unittest.TestCase):
 
         action = instance.on_request_body(
             execution_ctx=None,
-            ctx=request_context({"messages": [{"content": original_text}]}),
+            req_ctx=request_context({"messages": [{"content": original_text}]}),
             params={},
         )
 
@@ -353,7 +353,7 @@ class PromptCompressorPolicyTest(unittest.TestCase):
 
         action = instance.on_request_body(
             execution_ctx=None,
-            ctx=request_context({"messages": [{"content": "abcdefgh" * 10}]}),
+            req_ctx=request_context({"messages": [{"content": "abcdefgh" * 10}]}),
             params={},
         )
 
@@ -368,7 +368,9 @@ class PromptCompressorPolicyTest(unittest.TestCase):
 
         action = instance.on_request_body(
             execution_ctx=None,
-            ctx=request_context({"messages": [{"content": "raise-input-too-short" + ("x" * 40)}]}),
+            req_ctx=request_context(
+                {"messages": [{"content": "raise-input-too-short" + ("x" * 40)}]}
+            ),
             params={},
         )
 

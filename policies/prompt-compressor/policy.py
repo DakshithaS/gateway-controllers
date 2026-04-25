@@ -61,14 +61,14 @@ class PromptCompressorPolicy(RequestPolicy):
     def mode(self) -> ProcessingMode:
         return ProcessingMode(request_body_mode=BodyProcessingMode.BUFFER)
 
-    def on_request_body(self, execution_ctx, ctx, params):
-        if ctx.body is None or not ctx.body.present or ctx.body.content is None:
+    def on_request_body(self, execution_ctx, req_ctx, params):
+        if req_ctx.body is None or not req_ctx.body.present or req_ctx.body.content is None:
             return None
 
         if not self._params.rules:
             return None
 
-        body_bytes = ctx.body.content or b""
+        body_bytes = req_ctx.body.content or b""
         if not body_bytes:
             return None
 
