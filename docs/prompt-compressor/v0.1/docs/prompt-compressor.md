@@ -262,7 +262,7 @@ When compression is applied, the policy publishes summary metrics, including sta
 ## Notes
 
 - **Semantic Preservation**: Aggressive compression may reduce semantic meaning. This can be mitigated through conservative defaults and configurability, such as specifying higher retention ratios or targeting specific regions.
-- **Compression Efficiency**: There is a considerable gap between the expected level of prompt size reduction and the actual reduction achieved by the policy, often resulting in a prompt that is longer than expected.
+- **Compression Efficiency**: The achieved reduction is typically less aggressive than the configured target ratio, because protected content (see below) is preserved verbatim. Configure rules with the expected gap in mind and validate against representative prompts.
 - **Protected Content**: To maintain structural and factual integrity, the underlying compression engine automatically detects and protects specific types of semantic content. The following elements are not compressed:
   - Code blocks
   - JSON blocks and objects
