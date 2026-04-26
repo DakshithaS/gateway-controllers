@@ -26,11 +26,4 @@ classifiers = [
 ]
 
 [tool.setuptools]
-packages = ["prompt_compressor_v0"]
-include-package-data = true
-
-[tool.setuptools.package-dir]
-prompt_compressor_v0 = "."
-
-[tool.setuptools.package-data]
-prompt_compressor_v0 = ["policy-definition.yaml"]
+py-modules = ["policy"]
