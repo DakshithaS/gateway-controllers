@@ -29,7 +29,7 @@ The Prompt Compressor policy uses API definition parameters and does not require
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `jsonPath` | string | No | `$.messages[0].content` | JSONPath expression that resolves to the prompt string to compress. The selected value must be a string. |
-| `rules` | array of `CompressionRule` objects | Yes | - | Compression rules evaluated in ascending `upperTokenLimit` order. The first matching rule is applied. |
+| `rules` | array of `CompressionRule` objects | Yes | - | Compression rules evaluated in ascending `upperTokenLimit` order. The `rules` array must contain at least one fallback rule with `upperTokenLimit: -1`. The first matching rule is applied. |
 
 #### CompressionRule Configuration
 
@@ -41,7 +41,7 @@ The Prompt Compressor policy uses API definition parameters and does not require
 
 #### Rule Evaluation
 
-Rules are normalized and sorted before evaluation. Explicit token limits are evaluated from smallest to largest, and the `upperTokenLimit: -1` fallback is evaluated after all explicit limits.
+Rules are normalized and sorted before evaluation. Explicit token limits are evaluated from smallest to largest, and the `upperTokenLimit: -1` fallback is evaluated after all explicit limits. The rules array must contain at least one fallback rule.
 
 The policy estimates tokens as approximately one token per four characters in the selected text. In `ratio` mode, `value` is used as the target retained-size ratio. In `token` mode, `value` is converted to a retained-size ratio by dividing the target token estimate by the selected text's estimated token count. If the resolved ratio is greater than or equal to `1.0`, compression is skipped and the request is forwarded unchanged.
 
