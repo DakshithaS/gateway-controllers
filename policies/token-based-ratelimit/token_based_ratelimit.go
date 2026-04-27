@@ -58,7 +58,6 @@ func GetPolicy(
 	}, nil
 }
 
-
 func (p *TokenBasedRateLimitPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
@@ -271,6 +270,19 @@ func transformToRatelimitParams(params map[string]interface{}, template map[stri
 
 	var quotas []interface{}
 
+	consumerBased, _ := params["consumerBased"].(bool)
+	var keyExtraction []interface{}
+	if consumerBased {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
+		}
+	} else {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+		}
+	}
+
 	addQuota := func(name string, limitsKey string, templateKey string) {
 		limits := params[limitsKey]
 		if limits == nil {
@@ -289,11 +301,9 @@ func transformToRatelimitParams(params map[string]interface{}, template map[stri
 		}
 
 		quota := map[string]interface{}{
-			"name":   name,
-			"limits": convertedLimits,
-			"keyExtraction": []interface{}{
-				map[string]interface{}{"type": "routename"},
-			},
+			"name":          name,
+			"limits":        convertedLimits,
+			"keyExtraction": keyExtraction,
 		}
 
 		if template != nil {

@@ -51,7 +51,6 @@ func GetPolicy(
 	return ins, nil
 }
 
-
 func (p *APIKeyPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
@@ -230,6 +229,10 @@ func (p *APIKeyPolicy) authenticate(
 			"ApplicationID":   resolvedKey.ApplicationID,
 		},
 	}
+	if shared.Metadata == nil {
+		shared.Metadata = make(map[string]interface{})
+	}
+	shared.Metadata[applicationIDMetadataKey] = resolvedKey.ApplicationID
 	return nil
 }
 

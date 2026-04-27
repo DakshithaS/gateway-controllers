@@ -533,3 +533,86 @@ func TestLLMCostRateLimitPolicy_OnResponseBodyChunk_FallsBackToDelegatesMap(t *t
 		t.Errorf("expected delegate OnResponseBodyChunk called 1 time via fallback, got %d", stub.chunkCalls)
 	}
 }
+
+// TestTransformToRatelimitParams_ConsumerBased_False verifies that when consumerBased is
+// false (or absent), keyExtraction only contains the routename key.
+func TestTransformToRatelimitParams_ConsumerBased_False(t *testing.T) {
+	params := map[string]interface{}{
+		"budgetLimits": []interface{}{
+			map[string]interface{}{
+				"amount":   float64(10),
+				"duration": "1h",
+			},
+		},
+		"consumerBased": false,
+	}
+
+	result := transformToRatelimitParams(params)
+
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok || len(quotas) != 1 {
+		t.Fatal("Expected 1 quota")
+	}
+
+	quota := quotas[0].(map[string]interface{})
+	keyExtraction, ok := quota["keyExtraction"].([]interface{})
+	if !ok {
+		t.Fatal("Expected keyExtraction to be []interface{}")
+	}
+
+	if len(keyExtraction) != 1 {
+		t.Fatalf("Expected 1 key extraction entry for backend limit, got %d", len(keyExtraction))
+	}
+
+	entry := keyExtraction[0].(map[string]interface{})
+	if entry["type"] != "routename" {
+		t.Errorf("Expected type 'routename', got %v", entry["type"])
+	}
+}
+
+// TestTransformToRatelimitParams_ConsumerBased_True verifies that when consumerBased is
+// true, keyExtraction contains both routename and the application ID metadata key.
+func TestTransformToRatelimitParams_ConsumerBased_True(t *testing.T) {
+	params := map[string]interface{}{
+		"budgetLimits": []interface{}{
+			map[string]interface{}{
+				"amount":   float64(10),
+				"duration": "1h",
+			},
+		},
+		"consumerBased": true,
+	}
+
+	result := transformToRatelimitParams(params)
+
+	quotas, ok := result["quotas"].([]interface{})
+	if !ok || len(quotas) != 1 {
+		t.Fatal("Expected 1 quota")
+	}
+
+	quota := quotas[0].(map[string]interface{})
+	keyExtraction, ok := quota["keyExtraction"].([]interface{})
+	if !ok {
+		t.Fatal("Expected keyExtraction to be []interface{}")
+	}
+
+	if len(keyExtraction) != 2 {
+		t.Fatalf("Expected 2 key extraction entries for consumer limit, got %d", len(keyExtraction))
+	}
+
+	first := keyExtraction[0].(map[string]interface{})
+	if first["type"] != "routename" {
+		t.Errorf("Expected first entry type 'routename', got %v", first["type"])
+	}
+
+	second := keyExtraction[1].(map[string]interface{})
+	if second["type"] != "metadata" {
+		t.Errorf("Expected second entry type 'metadata', got %v", second["type"])
+	}
+	if second["key"] != "x-wso2-application-id" {
+		t.Errorf("Expected second entry key 'x-wso2-application-id', got %v", second["key"])
+	}
+	if second["fallback"] != "default" {
+		t.Errorf("Expected second entry fallback 'default', got %v", second["fallback"])
+	}
+}

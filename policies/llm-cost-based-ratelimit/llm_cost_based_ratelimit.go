@@ -35,9 +35,11 @@ import (
 )
 
 const (
-	MetadataKeyProviderName    = "provider_name"
-	MetadataKeyDelegate        = "llm_cost_delegate"
-	MetadataKeyCostScaleFactor = "llm_cost_scale_factor"
+	MetadataKeyProviderName            = "provider_name"
+	MetadataKeyDelegate                = "llm_cost_delegate"
+	metadataKeyDelegateConsumer        = "llm_cost_delegate_consumer"
+	MetadataKeyCostScaleFactor         = "llm_cost_scale_factor"
+	metadataKeyCostScaleFactorConsumer = "llm_cost_scale_factor_consumer"
 
 	// DefaultCostScaleFactor is the default scaling factor for dollar amounts.
 	// Converts dollars to nano-dollars to preserve precision in int64 counters.
@@ -45,6 +47,25 @@ const (
 	// Can be overridden via systemParameters.costScaleFactor
 	DefaultCostScaleFactor = 1_000_000_000
 )
+
+// delegateMetadataKey returns the metadata key for the delegate reference.
+// Backend and consumer instances use separate keys to prevent one overwriting the other
+// when both are in the same request chain.
+func delegateMetadataKey(params map[string]interface{}) string {
+	if consumerBased, _ := params["consumerBased"].(bool); consumerBased {
+		return metadataKeyDelegateConsumer
+	}
+	return MetadataKeyDelegate
+}
+
+// costScaleFactorMetadataKey returns the metadata key for the cost scale factor.
+// Backend and consumer instances use separate keys for the same reason as delegateMetadataKey.
+func costScaleFactorMetadataKey(params map[string]interface{}) string {
+	if consumerBased, _ := params["consumerBased"].(bool); consumerBased {
+		return metadataKeyCostScaleFactorConsumer
+	}
+	return MetadataKeyCostScaleFactor
+}
 
 // delegateEntry holds a delegate and its cache key for atomic storage
 type delegateEntry struct {
@@ -69,7 +90,6 @@ func GetPolicy(
 		metadata: metadata,
 	}, nil
 }
-
 
 // Mode returns the processing mode for this policy.
 // ResponseBodyMode is Stream so that OnResponseBodyChunk is called for each chunk,
@@ -125,11 +145,11 @@ func (p *LLMCostRateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *p
 	if reqCtx.SharedContext.Metadata == nil {
 		reqCtx.SharedContext.Metadata = make(map[string]interface{})
 	}
-	reqCtx.SharedContext.Metadata[MetadataKeyDelegate] = delegate
+	reqCtx.SharedContext.Metadata[delegateMetadataKey(params)] = delegate
 
 	// Store the cost scale factor for use in OnResponseHeaders
 	costScaleFactor := extractCostScaleFactor(params)
-	reqCtx.SharedContext.Metadata[MetadataKeyCostScaleFactor] = costScaleFactor
+	reqCtx.SharedContext.Metadata[costScaleFactorMetadataKey(params)] = costScaleFactor
 
 	slog.Debug("OnRequestHeaders: delegating to advanced-ratelimit",
 		"route", p.metadata.RouteName,
@@ -162,12 +182,12 @@ func (p *LLMCostRateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx 
 	// Retrieve the cost scale factor: prefer the value pinned during OnRequestHeaders,
 	// fall back to extracting it from params.
 	costScaleFactor := extractCostScaleFactor(params)
-	if scaleFactor, ok := respCtx.Metadata[MetadataKeyCostScaleFactor].(int); ok && scaleFactor > 0 {
+	if scaleFactor, ok := respCtx.Metadata[costScaleFactorMetadataKey(params)].(int); ok && scaleFactor > 0 {
 		costScaleFactor = scaleFactor
 	}
 
 	// First, try to use the delegate pinned during OnRequestHeaders (ensures consistency)
-	if delegate, ok := respCtx.Metadata[MetadataKeyDelegate].(policy.Policy); ok {
+	if delegate, ok := respCtx.Metadata[delegateMetadataKey(params)].(policy.Policy); ok {
 		slog.Debug("OnResponseHeaders: using pinned delegate from request phase",
 			"route", p.metadata.RouteName)
 		if rl, ok := delegate.(responseHeaderPolicer); ok {
@@ -220,7 +240,7 @@ func (p *LLMCostRateLimitPolicy) OnResponseBodyChunk(
 	}
 
 	// First, try the delegate pinned during OnRequestHeaders.
-	if delegate, ok := respCtx.Metadata[MetadataKeyDelegate].(policy.Policy); ok {
+	if delegate, ok := respCtx.Metadata[delegateMetadataKey(params)].(policy.Policy); ok {
 		if rl, ok := delegate.(responseChunkPolicer); ok {
 			return rl.OnResponseBodyChunk(ctx, respCtx, chunk, params)
 		}
@@ -271,12 +291,12 @@ func (p *LLMCostRateLimitPolicy) OnResponseBody(ctx context.Context, respCtx *po
 	}
 
 	costScaleFactor := extractCostScaleFactor(params)
-	if scaleFactor, ok := respCtx.SharedContext.Metadata[MetadataKeyCostScaleFactor].(int); ok && scaleFactor > 0 {
+	if scaleFactor, ok := respCtx.SharedContext.Metadata[costScaleFactorMetadataKey(params)].(int); ok && scaleFactor > 0 {
 		costScaleFactor = scaleFactor
 	}
 
 	// First, try to use the delegate pinned during OnRequestHeaders
-	if delegate, ok := respCtx.SharedContext.Metadata[MetadataKeyDelegate].(policy.Policy); ok {
+	if delegate, ok := respCtx.SharedContext.Metadata[delegateMetadataKey(params)].(policy.Policy); ok {
 		slog.Debug("OnResponseBody: using pinned delegate from request phase",
 			"route", p.metadata.RouteName)
 		if rl, ok := delegate.(responseBodyPolicer); ok {
@@ -584,13 +604,24 @@ func transformToRatelimitParams(params map[string]interface{}) map[string]interf
 		},
 	}
 
+	consumerBased, _ := params["consumerBased"].(bool)
+	var keyExtraction []interface{}
+	if consumerBased {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
+		}
+	} else {
+		keyExtraction = []interface{}{
+			map[string]interface{}{"type": "routename"},
+		}
+	}
+
 	// Build the quota
 	quota := map[string]interface{}{
-		"name":   "llm_cost_quota",
-		"limits": limits,
-		"keyExtraction": []interface{}{
-			map[string]interface{}{"type": "routename"},
-		},
+		"name":          "llm_cost_quota",
+		"limits":        limits,
+		"keyExtraction": keyExtraction,
 	}
 
 	quota["costExtraction"] = map[string]interface{}{

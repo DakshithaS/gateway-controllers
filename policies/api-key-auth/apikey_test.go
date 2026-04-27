@@ -291,6 +291,52 @@ func assertUnauthorizedJSON(t *testing.T, action policy.RequestHeaderAction) {
 	}
 }
 
+// TestAPIKeyPolicy_OnRequestHeaders_WritesApplicationIDToSharedContextMetadata verifies
+// that after a successful authentication, the application ID is written to
+// SharedContext.Metadata so that downstream rate limiting policies can read it.
+func TestAPIKeyPolicy_OnRequestHeaders_WritesApplicationIDToSharedContextMetadata(t *testing.T) {
+	resetAPIKeyStore(t)
+	seedExternalAPIKey(t, "api-1", "header-secret", `["GET /orders"]`)
+
+	p := &APIKeyPolicy{}
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
+		http.CanonicalHeaderKey("x-api-key"): {"header-secret"},
+	}, "api-1", "OrdersAPI", "v1", "/orders")
+
+	p.OnRequestHeaders(context.Background(), ctx, map[string]interface{}{
+		"key": "x-api-key",
+		"in":  "header",
+	})
+
+	got, ok := ctx.SharedContext.Metadata[applicationIDMetadataKey]
+	if !ok {
+		t.Fatalf("expected %q to be present in SharedContext.Metadata", applicationIDMetadataKey)
+	}
+	if got != "test-app-id" {
+		t.Errorf("expected SharedContext.Metadata[%q]=%q, got %v", applicationIDMetadataKey, "test-app-id", got)
+	}
+}
+
+// TestAPIKeyPolicy_OnRequestHeaders_DoesNotWriteMetadataOnFailure verifies that
+// SharedContext.Metadata is not populated with the application ID when auth fails.
+func TestAPIKeyPolicy_OnRequestHeaders_DoesNotWriteMetadataOnFailure(t *testing.T) {
+	resetAPIKeyStore(t)
+
+	p := &APIKeyPolicy{}
+	ctx := newRequestHeaderContext(t, "GET", "/orders", map[string][]string{
+		http.CanonicalHeaderKey("x-api-key"): {"wrong-secret"},
+	}, "api-1", "OrdersAPI", "v1", "/orders")
+
+	p.OnRequestHeaders(context.Background(), ctx, map[string]interface{}{
+		"key": "x-api-key",
+		"in":  "header",
+	})
+
+	if _, ok := ctx.SharedContext.Metadata[applicationIDMetadataKey]; ok {
+		t.Errorf("expected %q to be absent from SharedContext.Metadata on auth failure", applicationIDMetadataKey)
+	}
+}
+
 func TestAPIKeyPolicy_AuthContext_PreviousPreserved_OnSuccess(t *testing.T) {
 	resetAPIKeyStore(t)
 	seedExternalAPIKey(t, "api-1", "header-secret", `["GET /orders"]`)
@@ -358,16 +404,16 @@ func resetAPIKeyStore(t *testing.T) {
 func seedExternalAPIKey(t *testing.T, apiID, plainKey, operations string) {
 	t.Helper()
 	key := &apikeycommon.APIKey{
-		ID:          "id-" + sanitizeTestName(t.Name()),
-		Name:        "name-" + sanitizeTestName(t.Name()),
-		DisplayName: "test-key",
+		ID:              "id-" + sanitizeTestName(t.Name()),
+		Name:            "name-" + sanitizeTestName(t.Name()),
+		DisplayName:     "test-key",
 		ApplicationID:   "test-app-id",
 		ApplicationName: "test-app-name",
-		APIKey:      apikeycommon.ComputeAPIKeyHash(plainKey),
-		APIId:       apiID,
-		Operations:  operations,
-		Status:      apikeycommon.Active,
-		Source:      "external",
+		APIKey:          apikeycommon.ComputeAPIKeyHash(plainKey),
+		APIId:           apiID,
+		Operations:      operations,
+		Status:          apikeycommon.Active,
+		Source:          "external",
 	}
 	if err := apikeycommon.GetAPIkeyStoreInstance().StoreAPIKey(apiID, key); err != nil {
 		t.Fatalf("failed to store API key: %v", err)

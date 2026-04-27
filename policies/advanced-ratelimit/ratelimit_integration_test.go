@@ -749,93 +749,93 @@ func TestCostExtractorMethods(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                  string
-		sources               []CostSource
-		wantReqHeaderOnly     bool
-		wantRespHeaderOnly    bool
-		wantReqBodyPhase      bool
-		wantRequiresRespBody  bool
+		name                 string
+		sources              []CostSource
+		wantReqHeaderOnly    bool
+		wantRespHeaderOnly   bool
+		wantReqBodyPhase     bool
+		wantRequiresRespBody bool
 	}{
 		{
-			name:               "request_header only",
-			sources:            []CostSource{{Type: CostSourceRequestHeader, Key: "x"}},
-			wantReqHeaderOnly:  true,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   false,
+			name:                 "request_header only",
+			sources:              []CostSource{{Type: CostSourceRequestHeader, Key: "x"}},
+			wantReqHeaderOnly:    true,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "response_header only",
-			sources:            []CostSource{{Type: CostSourceResponseHeader, Key: "x"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: true,
-			wantReqBodyPhase:   false,
+			name:                 "response_header only",
+			sources:              []CostSource{{Type: CostSourceResponseHeader, Key: "x"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   true,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "request_metadata only",
-			sources:            []CostSource{{Type: CostSourceRequestMetadata, Key: "x"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   true,
+			name:                 "request_metadata only",
+			sources:              []CostSource{{Type: CostSourceRequestMetadata, Key: "x"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     true,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "response_metadata only",
-			sources:            []CostSource{{Type: CostSourceResponseMetadata, Key: "x"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   false,
+			name:                 "response_metadata only",
+			sources:              []CostSource{{Type: CostSourceResponseMetadata, Key: "x"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "request_body only",
-			sources:            []CostSource{{Type: CostSourceRequestBody, JSONPath: "$.x"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   true,
+			name:                 "request_body only",
+			sources:              []CostSource{{Type: CostSourceRequestBody, JSONPath: "$.x"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     true,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "response_body only",
-			sources:            []CostSource{{Type: CostSourceResponseBody, JSONPath: "$.x"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   false,
+			name:                 "response_body only",
+			sources:              []CostSource{{Type: CostSourceResponseBody, JSONPath: "$.x"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: true,
 		},
 		{
-			name:               "request_header + request_metadata disqualifies request header only",
-			sources:            []CostSource{{Type: CostSourceRequestHeader, Key: "x"}, {Type: CostSourceRequestMetadata, Key: "y"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   true,
+			name:                 "request_header + request_metadata disqualifies request header only",
+			sources:              []CostSource{{Type: CostSourceRequestHeader, Key: "x"}, {Type: CostSourceRequestMetadata, Key: "y"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     true,
 			wantRequiresRespBody: false,
 		},
 		{
-			name:               "response_header + response_body disqualifies response header only",
-			sources:            []CostSource{{Type: CostSourceResponseHeader, Key: "x"}, {Type: CostSourceResponseBody, JSONPath: "$.y"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   false,
+			name:                 "response_header + response_body disqualifies response header only",
+			sources:              []CostSource{{Type: CostSourceResponseHeader, Key: "x"}, {Type: CostSourceResponseBody, JSONPath: "$.y"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: true,
 		},
 		{
-			name:               "response_header + response_metadata disqualifies response header only",
-			sources:            []CostSource{{Type: CostSourceResponseHeader, Key: "x"}, {Type: CostSourceResponseMetadata, Key: "y"}},
-			wantReqHeaderOnly:  false,
-			wantRespHeaderOnly: false,
-			wantReqBodyPhase:   false,
+			name:                 "response_header + response_metadata disqualifies response header only",
+			sources:              []CostSource{{Type: CostSourceResponseHeader, Key: "x"}, {Type: CostSourceResponseMetadata, Key: "y"}},
+			wantReqHeaderOnly:    false,
+			wantRespHeaderOnly:   false,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: false,
 		},
 		{
 			// Response-phase sources are ignored when evaluating request-header-only,
 			// and request-phase sources are ignored when evaluating response-header-only.
-			name:               "request_header + response_header both qualify for their respective header-only paths",
-			sources:            []CostSource{{Type: CostSourceRequestHeader, Key: "x"}, {Type: CostSourceResponseHeader, Key: "y"}},
-			wantReqHeaderOnly:  true,
-			wantRespHeaderOnly: true,
-			wantReqBodyPhase:   false,
+			name:                 "request_header + response_header both qualify for their respective header-only paths",
+			sources:              []CostSource{{Type: CostSourceRequestHeader, Key: "x"}, {Type: CostSourceResponseHeader, Key: "y"}},
+			wantReqHeaderOnly:    true,
+			wantRespHeaderOnly:   true,
+			wantReqBodyPhase:     false,
 			wantRequiresRespBody: false,
 		},
 	}
@@ -919,6 +919,41 @@ func TestKeyExtractionBehavior(t *testing.T) {
 		q2 := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "intPlan"}}}
 		if got := p.extractQuotaKey(ctx, q2); got != "_missing_metadata_intPlan_" {
 			t.Fatalf("unexpected placeholder: %q", got)
+		}
+	})
+
+	t.Run("missing metadata uses Fallback when set", func(t *testing.T) {
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"}}}
+		if got := p.extractQuotaKey(ctx, q); got != "default" {
+			t.Fatalf("expected fallback %q, got %q", "default", got)
+		}
+	})
+
+	t.Run("empty string metadata uses Fallback when set", func(t *testing.T) {
+		ctxEmptyApp := newRequestCtx(nil, map[string]interface{}{"x-wso2-application-id": ""})
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"}}}
+		if got := p.extractQuotaKey(ctxEmptyApp, q); got != "default" {
+			t.Fatalf("expected fallback %q for empty string value, got %q", "default", got)
+		}
+	})
+
+	t.Run("present metadata value ignores Fallback", func(t *testing.T) {
+		ctxWithApp := newRequestCtx(nil, map[string]interface{}{"x-wso2-application-id": "app-123"})
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"}}}
+		if got := p.extractQuotaKey(ctxWithApp, q); got != "app-123" {
+			t.Fatalf("expected actual value %q, got %q", "app-123", got)
+		}
+	})
+
+	t.Run("multi-component consumer key with fallback", func(t *testing.T) {
+		ctxNoApp := newRequestCtx(nil, nil)
+		q := &QuotaRuntime{KeyExtraction: []KeyComponent{
+			{Type: "routename"},
+			{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"},
+		}}
+		p2 := &RateLimitPolicy{routeName: "my-route"}
+		if got := p2.extractQuotaKey(ctxNoApp, q); got != "my-route:default" {
+			t.Fatalf("expected %q, got %q", "my-route:default", got)
 		}
 	})
 
@@ -1031,6 +1066,132 @@ func TestKeyExtractionHeaderPhase(t *testing.T) {
 			t.Fatalf("expected empty string, got %q", got)
 		}
 	})
+
+	t.Run("missing metadata uses Fallback in header phase", func(t *testing.T) {
+		noAppCtx := newRequestHeaderCtx(nil, nil) // no x-wso2-application-id in metadata
+		got := p.extractKeyComponentFromHeaderCtx(noAppCtx, KeyComponent{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"})
+		if got != "default" {
+			t.Fatalf("expected fallback %q, got %q", "default", got)
+		}
+	})
+
+	t.Run("empty string metadata uses Fallback in header phase", func(t *testing.T) {
+		emptyAppCtx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": ""})
+		got := p.extractKeyComponentFromHeaderCtx(emptyAppCtx, KeyComponent{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"})
+		if got != "default" {
+			t.Fatalf("expected fallback %q for empty string, got %q", "default", got)
+		}
+	})
+
+	t.Run("present metadata uses actual value over Fallback in header phase", func(t *testing.T) {
+		withAppCtx := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "app-456"})
+		got := p.extractKeyComponentFromHeaderCtx(withAppCtx, KeyComponent{Type: "metadata", Key: "x-wso2-application-id", Fallback: "default"})
+		if got != "app-456" {
+			t.Fatalf("expected actual value %q, got %q", "app-456", got)
+		}
+	})
+}
+
+func TestParseKeyExtraction_FallbackField(t *testing.T) {
+	t.Run("fallback string is parsed", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
+		}
+		comps, err := parseKeyExtraction(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(comps) != 1 {
+			t.Fatalf("expected 1 component, got %d", len(comps))
+		}
+		if comps[0].Fallback != "default" {
+			t.Fatalf("expected Fallback %q, got %q", "default", comps[0].Fallback)
+		}
+	})
+
+	t.Run("no fallback field leaves Fallback empty", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id"},
+		}
+		comps, err := parseKeyExtraction(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if comps[0].Fallback != "" {
+			t.Fatalf("expected empty Fallback, got %q", comps[0].Fallback)
+		}
+	})
+
+	t.Run("non-string fallback returns error", func(t *testing.T) {
+		raw := []interface{}{
+			map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": 42},
+		}
+		_, err := parseKeyExtraction(raw)
+		if err == nil || !strings.Contains(err.Error(), "fallback must be a string") {
+			t.Fatalf("expected fallback type error, got %v", err)
+		}
+	})
+}
+
+// TestConsumerFallbackKey_UsesDefaultWhenAppIDMissing verifies that when a consumer-based
+// rate limit is configured with fallback "default" and a request arrives without an application
+// ID in metadata, the key used is "routename:default" — not the backend key "routename".
+// This means:
+//  1. Unauthenticated requests share a single "default" counter (not the backend counter).
+//  2. Once the "default" counter is exhausted, authenticated requests with a real app ID
+//     are still allowed (their counter is independent).
+func TestConsumerFallbackKey_UsesDefaultWhenAppIDMissing(t *testing.T) {
+	clearCaches()
+	defer clearCaches()
+
+	consumerParams := map[string]interface{}{
+		"backend":   "memory",
+		"algorithm": "fixed-window",
+		"quotas": []interface{}{
+			map[string]interface{}{
+				"name": "consumer-request-limit",
+				"limits": []interface{}{
+					map[string]interface{}{"limit": float64(2), "duration": "1h"},
+				},
+				"keyExtraction": []interface{}{
+					map[string]interface{}{"type": "routename"},
+					map[string]interface{}{"type": "metadata", "key": "x-wso2-application-id", "fallback": "default"},
+				},
+			},
+		},
+	}
+
+	pol, err := GetPolicy(policy.PolicyMetadata{RouteName: "route-main"}, consumerParams)
+	if err != nil {
+		t.Fatalf("GetPolicy failed: %v", err)
+	}
+	p := pol.(*RateLimitPolicy)
+
+	// Request 1 — no app ID — key: "route-main:default" — should be allowed (1/2)
+	req1 := newRequestHeaderCtx(nil, nil)
+	action1 := p.OnRequestHeaders(context.Background(), req1, consumerParams)
+	if _, ok := action1.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("request 1 (no app ID): expected allowed, got %T", action1)
+	}
+
+	// Request 2 — no app ID — key: "route-main:default" — should be allowed (2/2)
+	req2 := newRequestHeaderCtx(nil, nil)
+	action2 := p.OnRequestHeaders(context.Background(), req2, consumerParams)
+	if _, ok := action2.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("request 2 (no app ID): expected allowed, got %T", action2)
+	}
+
+	// Request 3 — no app ID — key: "route-main:default" — counter exhausted, should be blocked
+	req3 := newRequestHeaderCtx(nil, nil)
+	action3 := p.OnRequestHeaders(context.Background(), req3, consumerParams)
+	assertImmediateResponse(t, action3, 429)
+
+	// Request with a real app ID — key: "route-main:app-123" — separate counter, should be allowed
+	reqWithApp := newRequestHeaderCtx(nil, map[string]interface{}{"x-wso2-application-id": "app-123"})
+	actionWithApp := p.OnRequestHeaders(context.Background(), reqWithApp, consumerParams)
+	if _, ok := actionWithApp.(policy.UpstreamRequestHeaderModifications); !ok {
+		t.Fatalf("request with app ID: expected allowed (separate counter), got %T", actionWithApp)
+	}
 }
 
 func TestOnRequestBehavior(t *testing.T) {
@@ -2779,7 +2940,7 @@ func TestOnResponseBodyChunk_EmptyFirstChunkDeferrsSSEDetection(t *testing.T) {
 	respCtx := newResponseStreamCtx(nil, nil, meta, 200)
 
 	sendChunks(t, p, respCtx, [][]byte{
-		{},  // empty keep-alive — must not trigger JSON mode
+		{}, // empty keep-alive — must not trigger JSON mode
 		[]byte("data: {\"usage\":{\"total_tokens\":33}}\n"),
 		[]byte("data: [DONE]\n"),
 	})
@@ -3084,10 +3245,10 @@ func TestOnResponseBodyChunk_OpenAISSE_BufferedAndIndividualChunks(t *testing.T)
 	}, "\n")
 
 	sendChunks(t, p, respCtx, [][]byte{
-		[]byte(buffered),                                       // chunk 0: 4 events buffered together
-		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\" jumps\"}}]}\n"), // chunk 1: individual
+		[]byte(buffered), // chunk 0: 4 events buffered together
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\" jumps\"}}]}\n"),                          // chunk 1: individual
 		[]byte("data: {\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":5,\"total_tokens\":13}}\n"), // chunk 2: usage
-		[]byte("data: [DONE]\n"),                              // chunk 3: EOS
+		[]byte("data: [DONE]\n"), // chunk 3: EOS
 	})
 
 	if lim.consumeNCalls != 1 {
