@@ -1,0 +1,10 @@
+{
+  "name": "prompt-compressor",
+  "displayName": "Prompt Compressor",
+  "version": "0.1",
+  "provider": "WSO2",
+  "categories": [
+    "AI"
+  ],
+  "description": "Compresses selected prompt text in JSON request bodies before upstream LLM calls.\nSupports JSONPath targeting, ordered rule-based compression thresholds, and selective compression tags for compressing only specific prompt regions."
+}

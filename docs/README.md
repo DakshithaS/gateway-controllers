@@ -52,6 +52,7 @@ All available policies, sorted alphabetically.
 | [Model Round Robin](./model-round-robin/v1.0/docs/model-round-robin.md) | AI | Implements round-robin load balancing for AI models. |
 | [Model Weighted Round Robin](./model-weighted-round-robin/v1.0/docs/model-weighted-round-robin.md) | AI | Implements weighted round-robin load balancing for AI models. |
 | [PII Masking Regex](./pii-masking-regex/v1.0/docs/pii-masking-regex.md) | Guardrails, AI | Masks or redacts Personally Identifiable Information (PII) from request/response bodies using regex patterns. |
+| [Prompt Compressor](./prompt-compressor/v0.1/docs/prompt-compressor.md) | AI | Compresses selected prompt text in JSON request bodies before upstream LLM calls. |
 | [Prompt Decorator](./prompt-decorator/v1.0/docs/prompt-decorator.md) | AI | Dynamically modifies the prompt by applying custom decorations using a configured strategy. |
 | [Prompt Template](./prompt-template/v1.0/docs/prompt-template.md) | AI | Dynamically modifies the prompt by applying custom templates using a configured strategy. |
 | [Rate Limit - Advanced](./advanced-ratelimit/v1.0/docs/advanced-ratelimit.md) | Security, AI | Rate limiting policy supporting multiple algorithms (GCRA, Fixed Window), multi-dimensional quotas, weighted rate limiting, flexible key extraction, and both in-memory and Redis backends. |
