@@ -434,6 +434,9 @@ func GetPolicy(
 // metaKey returns an instance-specific metadata key to avoid collisions when
 // multiple advanced-ratelimit instances are present in the same request chain.
 func (p *RateLimitPolicy) metaKey(base string) string {
+	if p.instanceID == "" {
+		return base
+	}
 	return base + ":" + p.instanceID
 }
 
