@@ -31,7 +31,7 @@ const (
 	handleRequestPath         = "/handle-request"
 	handleResponsePath        = "/handle-response"
 	interceptorErrorStatus    = 500
-	interceptorErrorBodyTpl   = `{"type":"INTERCEPTOR_SERVICE","message":%q}`
+	interceptorErrorBody      = `{"message":"Internal Server Error"}`
 	contentTypeJSON           = "application/json"
 )
 
@@ -477,9 +477,10 @@ func buildUpstreamModifications(reply *interceptorReply) policy.UpstreamRequestM
 }
 
 func interceptorErrorImmediate(err error) policy.ImmediateResponse {
+	slog.Error("InterceptorService: returning 500 to client", "error", err)
 	return policy.ImmediateResponse{
 		StatusCode: interceptorErrorStatus,
 		Headers:    map[string]string{"Content-Type": contentTypeJSON},
-		Body:       []byte(fmt.Sprintf(interceptorErrorBodyTpl, "interceptor unavailable: "+err.Error())),
+		Body:       []byte(interceptorErrorBody),
 	}
 }
