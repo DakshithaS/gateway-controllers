@@ -102,11 +102,12 @@ def install_dependency_stubs() -> None:
 
 def load_policy_module():
     install_dependency_stubs()
-    policy_dir = Path(__file__).resolve().parent
-    if str(policy_dir) not in sys.path:
-        sys.path.insert(0, str(policy_dir))
-    sys.modules.pop("policy", None)
-    return importlib.import_module("policy")
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    sys.modules.pop("prompt_compressor_v0", None)
+    sys.modules.pop("prompt_compressor_v0.policy", None)
+    return importlib.import_module("prompt_compressor_v0.policy")
 
 
 policy = load_policy_module()
