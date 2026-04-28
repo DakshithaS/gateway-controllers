@@ -1,203 +1,291 @@
+---
+title: "Overview"
+---
+
 # Interceptor Service Policy
 
 ## Overview
 
-The `interceptor-service` policy lets API authors plug a user-written HTTP
-service into the gateway's request and response phases. The gateway becomes
-the client of the user's service: it POSTs structured request/response data to
-two well-known endpoints, and translates the JSON reply back into gateway
-actions.
+The Interceptor Service policy lets API authors plug a user-written HTTP service into the gateway's request and/or response phases. The gateway acts as the client of the user's service: it POSTs structured request/response data to two well-known endpoints (`/handle-request` and `/handle-response`), and translates the JSON reply back into gateway actions such as header, body, and path mutations, dynamic-endpoint routing, or short-circuit responses.
 
-The interceptor service can be written in any language. The gateway speaks the
-contract defined in `interceptor-service-open-api-v1.yaml`.
-
-Use this policy when built-in policies cannot express your mediation logic —
-for example, calling out to a custom PII redaction service, applying business
-rules implemented in another team's service, or routing to dynamic upstreams
-based on body inspection.
+The interceptor service can be implemented in any language. The gateway speaks the contract defined in `interceptor-service-open-api-v1.yaml`. Use this policy when built-in policies cannot express the required mediation logic — for example, when calling out to a custom PII redaction service, applying business rules implemented in another team's service, or routing to dynamic upstreams based on request body inspection.
 
 ## Features
 
-- Request-phase interception (mutate or short-circuit before the request hits
-  upstream).
-- Response-phase interception (mutate the response before it reaches the
-  client).
-- Header, body, and path mutation.
+- Request-phase interception that can mutate or short-circuit the request before it reaches upstream.
+- Response-phase interception that can mutate the response before it reaches the client.
+- Header, body, and path mutation driven by the interceptor reply.
 - Dynamic endpoint routing via the gateway's named-upstream mechanism.
-- Direct respond — interceptor short-circuits the chain with its own status,
-  headers, and body.
-- Cross-phase `interceptorContext` round-trip via shared metadata.
-- Per-phase passthrough-on-error for graceful degradation when the interceptor
-  is unavailable.
-- Configurable timeout and TLS posture.
+- Direct respond — interceptor can short-circuit the chain with its own status, headers, and body.
+- Cross-phase `interceptorContext` round-trip from the request phase to the response phase via shared metadata.
+- Per-phase passthrough-on-error for graceful degradation when the interceptor service is unavailable.
+- Configurable per-call timeout and TLS verification posture.
+- Fine-grained control over which fields (request/response headers and bodies) are sent to the interceptor.
 
 ## Configuration
 
+The Interceptor Service policy uses a single-level configuration model where all parameters are configured per-API in the API definition YAML. This policy does not require system-level configuration.
+
+### User Parameters (API Definition)
+
+These parameters are configured per-API/route by the API developer:
+
 | Parameter | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `endpoint` | string | yes | — | Base URL of the interceptor service. Policy posts to `{endpoint}/handle-request` and `{endpoint}/handle-response`. |
-| `request` | object | one of `request` / `response` | — | Enable request-phase interception. |
-| `request.includeRequestHeaders` | bool | no | `true` | Send request headers to the interceptor. |
-| `request.includeRequestBody` | bool | no | `true` | Send request body (base64) to the interceptor. |
-| `request.passthroughOnError` | bool | no | `false` | Continue upstream on interceptor failure. |
-| `response` | object | one of `request` / `response` | — | Enable response-phase interception. |
-| `response.includeRequestHeaders` | bool | no | `false` | Echo the original request headers. |
-| `response.includeRequestBody` | bool | no | `false` | Echo the original request body. |
-| `response.includeResponseHeaders` | bool | no | `true` | Send upstream response headers. |
-| `response.includeResponseBody` | bool | no | `true` | Send upstream response body (base64). |
-| `response.passthroughOnError` | bool | no | `false` | Forward the upstream response unchanged on interceptor failure. |
-| `timeoutMillis` | int | no | `5000` | Per-call HTTP timeout (100–60000). |
-| `tlsSkipVerify` | bool | no | `false` | Skip TLS verification when calling the interceptor. Dev/test only. |
+|-----------|------|----------|---------|-------------|
+| `endpoint` | string | Yes | — | Base URL of the interceptor service (for example, `https://my-svc:8443/api/v1`). The policy posts to `{endpoint}/handle-request` and `{endpoint}/handle-response`. |
+| `request` | object | Conditional | — | Enables request-phase interception. At least one of `request` or `response` must be provided. |
+| `request.includeRequestHeaders` | boolean | No | `true` | If true, the request headers are sent to the interceptor. |
+| `request.includeRequestBody` | boolean | No | `true` | If true, the request body is base64-encoded and sent to the interceptor. |
+| `request.passthroughOnError` | boolean | No | `false` | If true, the request continues to upstream when the interceptor call fails or times out. If false, the gateway returns a `500` response. |
+| `response` | object | Conditional | — | Enables response-phase interception. At least one of `request` or `response` must be provided. |
+| `response.includeRequestHeaders` | boolean | No | `false` | If true, the original request headers are echoed to the interceptor in the response phase. |
+| `response.includeRequestBody` | boolean | No | `false` | If true, the original request body is echoed to the interceptor (base64). |
+| `response.includeResponseHeaders` | boolean | No | `true` | If true, the upstream response headers are sent to the interceptor. |
+| `response.includeResponseBody` | boolean | No | `true` | If true, the upstream response body is base64-encoded and sent to the interceptor. |
+| `response.passthroughOnError` | boolean | No | `false` | If true, the upstream response is forwarded unchanged when the interceptor call fails or times out. If false, the gateway returns a `500` response. |
+| `timeoutMillis` | integer | No | `5000` | Per-call HTTP timeout in milliseconds. Valid range: `100`–`60000`. |
+| `tlsSkipVerify` | boolean | No | `false` | If true, TLS certificate verification is skipped when calling the interceptor. Intended for development and test environments only. |
 
-## Wire Contract
+**Note:**
 
-The contract is defined in `interceptor-service-open-api-v1.yaml`. The policy
-calls two endpoints:
+Inside the `gateway/build.yaml`, ensure the policy module is added under `policies:`:
 
-- `POST {endpoint}/handle-request` — invoked at the request phase.
-- `POST {endpoint}/handle-response` — invoked at the response phase.
-
-Bodies are JSON. `requestBody`, `responseBody`, and the reply `body` field are
-base64-encoded byte arrays.
-
-### Request-phase request body (`handle-request`)
-
-```json
-{
-  "requestHeaders": {"content-type": "application/json"},
-  "requestBody": "eyJoaSI6MX0=",
-  "invocationContext": {
-    "requestId": "75269e44-...",
-    "apiName": "PetStore",
-    "apiVersion": "v1.0.0",
-    "method": "POST",
-    "path": "/petstore/pets/1",
-    "scheme": "https",
-    "vhost": "localhost"
-  }
-}
-```
-
-### Reply (`handle-request`)
-
-```json
-{
-  "directRespond": false,
-  "responseCode": 0,
-  "headersToAdd":     {"x-trace": "abc-123"},
-  "headersToReplace": {"authorization": "Bearer ***"},
-  "headersToRemove":  ["x-internal"],
-  "pathToRewrite":    "/v2/pets/1?expand=tags",
-  "dynamicEndpoint":  {"endpointName": "pets-v2"},
-  "body":             "bXV0YXRlZA==",
-  "interceptorContext": {"trace": "abc-123"}
-}
+```yaml
+- name: interceptor-service
+  gomodule: github.com/wso2/gateway-controllers/policies/interceptor-service@v0
 ```
 
 ## Reference Scenarios
 
-### 1. Request-only interceptor (PII redaction)
+### Example 1: Request-Only Interceptor (PII Redaction)
+
+Send the request body to a PII redaction service before it reaches upstream. If the interceptor is unreachable, the request is rejected.
 
 ```yaml
-apiVersion: gateway.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
 kind: RestApi
 metadata:
-  name: chat-api
+  name: chat-api-v1.0
 spec:
-  requestPolicies:
+  displayName: Chat-API
+  version: v1.0
+  context: /chat/$version
+  upstream:
+    main:
+      url: http://chat-backend:8080
+  policies:
     - name: interceptor-service
       version: v0.9
-      parameters:
+      params:
         endpoint: https://pii-redactor:8443/api/v1
         request:
+          includeRequestHeaders: true
           includeRequestBody: true
           passthroughOnError: false
+        timeoutMillis: 3000
+  operations:
+    - method: POST
+      path: /completions
 ```
 
-### 2. Direct respond (interceptor short-circuits with 403)
+The interceptor receives a payload like the following on `POST /handle-request`:
 
-The interceptor returns `{"directRespond": true, "responseCode": 403, "body": "..."}`
-to stop the chain and return its own response.
+```json
+{
+  "requestHeaders": {"content-type": "application/json"},
+  "requestBody": "eyJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiSGVsbG8ifV19",
+  "invocationContext": {
+    "requestId": "75269e44-f797-4432-9906-cf39e68d6ab8",
+    "apiName": "Chat-API",
+    "apiVersion": "v1.0",
+    "method": "POST",
+    "path": "/chat/v1.0/completions",
+    "scheme": "https"
+  }
+}
+```
 
-### 3. Path / dynamic-endpoint routing
+A reply that rewrites the request body:
+
+```json
+{
+  "body": "eyJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiSGVsbG8gW1JFREFDVEVEXSJ9XX0=",
+  "headersToAdd": {"x-redacted": "true"}
+}
+```
+
+### Example 2: Direct Respond (Short-Circuit With 403)
+
+Use the interceptor to authorize the request based on custom business rules. When the interceptor denies the request, the gateway returns the interceptor's response directly to the client without contacting upstream.
 
 ```yaml
-requestPolicies:
-  - name: interceptor-service
-    version: v0.9
-    parameters:
-      endpoint: https://router:8443/api/v1
-      request:
-        includeRequestHeaders: true
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: orders-api-v1.0
+spec:
+  displayName: Orders-API
+  version: v1.0
+  context: /orders/$version
+  upstream:
+    main:
+      url: http://orders-backend:8080
+  policies:
+    - name: interceptor-service
+      version: v0.9
+      params:
+        endpoint: https://authz-svc:8443/api/v1
+        request:
+          includeRequestHeaders: true
+          includeRequestBody: false
+  operations:
+    - method: POST
+      path: /place
 ```
 
-The interceptor reply may include `pathToRewrite` and/or
-`dynamicEndpoint.endpointName` to route the request elsewhere.
+Interceptor reply that short-circuits with `403`:
 
-### 4. Response-only interceptor (response sanitisation)
+```json
+{
+  "directRespond": true,
+  "responseCode": 403,
+  "headersToAdd": {"content-type": "application/json", "x-deny-reason": "policy"},
+  "body": "eyJlcnJvciI6ImZvcmJpZGRlbiJ9"
+}
+```
+
+### Example 3: Path And Dynamic Endpoint Routing
+
+Inspect the incoming request and route it to a different upstream by name, optionally rewriting the path and query string.
 
 ```yaml
-responsePolicies:
-  - name: interceptor-service
-    version: v0.9
-    parameters:
-      endpoint: https://sanitizer:8443/api/v1
-      response:
-        includeResponseBody: true
-        passthroughOnError: true
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: pets-api-v1.0
+spec:
+  displayName: Pets-API
+  version: v1.0
+  context: /petstore/$version
+  upstream:
+    main:
+      url: http://pets-v1:8080
+    pets-v2:
+      url: http://pets-v2:8080
+  policies:
+    - name: interceptor-service
+      version: v0.9
+      params:
+        endpoint: https://router-svc:8443/api/v1
+        request:
+          includeRequestHeaders: true
+          includeRequestBody: false
+  operations:
+    - method: GET
+      path: /pets/{id}
 ```
 
-### 5. Round-trip with shared context
+Interceptor reply that routes the request to the `pets-v2` upstream and rewrites the path:
 
-Attach the policy in both `requestPolicies` and `responsePolicies`. Any
-`interceptorContext` returned by the request-phase interceptor is automatically
-echoed in the response-phase request body.
-
-## How It Works
-
-```
-client ──► gateway ──► interceptor /handle-request ──► gateway ──► upstream
-                                                                       │
-client ◄── gateway ◄── interceptor /handle-response ◄── gateway ◄──────┘
+```json
+{
+  "pathToRewrite": "/v2/pets/42?expand=tags",
+  "dynamicEndpoint": {"endpointName": "pets-v2"}
+}
 ```
 
-| Spec field | Gateway action |
-| --- | --- |
-| `directRespond: true` | `ImmediateResponse{StatusCode, Headers, Body}` |
-| `headersToAdd` + `headersToReplace` | `HeadersToSet` (replace wins on conflict) |
-| `headersToRemove` | `HeadersToRemove` |
-| `body` (base64) | Replaces request/response body |
-| `pathToRewrite` | `Path` and `QueryParametersToAdd` |
-| `dynamicEndpoint.endpointName` | `UpstreamName` |
-| `responseCode` (response phase) | `StatusCode` |
-| `interceptorContext` | Stashed in shared metadata under `interceptor-service:context` |
-| `trailersTo*` | Ignored (see Limitations) |
+### Example 4: Response-Only Interceptor (Sanitisation)
 
-## Limitations
+Sanitise the upstream response before it reaches the client. If the interceptor is unavailable, the upstream response is forwarded unchanged.
 
-- The SDK has no trailer mutation API. `trailersToAdd`, `trailersToReplace`,
-  and `trailersToRemove` in the interceptor reply are accepted but **ignored**;
-  a debug log is emitted if any are present.
-- The wire contract distinguishes `headersToAdd` (append) from
-  `headersToReplace` (overwrite). The gateway has no add-vs-replace distinction
-  for outbound headers, so both collapse to overwrite. If the same key appears
-  in both maps, `headersToReplace` wins.
-- Bodies must round-trip through base64. Large bodies cost CPU and bandwidth.
-- Interceptor latency is added to request latency (and response latency, when
-  the response phase is enabled). Set `timeoutMillis` defensively.
-- The policy buffers the body to make it available to the interceptor; do not
-  attach it to APIs requiring streaming pass-through.
+```yaml
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: docs-api-v1.0
+spec:
+  displayName: Docs-API
+  version: v1.0
+  context: /docs/$version
+  upstream:
+    main:
+      url: http://docs-backend:8080
+  policies:
+    - name: interceptor-service
+      version: v0.9
+      params:
+        endpoint: https://sanitizer-svc:8443/api/v1
+        response:
+          includeResponseHeaders: true
+          includeResponseBody: true
+          passthroughOnError: true
+        timeoutMillis: 5000
+  operations:
+    - method: GET
+      path: /articles/{id}
+```
 
-## Security Considerations
+A response-phase reply that overrides the status code and rewrites the body:
 
-- **TLS.** Always use HTTPS for the interceptor endpoint in production.
-  `tlsSkipVerify` exists for development and must not be enabled in production.
-- **Authentication.** The policy itself does not authenticate to the
-  interceptor. Authenticate at the network layer (mTLS) or via a separate
-  policy that injects a bearer token before this policy runs.
-- **Input/output size.** Request and response bodies are sent verbatim to the
-  interceptor. Combine with body-size guardrail policies to bound the data
-  sent.
-- **Denial of service.** A slow or hung interceptor can stall the request.
-  Set `timeoutMillis` and `passthroughOnError` to match your reliability
-  posture.
+```json
+{
+  "responseCode": 200,
+  "headersToAdd": {"x-sanitized": "true"},
+  "body": "eyJ0aXRsZSI6IkhlbGxvIiwiY29udGVudCI6IltSRURBQ1RFRF0ifQ=="
+}
+```
+
+### Example 5: Request And Response Round-Trip With Shared Context
+
+Attach the policy in both the request and response phases so the interceptor can correlate the two calls via `interceptorContext`. Anything the request-phase reply puts into `interceptorContext` is automatically echoed in the response-phase request body.
+
+```yaml
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: audit-api-v1.0
+spec:
+  displayName: Audit-API
+  version: v1.0
+  context: /audit/$version
+  upstream:
+    main:
+      url: http://audit-backend:8080
+  policies:
+    - name: interceptor-service
+      version: v0.9
+      params:
+        endpoint: https://audit-svc:8443/api/v1
+        request:
+          includeRequestHeaders: true
+          includeRequestBody: true
+          passthroughOnError: false
+        response:
+          includeResponseHeaders: true
+          includeResponseBody: true
+          passthroughOnError: false
+        timeoutMillis: 4000
+  operations:
+    - method: POST
+      path: /events
+```
+
+Request-phase reply seeds the context:
+
+```json
+{
+  "interceptorContext": {"trace": "abc-123", "actor": "user-7"}
+}
+```
+
+Response-phase request body received by the interceptor:
+
+```json
+{
+  "responseCode": 200,
+  "responseHeaders": {"content-type": "application/json"},
+  "responseBody": "eyJzdGF0dXMiOiJvayJ9",
+  "invocationContext": {"requestId": "75269e44-...", "apiName": "Audit-API"},
+  "interceptorContext": {"trace": "abc-123", "actor": "user-7"}
+}
+```
