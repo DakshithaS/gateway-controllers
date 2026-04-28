@@ -18,6 +18,7 @@ The JWT Authentication policy validates JWT access tokens using one or more JWKS
 - Authorization header scheme enforcement and clock skew tolerance
 - Customizable error responses
 - Optional `userIdClaim` mapping for analytics
+- Optional forwarding of the original `Authorization` header (JWT) to the upstream
 
 ## Configuration
 
@@ -102,6 +103,7 @@ skipTlsVerify = false
 | `authHeaderPrefix` | string | No | Overrides the configured authorization header scheme for this route. |
 | `headerName` | string | No | Header name to extract the token from (e.g., `"Authorization"`). Overrides `system.headerName`. Must be a valid HTTP header field name (non-empty, no spaces or control characters). |
 | `userIdClaim` | string | No | Claim name to extract user ID for analytics. Defaults to `sub`. |
+| `forwardToken` | boolean | No | If `true` (default), the original `Authorization` header (containing the JWT) is forwarded to the upstream after successful validation. Set to `false` to strip the header before proxying. |
 
 
 **Note:**
@@ -254,4 +256,32 @@ spec:
               email: X-User-Email
               role: X-User-Role
             userIdClaim: username
+```
+
+### Example 6: Strip JWT Before Forwarding to Upstream
+
+By default, the original `Authorization` header is forwarded to the upstream after successful validation. Set `forwardToken: false` to strip it before proxying.
+
+```yaml
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: jwt-auth-strip-token-api
+spec:
+  displayName: JWT Auth Strip Token API
+  version: v1.0
+  context: /jwt-auth-strip/$version
+  upstream:
+    main:
+      url: http://sample-backend:9080/api/v1
+  operations:
+    - method: GET
+      path: /protected
+      policies:
+        - name: jwt-auth
+          version: v1
+          params:
+            issuers:
+              - PrimaryIDP
+            forwardToken: false
 ```
