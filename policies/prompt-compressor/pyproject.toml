@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "prompt-compressor-v0"
@@ -15,15 +15,18 @@ authors = [
 dependencies = [
   "compression-prompt==0.1.2",
 ]
-classifiers = [
-  "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
-]
 
-[tool.setuptools]
-py-modules = ["policy"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/prompt_compressor_v0"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"policy-definition.yaml" = "prompt_compressor_v0/policy-definition.yaml"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/prompt_compressor_v0",
+  "tests",
+  "pyproject.toml",
+  "policy-definition.yaml",
+  "README.md",
+]
