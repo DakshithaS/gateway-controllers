@@ -8,7 +8,9 @@ title: "Overview"
 
 The Interceptor Service policy lets API authors plug a user-written HTTP service into the gateway's request and/or response phases. The gateway acts as the client of the user's service: it POSTs structured request/response data to two well-known endpoints (`/handle-request` and `/handle-response`), and translates the JSON reply back into gateway actions such as header, body, and path mutations, dynamic-endpoint routing, or short-circuit responses.
 
-The interceptor service can be implemented in any language. The gateway speaks the contract defined in `interceptor-service-open-api-v1.yaml`. Use this policy when built-in policies cannot express the required mediation logic — for example, when calling out to a custom PII redaction service, applying business rules implemented in another team's service, or routing to dynamic upstreams based on request body inspection.
+The interceptor service can be implemented in any language. Before attaching this policy, you must implement an HTTP service that conforms to the OpenAPI contract shipped alongside this documentation: [`interceptor-service-open-api-v1.yaml`](https://raw.githubusercontent.com/wso2/gateway-controllers/main/docs/interceptor-service/v0.9/docs/interceptor-service-open-api-v1.yaml). Use this spec to generate server stubs (for example, with `openapi-generator`) or as a reference when implementing the two endpoints by hand. The service must expose `POST /handle-request` and `POST /handle-response` with the request and response bodies described in the spec.
+
+Use this policy when built-in policies cannot express the required mediation logic — for example, when calling out to a custom PII redaction service, applying business rules implemented in another team's service, or routing to dynamic upstreams based on request body inspection.
 
 ## Features
 
