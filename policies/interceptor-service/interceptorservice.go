@@ -68,10 +68,9 @@ type invocationContext struct {
 }
 
 type handleRequestBody struct {
-	RequestHeaders     map[string]string `json:"requestHeaders,omitempty"`
-	RequestBody        string            `json:"requestBody,omitempty"`
-	InvocationContext  invocationContext `json:"invocationContext"`
-	InterceptorContext map[string]string `json:"interceptorContext,omitempty"`
+	RequestHeaders    map[string]string `json:"requestHeaders,omitempty"`
+	RequestBody       string            `json:"requestBody,omitempty"`
+	InvocationContext invocationContext `json:"invocationContext"`
 }
 
 type handleResponseBody struct {

@@ -25,6 +25,10 @@ paths:
         - Request
       summary: Handle Request
       operationId: handleRequest
+      description: >-
+        Invoked by the gateway during the request phase, before the request is forwarded to upstream.
+        The interceptor may mutate headers, body, or path, route to a dynamic endpoint,
+        or short-circuit the chain with a direct response.
       requestBody:
         description: |
           Content of the request
@@ -33,7 +37,7 @@ paths:
             schema:
               $ref: "#/components/schemas/RequestHandlerRequestBody"
       responses:
-        200:
+        "200":
           description: Successful operation
           content:
             application/json:
@@ -46,6 +50,10 @@ paths:
         - Response
       summary: Handle Response
       operationId: handleResponse
+      description: >-
+        Invoked by the gateway during the response phase, after the upstream response is received and
+        before it is forwarded to the client. The interceptor may override the status code, mutate
+        response headers, or rewrite the response body.
       requestBody:
         description: |
           Content of the request
@@ -54,7 +62,7 @@ paths:
             schema:
               $ref: "#/components/schemas/ResponseHandlerRequestBody"
       responses:
-        200:
+        "200":
           description: Successful operation
           content:
             application/json:
