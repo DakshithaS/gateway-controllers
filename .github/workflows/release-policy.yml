@@ -76,10 +76,12 @@ jobs:
 
           TAG_NAME="policies/$POLICY/v$VERSION"
 
-          # For Python policies, extract the pip package name from pyproject.toml
+          # For Python policies, construct the shortened URL (same pattern as Go MODULE_PATH
+          # but with @vMAJOR suffix instead of /vMAJOR path segment).
+          # Example: github.com/wso2/gateway-controllers/policies/prompt-compressor@v0
           PIP_PACKAGE=""
           if [[ -f "$TARGET_DIR/pyproject.toml" ]]; then
-            PIP_PACKAGE=$(python3 -c "import tomllib, pathlib, sys; data = tomllib.loads(pathlib.Path('$TARGET_DIR/pyproject.toml').read_text()); print(data.get('project', {}).get('name', ''))")
+            PIP_PACKAGE="github.com/${{ github.repository }}/policies/$POLICY@v$MAJOR"
           fi
 
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
@@ -166,7 +168,7 @@ jobs:
 
           # For Python policies, also validate pyproject.toml version
           if [[ "${RUNTIME:-}" == "python" ]]; then
-            PYPROJECT_VERSION=$(python3 -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('$DIR/pyproject.toml').read_text()); print(data.get('project', {}).get('version', ''))")
+            PYPROJECT_VERSION=$(yq eval '.project.version' "$DIR/pyproject.toml")
             echo "pyproject.toml version: $PYPROJECT_VERSION"
 
             if [[ "$INPUT_VERSION" != "$PYPROJECT_VERSION" ]]; then
