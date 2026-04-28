@@ -95,9 +95,6 @@ type interceptorReply struct {
 	HeadersToAdd       map[string]string `json:"headersToAdd"`
 	HeadersToReplace   map[string]string `json:"headersToReplace"`
 	HeadersToRemove    []string          `json:"headersToRemove"`
-	TrailersToAdd      map[string]string `json:"trailersToAdd"`
-	TrailersToReplace  map[string]string `json:"trailersToReplace"`
-	TrailersToRemove   []string          `json:"trailersToRemove"`
 	PathToRewrite      string            `json:"pathToRewrite"`
 	Body               string            `json:"body"`
 	InterceptorContext map[string]string `json:"interceptorContext"`
@@ -287,7 +284,6 @@ func (p *InterceptorServicePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		return buildImmediateResponse(reply)
 	}
 
-	logIgnoredTrailers(reply)
 	return buildUpstreamModifications(reply)
 }
 
@@ -328,7 +324,6 @@ func (p *InterceptorServicePolicy) OnResponseBody(ctx context.Context, respCtx *
 		return interceptorErrorImmediate(err)
 	}
 
-	logIgnoredTrailers(reply)
 	mods := policy.DownstreamResponseModifications{
 		HeadersToSet:    mergeHeaders(reply.HeadersToAdd, reply.HeadersToReplace),
 		HeadersToRemove: reply.HeadersToRemove,
@@ -480,12 +475,6 @@ func buildUpstreamModifications(reply *interceptorReply) policy.UpstreamRequestM
 		mods.UpstreamName = &name
 	}
 	return mods
-}
-
-func logIgnoredTrailers(reply *interceptorReply) {
-	if len(reply.TrailersToAdd) > 0 || len(reply.TrailersToReplace) > 0 || len(reply.TrailersToRemove) > 0 {
-		slog.Debug("InterceptorService: trailer mutations are ignored (SDK limitation)")
-	}
 }
 
 func interceptorErrorImmediate(err error) policy.ImmediateResponse {
