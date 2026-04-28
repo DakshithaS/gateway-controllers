@@ -76,9 +76,16 @@ jobs:
 
           TAG_NAME="policies/$POLICY/v$VERSION"
 
+          # For Python policies, extract the pip package name from pyproject.toml
+          PIP_PACKAGE=""
+          if [[ -f "$TARGET_DIR/pyproject.toml" ]]; then
+            PIP_PACKAGE=$(python3 -c "import tomllib, pathlib, sys; data = tomllib.loads(pathlib.Path('$TARGET_DIR/pyproject.toml').read_text()); print(data.get('project', {}).get('name', ''))")
+          fi
+
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
           echo "module_path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "pip_package=$PIP_PACKAGE" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
       # Validate policy structure
@@ -107,8 +114,22 @@ jobs:
             echo "✅ Go Policy structure valid"
           elif [[ -f "$DIR/pyproject.toml" ]]; then
             echo "RUNTIME=python" >> "$GITHUB_ENV"
-            [[ -f "$DIR/policy.py" ]] || { echo "❌ Missing policy.py in $DIR"; exit 1; }
-            echo "✅ Python Policy structure valid"
+
+            # Validate src layout: src/ directory must exist
+            [[ -d "$DIR/src" ]] || { echo "❌ Missing src/ directory in $DIR (expected src layout)"; exit 1; }
+
+            # Validate that at least one Python package exists under src/
+            PKG_COUNT=$(find "$DIR/src" -mindepth 1 -maxdepth 1 -type d ! -name '__pycache__' | wc -l | tr -d ' ')
+            [[ "$PKG_COUNT" -ge 1 ]] || { echo "❌ No Python package found under $DIR/src/"; exit 1; }
+
+            # Validate that the package contains a policy.py module
+            POLICY_PY=$(find "$DIR/src" -mindepth 2 -maxdepth 2 -name 'policy.py' -type f | head -1)
+            [[ -n "$POLICY_PY" ]] || { echo "❌ Missing policy.py module in src package"; exit 1; }
+
+            # Validate that tests/ directory exists
+            [[ -d "$DIR/tests" ]] || { echo "❌ Missing tests/ directory in $DIR"; exit 1; }
+
+            echo "✅ Python Policy structure valid (src layout)"
           else
             echo "❌ Current implementation requires either go.mod or pyproject.toml"
             exit 1
@@ -143,6 +164,20 @@ jobs:
             exit 1
           fi
 
+          # For Python policies, also validate pyproject.toml version
+          if [[ "${RUNTIME:-}" == "python" ]]; then
+            PYPROJECT_VERSION=$(python3 -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('$DIR/pyproject.toml').read_text()); print(data.get('project', {}).get('version', ''))")
+            echo "pyproject.toml version: $PYPROJECT_VERSION"
+
+            if [[ "$INPUT_VERSION" != "$PYPROJECT_VERSION" ]]; then
+              echo "❌ pyproject.toml version mismatch!"
+              echo "The version specified in the workflow input ($INPUT_VERSION) does not match"
+              echo "the version in pyproject.toml ($PYPROJECT_VERSION)."
+              echo "Please update pyproject.toml version to $INPUT_VERSION."
+              exit 1
+            fi
+          fi
+
           echo "✅ Version consistency validated"
 
       # ------------------------------------------------------------
@@ -163,7 +198,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-          cache: false
+
+      # ------------------------------------------------------------
+      # Install Python policy dependencies
+      # ------------------------------------------------------------
+      - name: Install Python policy dependencies
+        if: env.RUNTIME == 'python'
+        working-directory: ${{ steps.meta.outputs.target_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [[ -f "requirements.txt" ]]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ No requirements.txt found, skipping dependency install"
+          fi
+          # Install the package itself in editable mode (for proper imports in tests)
+          pip install -e . --no-deps
+          echo "✅ Python policy dependencies installed"
 
       # ------------------------------------------------------------
       # Run tests
@@ -176,10 +229,12 @@ jobs:
           if [[ "${RUNTIME}" == "go" ]]; then
             go test -v -race ./...
           elif [[ "${RUNTIME}" == "python" ]]; then
-            if [[ -f "requirements.txt" ]]; then
-              pip install -r requirements.txt
+            # Use pytest if available, otherwise fall back to unittest
+            if python -m pytest --version 2>/dev/null; then
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v
+            else
+              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v
             fi
-            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -p 'test_*.py' -v
           fi
 
       # ------------------------------------------------------------
@@ -230,7 +285,7 @@ jobs:
           DIR="${{ steps.meta.outputs.target_dir }}"
 
           if [[ "${RUNTIME}" == "python" ]]; then
-            PACKAGE_FIELD="-F pip_package=${{ steps.meta.outputs.module_path }}"
+            PACKAGE_FIELD="-F pip_package=${{ steps.meta.outputs.pip_package }}"
           else
             PACKAGE_FIELD="-F module_path=${{ steps.meta.outputs.module_path }}"
           fi
