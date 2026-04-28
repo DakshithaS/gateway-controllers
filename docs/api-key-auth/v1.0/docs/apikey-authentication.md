@@ -5,12 +5,12 @@ title: "Overview"
 
 ## Overview
 
-The API Key Authentication policy validates API keys to secure APIs by verifying pre-generated keys before allowing access to protected resources. This policy is essential for API security, supporting both header-based and query parameter-based key validation.
+The API Key Authentication policy validates API keys to secure APIs by verifying pre-generated keys before allowing access to protected resources. This policy is essential for API security, supporting header-based key validation.
 
 ## Features
 
-- Validates API keys from request headers or query parameters
-- Configurable key extraction from headers (case-insensitive) or query parameters (exact match)
+- Validates API keys from request headers
+- Configurable key extraction from headers (case-insensitive)
 - Pre-generated key validation against gateway-managed key lists
 - Request context enrichment with authentication metadata
 - Issuer-based key validation via system configuration
@@ -26,8 +26,8 @@ These parameters are configured per-API/route by the API developer:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `key` | string | Yes | `API-Key` | The name of the header or query parameter that contains the API key. For headers: case-insensitive matching is used (e.g., "X-API-Key", "Authorization"). For query parameters: exact name matching is used (e.g., "api_key", "token"). Length: 1-128 characters. |
-| `in` | string | Yes | `header` | Specifies where to look for the API key. Must be either "header" or "query". |
+| `key` | string | Yes | `API-Key` | The name of the header that contains the API key. Case-insensitive matching is used (e.g., "X-API-Key", "Authorization"). Length: 1-128 characters. |
+| `in` | string | Yes | `header` | Specifies where to look for the API key. Currently only "header" is supported. |
 
 ### System Parameters (config.toml)
 
@@ -115,38 +115,7 @@ spec:
       path: /alerts/active
 ```
 
-### Example 3: Query Parameter Authentication
-
-Extract API key from query parameter
-
-```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
-kind: RestApi
-metadata:
-  name: weather-api-v1.0
-spec:
-  displayName: Weather-API
-  version: v1.0
-  context: /weather/$version
-  upstream:
-    main:
-      url: http://sample-backend:5000/api/v2
-  policies:
-    - name: api-key-auth
-      version: v1
-      params:
-        key: api_key
-        in: query
-  operations:
-    - method: GET
-      path: /{country_code}/{city}
-    - method: GET
-      path: /alerts/active
-    - method: POST
-      path: /alerts/active
-```
-
-### Example 4: Custom Header Name
+### Example 3: Custom Header Name
 
 Use a custom header for API key authentication
 
@@ -177,7 +146,7 @@ spec:
       path: /alerts/active
 ```
 
-### Example 5: Route-Specific Authentication
+### Example 4: Route-Specific Authentication
 
 Apply different API key configurations to different routes
 
@@ -224,7 +193,7 @@ spec:
 
 - On each request, the gateway policy reads `key` and `in` from the policy configuration and validates that required parameters are present.
 
-- Based on `in`, it extracts the API key either from a request header (case-insensitive header lookup) or from a query parameter in the request URL.
+- Based on `in`, it extracts the API key from a request header (case-insensitive header lookup).
 
 - If the key is missing, empty, or the required API context values are unavailable, the policy short-circuits the request and returns `401 Unauthorized` with a JSON error response.
 

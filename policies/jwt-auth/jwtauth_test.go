@@ -126,6 +126,76 @@ func TestJWTAuthPolicy_ValidToken(t *testing.T) {
 	if modifications.HeadersToSet["X-User-Name"] != "John Doe" {
 		t.Errorf("Expected X-User-Name header to be 'John Doe', got %s", modifications.HeadersToSet["X-User-Name"])
 	}
+
+	// forwardToken defaults to true, so the Authorization header must NOT be stripped.
+	for _, h := range modifications.HeadersToRemove {
+		if strings.EqualFold(h, "Authorization") {
+			t.Errorf("Expected Authorization header to be forwarded by default, but it was in HeadersToRemove")
+		}
+	}
+}
+
+// TestJWTAuthPolicy_ForwardTokenFalse verifies the Authorization header is stripped
+// from the upstream request when forwardToken=false.
+func TestJWTAuthPolicy_ForwardTokenFalse(t *testing.T) {
+	privateKey, publicKey := generateTestKeys(t)
+	jwksServer := createJWKSServer(t, publicKey, "test-kid")
+	defer jwksServer.Close()
+
+	token := createTestToken(t, privateKey, map[string]interface{}{
+		"sub": "user123",
+		"iss": "https://issuer.example.com",
+		"aud": "api-audience",
+	})
+
+	ctx := createMockRequestHeaderContext(map[string][]string{
+		"authorization": {fmt.Sprintf("Bearer %s", token)},
+	})
+
+	params := map[string]interface{}{
+		"headerName":          "Authorization",
+		"authHeaderScheme":    "Bearer",
+		"onFailureStatusCode": 401,
+		"errorMessageFormat":  "json",
+		"leeway":              "30s",
+		"allowedAlgorithms":   []interface{}{"RS256", "ES256"},
+		"forwardToken":        false,
+		"keyManagers": []interface{}{
+			map[string]interface{}{
+				"name":   "test-issuer",
+				"issuer": "https://issuer.example.com",
+				"jwks": map[string]interface{}{
+					"remote": map[string]interface{}{
+						"uri": jwksServer.URL + "/jwks.json",
+					},
+				},
+			},
+		},
+		"audiences": []interface{}{"api-audience"},
+	}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("Failed to create policy: %v", err)
+	}
+
+	action := p.(*JwtAuthPolicy).OnRequestHeaders(context.Background(), ctx, params)
+
+	modifications, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("Expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+
+	found := false
+	for _, h := range modifications.HeadersToRemove {
+		if strings.EqualFold(h, "Authorization") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected Authorization header to be stripped when forwardToken=false, HeadersToRemove=%v", modifications.HeadersToRemove)
+	}
 }
 
 // TestJWTAuthPolicy_MissingToken tests authentication failure when Authorization header is missing
