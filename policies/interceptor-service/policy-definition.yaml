@@ -66,3 +66,17 @@ parameters:
   anyOf:
     - required: [request]
     - required: [response]
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    maxResponseSize:
+      type: integer
+      description: |
+        Maximum size in bytes of the JSON response body the gateway will read
+        from the interceptor service. Responses exceeding this limit are
+        treated as an interceptor failure.
+      minimum: 1
+      default: 1048576
+      "wso2/defaultValue": "${config.policy_configurations.interceptor_service_v0.maxresponsesize}"

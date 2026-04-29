@@ -301,6 +301,30 @@ func TestOnRequestBody_ErrorPassthroughOrFail(t *testing.T) {
 	}
 }
 
+func TestOnRequestBody_MaxResponseSize(t *testing.T) {
+	bigBody := strings.Repeat("x", 2048)
+	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"body":"` + bigBody + `"}`))
+	})
+	defer srv.Close()
+
+	p := mustGetPolicy(t, map[string]interface{}{
+		"endpoint":        srv.URL,
+		"maxResponseSize": 1024,
+		"request":         map[string]interface{}{"passthroughOnError": false},
+	})
+	a := p.OnRequestBody(context.Background(), reqCtx(`{}`), nil)
+	resp, ok := a.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse, got %T", a)
+	}
+	if resp.StatusCode != interceptorErrorStatus {
+		t.Fatalf("status mismatch: %d", resp.StatusCode)
+	}
+}
+
 func TestOnRequestBody_TimeoutPassthrough(t *testing.T) {
 	srv := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)

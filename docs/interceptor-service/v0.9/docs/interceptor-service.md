@@ -18,7 +18,7 @@ Use this policy when built-in policies cannot express the required mediation log
 - Response-phase interception that can mutate the response before it reaches the client.
 - Header, body, and path mutation driven by the interceptor reply.
 - Dynamic endpoint routing via the gateway's named-upstream mechanism.
-- Direct respond — interceptor can short-circuit the chain with its own status, headers, and body.
+- Direct response — interceptor can short-circuit the chain with its own status, headers, and body.
 - Cross-phase `interceptorContext` round-trip from the request phase to the response phase via shared metadata.
 - Per-phase passthrough-on-error for graceful degradation when the interceptor service is unavailable.
 - Configurable per-call timeout and TLS verification posture.
@@ -47,6 +47,21 @@ These parameters are configured per-API/route by the API developer:
 | `response.passthroughOnError` | boolean | No | `false` | If true, the upstream response is forwarded unchanged when the interceptor call fails or times out. If false, the gateway returns a `500` response. |
 | `timeoutMillis` | integer | No | `5000` | Per-call HTTP timeout in milliseconds. Valid range: `100`–`60000`. |
 | `tlsSkipVerify` | boolean | No | `false` | If true, TLS certificate verification is skipped when calling the interceptor. Intended for development and test environments only. |
+
+### System Parameters (From config.toml)
+
+These parameters are configured at the gateway level by the platform operator:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `maxResponseSize` | integer | No | `1048576` | Maximum size in bytes of the JSON response body the gateway will read from the interceptor service. Responses exceeding this limit are treated as an interceptor failure. Default is 1 MiB. |
+
+Example `config.toml` entry:
+
+```toml
+[policy_configurations.interceptor_service_v0]
+maxresponsesize = 1048576
+```
 
 **Note:**
 

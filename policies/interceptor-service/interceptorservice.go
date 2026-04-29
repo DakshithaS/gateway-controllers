@@ -24,22 +24,24 @@ import (
 )
 
 const (
-	defaultTimeoutMillis      = 5000
-	minTimeoutMillis          = 100
-	maxTimeoutMillis          = 60000
-	sharedContextKey          = "interceptor-service:context"
-	handleRequestPath         = "/handle-request"
-	handleResponsePath        = "/handle-response"
-	interceptorErrorStatus    = 500
-	interceptorErrorBody      = `{"message":"Internal Server Error"}`
-	contentTypeJSON           = "application/json"
+	defaultTimeoutMillis   = 5000
+	minTimeoutMillis       = 100
+	maxTimeoutMillis       = 60000
+	defaultMaxResponseSize = 1024 * 1024 // 1 MiB
+	sharedContextKey       = "interceptor-service:context"
+	handleRequestPath      = "/handle-request"
+	handleResponsePath     = "/handle-response"
+	interceptorErrorStatus = 500
+	interceptorErrorBody   = `{"message":"Internal Server Error"}`
+	contentTypeJSON        = "application/json"
 )
 
 // InterceptorServicePolicy implements RequestPolicy and ResponsePolicy.
 type InterceptorServicePolicy struct {
-	endpoint string
-	timeout  time.Duration
-	client   *http.Client
+	endpoint        string
+	timeout         time.Duration
+	maxResponseSize int64
+	client          *http.Client
 
 	hasRequest  bool
 	requestCfg  phaseConfig
@@ -124,6 +126,11 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 		return nil, err
 	}
 
+	maxRespSize, err := parseMaxResponseSize(params)
+	if err != nil {
+		return nil, err
+	}
+
 	requestRaw, hasRequest := params["request"].(map[string]interface{})
 	responseRaw, hasResponse := params["response"].(map[string]interface{})
 	if !hasRequest && !hasResponse {
@@ -131,10 +138,11 @@ func GetPolicy(_ policy.PolicyMetadata, params map[string]interface{}) (policy.P
 	}
 
 	p := &InterceptorServicePolicy{
-		endpoint:    endpoint,
-		timeout:     time.Duration(timeoutMs) * time.Millisecond,
-		hasRequest:  hasRequest,
-		hasResponse: hasResponse,
+		endpoint:        endpoint,
+		timeout:         time.Duration(timeoutMs) * time.Millisecond,
+		maxResponseSize: maxRespSize,
+		hasRequest:      hasRequest,
+		hasResponse:     hasResponse,
 	}
 	if hasRequest {
 		cfg, err := parsePhaseConfig(requestRaw, false)
@@ -186,6 +194,31 @@ func parseTimeout(params map[string]interface{}) (int, error) {
 		return 0, fmt.Errorf("'timeoutMillis' must be between %d and %d", minTimeoutMillis, maxTimeoutMillis)
 	}
 	return ms, nil
+}
+
+func parseMaxResponseSize(params map[string]interface{}) (int64, error) {
+	raw, ok := params["maxResponseSize"]
+	if !ok {
+		return defaultMaxResponseSize, nil
+	}
+	var n int64
+	switch v := raw.(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, fmt.Errorf("'maxResponseSize' must be an integer")
+		}
+		n = int64(v)
+	default:
+		return 0, fmt.Errorf("'maxResponseSize' must be an integer")
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("'maxResponseSize' must be a positive integer")
+	}
+	return n, nil
 }
 
 func parseBool(params map[string]interface{}, key string, def bool) (bool, error) {
@@ -360,12 +393,21 @@ func (p *InterceptorServicePolicy) callInterceptor(ctx context.Context, target s
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	if resp.ContentLength > p.maxResponseSize {
+		return nil, fmt.Errorf("interceptor response exceeds max size of %d bytes", p.maxResponseSize)
+	}
+	// Read up to maxResponseSize+1 so we can detect responses that omit
+	// Content-Length (e.g. chunked transfer) but exceed the cap. We discard
+	// any partial buffer in that case rather than parsing it.
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, p.maxResponseSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read interceptor response: %w", err)
 	}
+	if int64(len(bodyBytes)) > p.maxResponseSize {
+		return nil, fmt.Errorf("interceptor response exceeds max size of %d bytes", p.maxResponseSize)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("interceptor returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("interceptor returned status %d", resp.StatusCode)
 	}
 	reply := &interceptorReply{}
 	if len(bodyBytes) == 0 {

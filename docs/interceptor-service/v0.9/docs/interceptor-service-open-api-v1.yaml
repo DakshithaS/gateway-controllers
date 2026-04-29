@@ -30,6 +30,7 @@ paths:
         The interceptor may mutate headers, body, or path, route to a dynamic endpoint,
         or short-circuit the chain with a direct response.
       requestBody:
+        required: true
         description: |
           Content of the request
         content:
@@ -55,6 +56,7 @@ paths:
         before it is forwarded to the client. The interceptor may override the status code, mutate
         response headers, or rewrite the response body.
       requestBody:
+        required: true
         description: |
           Content of the request
         content:
