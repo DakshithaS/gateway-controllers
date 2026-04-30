@@ -190,7 +190,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
                 status_code=503,
                 headers={"content-type": "application/json"},
                 body=json.dumps({
-                    "type": "NEMOGUARD_CONTENT_SAFETY",
+                    "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
                     "message": {"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."},
                 }).encode(),
             )
@@ -211,7 +211,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             return ImmediateResponse(
                 status_code=req_params.request.block_status_code,
                 headers={"content-type": "application/json"},
-                body=json.dumps({"type": "NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
+                body=json.dumps({"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
             )
 
         return _PASSTHROUGH_REQUEST
@@ -265,7 +265,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
                 status_code=503,
                 headers={"content-type": "application/json"},
                 body=json.dumps({
-                    "type": "NEMOGUARD_CONTENT_SAFETY",
+                    "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
                     "message": {"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."},
                 }).encode(),
             )
@@ -286,7 +286,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             return ImmediateResponse(
                 status_code=200,
                 headers={"content-type": "application/json"},
-                body=json.dumps({"type": "NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
+                body=json.dumps({"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
             )
 
         return _PASSTHROUGH_RESPONSE

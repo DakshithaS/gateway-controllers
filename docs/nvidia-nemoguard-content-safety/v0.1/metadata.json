@@ -1,5 +1,5 @@
 {
-  "name": "nemoguard-content-safety",
+  "name": "nvidia-nemoguard-content-safety",
   "displayName": "NeMo Guard Content Safety",
   "version": "0.1",
   "provider": "WSO2",

@@ -112,8 +112,8 @@ The `categories` object supports the following boolean keys. All default to `tru
 Inside the `api-platform` repository, add the policy package under `policies:` in `/gateway/build.yaml`:
 
 ```yaml
-- name: nemoguard-content-safety
-  pipPackage: github.com/wso2/gateway-controllers/policies/nemoguard-content-safety@v0
+- name: nvidia-nemoguard-content-safety
+  pipPackage: github.com/wso2/gateway-controllers/policies/nvidia-nemoguard-content-safety@v0
 ```
 
 ## Reference Scenarios
@@ -144,7 +144,7 @@ spec:
       - path: /chat/completions
         methods: [POST]
   policies:
-    - name: nemoguard-content-safety
+    - name: nvidia-nemoguard-content-safety
       version: v0
       paths:
         - path: /chat/completions
@@ -187,7 +187,7 @@ When the request is blocked, the policy returns HTTP `400`:
 
 ```json
 {
-  "type": "NEMOGUARD_CONTENT_SAFETY",
+  "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
   "message": {
     "action": "GUARDRAIL_INTERVENED",
     "interveningGuardrail": "NeMo Guard Content Safety",
@@ -203,7 +203,7 @@ Enable response-phase checking and restrict blocking to a specific subset of cat
 
 ```yaml
 policies:
-  - name: nemoguard-content-safety
+  - name: nvidia-nemoguard-content-safety
     version: v0
     paths:
       - path: /chat/completions
@@ -232,7 +232,7 @@ When a request is blocked with `showAssessment: true`, the response body include
 
 ```json
 {
-  "type": "NEMOGUARD_CONTENT_SAFETY",
+  "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
   "message": {
     "action": "GUARDRAIL_INTERVENED",
     "interveningGuardrail": "NeMo Guard Content Safety",
@@ -249,7 +249,7 @@ When a response is replaced due to unsafe content, the policy returns HTTP `200`
 
 ```json
 {
-  "type": "NEMOGUARD_CONTENT_SAFETY",
+  "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
   "message": {
     "action": "GUARDRAIL_INTERVENED",
     "interveningGuardrail": "NeMo Guard Content Safety",
@@ -265,7 +265,7 @@ When the NeMo Guard service is unavailable, allow traffic to proceed rather than
 
 ```yaml
 policies:
-  - name: nemoguard-content-safety
+  - name: nvidia-nemoguard-content-safety
     version: v0
     paths:
       - path: /chat/completions
@@ -283,7 +283,7 @@ When the NeMo Guard endpoint is unreachable and `passthroughOnError` is `false` 
 
 ```json
 {
-  "type": "NEMOGUARD_CONTENT_SAFETY",
+  "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
   "message": {
     "action": "SERVICE_UNAVAILABLE",
     "actionReason": "Content safety service unavailable."

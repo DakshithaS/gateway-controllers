@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nemoguard-content-safety-v0"
+name = "nvidia-nemoguard-content-safety-v0"
 version = "0.1.0"
 description = "WSO2 AI Gateway NeMo Guard content safety policy for the Python executor"
 readme = "README.md"
@@ -14,14 +14,14 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nemoguard_content_safety_v0"]
+packages = ["src/nvidia_nemoguard_content_safety_v0"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"policy-definition.yaml" = "nemoguard_content_safety_v0/policy-definition.yaml"
+"policy-definition.yaml" = "nvidia_nemoguard_content_safety_v0/policy-definition.yaml"
 
 [tool.hatch.build.targets.sdist]
 only-include = [
-  "src/nemoguard_content_safety_v0",
+  "src/nvidia_nemoguard_content_safety_v0",
   "pyproject.toml",
   "policy-definition.yaml",
   "README.md",

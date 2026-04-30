@@ -118,9 +118,9 @@ def load_policy_module():
     src_dir = Path(__file__).resolve().parent.parent / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
-    sys.modules.pop("nemoguard_content_safety_v0", None)
-    sys.modules.pop("nemoguard_content_safety_v0.policy", None)
-    return importlib.import_module("nemoguard_content_safety_v0.policy")
+    sys.modules.pop("nvidia_nemoguard_content_safety_v0", None)
+    sys.modules.pop("nvidia_nemoguard_content_safety_v0.policy", None)
+    return importlib.import_module("nvidia_nemoguard_content_safety_v0.policy")
 
 
 policy = load_policy_module()
@@ -348,7 +348,7 @@ class NemoGuardPolicyTest(unittest.TestCase):
         self.assertIsInstance(result, ImmediateResponse)
         self.assertEqual(400, result.status_code)
         body = json.loads(result.body)
-        self.assertEqual("NEMOGUARD_CONTENT_SAFETY", body["type"])
+        self.assertEqual("NVIDIA_NEMOGUARD_CONTENT_SAFETY", body["type"])
         self.assertEqual("GUARDRAIL_INTERVENED", body["message"]["action"])
         self.assertEqual("REQUEST", body["message"]["direction"])
 
@@ -511,7 +511,7 @@ class NemoGuardPolicyTest(unittest.TestCase):
         self.assertIsInstance(result, ImmediateResponse)
         self.assertEqual(200, result.status_code)
         body = json.loads(result.body)
-        self.assertEqual("NEMOGUARD_CONTENT_SAFETY", body["type"])
+        self.assertEqual("NVIDIA_NEMOGUARD_CONTENT_SAFETY", body["type"])
         self.assertEqual("GUARDRAIL_INTERVENED", body["message"]["action"])
         self.assertEqual("RESPONSE", body["message"]["direction"])
 
