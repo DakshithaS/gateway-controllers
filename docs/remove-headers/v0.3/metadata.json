@@ -4,7 +4,8 @@
   "version": "0.3",
   "provider": "WSO2",
   "categories": [
-    "Transformation"
+    "Transformation",
+    "WebSub"
   ],
   "description": "Removes configured headers from requests and/or responses. Header matching is case-insensitive, and removing a non-existent header is ignored."
 }
