@@ -1,0 +1,600 @@
+name: mcp-ratelimit
+version: v1.0.0
+description: |
+  Applies rate limits to MCP traffic per tool, resource, prompt, or JSON-RPC method.
+  Each entry targets a capability by name (or "*") and declares one or more
+  (limit, duration) limits; multiple entries may be configured in the same policy.
+  Enforcement is delegated to the advanced-ratelimit engine.
+
+parameters:
+  type: object
+  additionalProperties: false
+  anyOf:
+    - required: ["tools"]
+    - required: ["resources"]
+    - required: ["prompts"]
+    - required: ["methods"]
+  properties:
+
+    tools:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Rate-limit rules for MCP tools. Each entry targets a tool by name``
+        (or "*") and applies one or more limits. Exact names take precedence
+        over wildcards; all matching entries are enforced (strictest wins).
+      minItems: 1
+      maxItems: 50
+      items:
+        type: object
+        additionalProperties: false
+        required: ["name", "limits"]
+        properties:
+          name:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Specifies the tool name to rate-limit, or "*" for all tools.
+            default: "*"
+            minLength: 1
+            maxLength: 256
+          limits:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              One or more (limit, duration) limits enforced on this entry.
+              The strictest limit wins (delegated to advanced-ratelimit).
+            minItems: 1
+            maxItems: 10
+            items:
+              type: object
+              additionalProperties: false
+              required: ["limit", "duration"]
+              properties:
+                limit:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: Maximum number of requests allowed in the configured duration.
+                  minimum: 1
+                  maximum: 1000000000
+                duration:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Limit window as a Go duration string. Supports units
+                    ns, us, µs, ms, s, m, h, including composite and fractional
+                    values (for example "500ms", "1.5s", "1m30s", "24h").
+                  pattern: "^[-+]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))+$"
+          keyExtraction:
+            type: array
+            x-wso2-policy-advanced-param: true
+            description: |
+              Per-entry key extraction. If omitted, the policy uses the global
+              keyExtraction or defaults to [routename]. The matched capability
+              identifier is always appended to the key automatically so each
+              tool/resource/prompt gets its own counter.
+            minItems: 0
+            maxItems: 5
+            items:
+              type: object
+              additionalProperties: false
+              required: ["type"]
+              properties:
+                type:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Which key component to extract: header, metadata, ip, apiname,
+                    apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                key:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: Header name or metadata key for header / metadata / constant types.
+                  minLength: 1
+                  maxLength: 256
+                expression:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: CEL expression for the cel type. Must return a string.
+                  maxLength: 1024
+              allOf:
+                - if:
+                    properties:
+                      type:
+                        enum: ["header", "metadata", "constant"]
+                    required: ["type"]
+                  then:
+                    required: ["key"]
+                - if:
+                    properties:
+                      type:
+                        const: "cel"
+                    required: ["type"]
+                  then:
+                    required: ["expression"]
+                    properties:
+                      expression:
+                        minLength: 1
+
+    resources:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Rate-limit rules for MCP resources. Each entry targets a resource
+        URI (or "*") and applies one or more limits.
+      minItems: 1
+      maxItems: 50
+      items:
+        type: object
+        additionalProperties: false
+        required: ["name", "limits"]
+        properties:
+          name:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Specifies the resource URI to rate-limit, or "*" for all resources.
+            default: "*"
+            minLength: 1
+            maxLength: 2048
+          limits:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              One or more (limit, duration) limits enforced on this entry.
+              The strictest limit wins (delegated to advanced-ratelimit).
+            minItems: 1
+            maxItems: 10
+            items:
+              type: object
+              additionalProperties: false
+              required: ["limit", "duration"]
+              properties:
+                limit:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: Maximum number of requests allowed in the configured duration.
+                  minimum: 1
+                  maximum: 1000000000
+                duration:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Limit window as a Go duration string. Supports units
+                    ns, us, µs, ms, s, m, h, including composite and fractional
+                    values (for example "500ms", "1.5s", "1m30s", "24h").
+                  pattern: "^[-+]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))+$"
+          keyExtraction:
+            type: array
+            x-wso2-policy-advanced-param: true
+            description: |
+              Per-entry key extraction. If omitted, the policy uses the global
+              keyExtraction or defaults to [routename]. The matched capability
+              identifier is always appended to the key automatically so each
+              tool/resource/prompt gets its own counter.
+            minItems: 0
+            maxItems: 5
+            items:
+              type: object
+              additionalProperties: false
+              required: ["type"]
+              properties:
+                type:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Which key component to extract: header, metadata, ip, apiname,
+                    apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                key:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: Header name or metadata key for header / metadata / constant types.
+                  minLength: 1
+                  maxLength: 256
+                expression:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: CEL expression for the cel type. Must return a string.
+                  maxLength: 1024
+              allOf:
+                - if:
+                    properties:
+                      type:
+                        enum: ["header", "metadata", "constant"]
+                    required: ["type"]
+                  then:
+                    required: ["key"]
+                - if:
+                    properties:
+                      type:
+                        const: "cel"
+                    required: ["type"]
+                  then:
+                    required: ["expression"]
+                    properties:
+                      expression:
+                        minLength: 1
+
+    prompts:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Rate-limit rules for MCP prompts. Each entry targets a prompt by
+        name (or "*") and applies one or more limits.
+      minItems: 1
+      maxItems: 50
+      items:
+        type: object
+        additionalProperties: false
+        required: ["name", "limits"]
+        properties:
+          name:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Specifies the prompt name to rate-limit, or "*" for all prompts.
+            default: "*"
+            minLength: 1
+            maxLength: 256
+          limits:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              One or more (limit, duration) limits enforced on this entry.
+              The strictest limit wins (delegated to advanced-ratelimit).
+            minItems: 1
+            maxItems: 10
+            items:
+              type: object
+              additionalProperties: false
+              required: ["limit", "duration"]
+              properties:
+                limit:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: Maximum number of requests allowed in the configured duration.
+                  minimum: 1
+                  maximum: 1000000000
+                duration:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Limit window as a Go duration string. Supports units
+                    ns, us, µs, ms, s, m, h, including composite and fractional
+                    values (for example "500ms", "1.5s", "1m30s", "24h").
+                  pattern: "^[-+]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))+$"
+          keyExtraction:
+            type: array
+            x-wso2-policy-advanced-param: true
+            description: |
+              Per-entry key extraction. If omitted, the policy uses the global
+              keyExtraction or defaults to [routename]. The matched capability
+              identifier is always appended to the key automatically so each
+              tool/resource/prompt gets its own counter.
+            minItems: 0
+            maxItems: 5
+            items:
+              type: object
+              additionalProperties: false
+              required: ["type"]
+              properties:
+                type:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Which key component to extract: header, metadata, ip, apiname,
+                    apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                key:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: Header name or metadata key for header / metadata / constant types.
+                  minLength: 1
+                  maxLength: 256
+                expression:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: CEL expression for the cel type. Must return a string.
+                  maxLength: 1024
+              allOf:
+                - if:
+                    properties:
+                      type:
+                        enum: ["header", "metadata", "constant"]
+                    required: ["type"]
+                  then:
+                    required: ["key"]
+                - if:
+                    properties:
+                      type:
+                        const: "cel"
+                    required: ["type"]
+                  then:
+                    required: ["expression"]
+                    properties:
+                      expression:
+                        minLength: 1
+
+    methods:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: |
+        Rate-limit rules for raw JSON-RPC methods (for example "tools/list",
+        "tools/call"). Each entry targets a method (or "*")
+        and applies one or more limits.
+      minItems: 1
+      maxItems: 50
+      items:
+        type: object
+        additionalProperties: false
+        required: ["name", "limits"]
+        properties:
+          name:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Specifies the JSON-RPC method to rate-limit, or "*" for all methods.
+            default: "*"
+            minLength: 1
+            maxLength: 256
+          limits:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              One or more (limit, duration) limits enforced on this entry.
+              The strictest limit wins (delegated to advanced-ratelimit).
+            minItems: 1
+            maxItems: 10
+            items:
+              type: object
+              additionalProperties: false
+              required: ["limit", "duration"]
+              properties:
+                limit:
+                  type: integer
+                  x-wso2-policy-advanced-param: false
+                  description: Maximum number of requests allowed in the configured duration.
+                  minimum: 1
+                  maximum: 1000000000
+                duration:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Limit window as a Go duration string. Supports units
+                    ns, us, µs, ms, s, m, h, including composite and fractional
+                    values (for example "500ms", "1.5s", "1m30s", "24h").
+                  pattern: "^[-+]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|ms|s|m|h))+$"
+          keyExtraction:
+            type: array
+            x-wso2-policy-advanced-param: true
+            description: |
+              Per-entry key extraction. If omitted, the policy uses the global
+              keyExtraction or defaults to [routename]. The matched capability
+              identifier is always appended to the key automatically so each
+              tool/resource/prompt gets its own counter.
+            minItems: 0
+            maxItems: 5
+            items:
+              type: object
+              additionalProperties: false
+              required: ["type"]
+              properties:
+                type:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: |
+                    Which key component to extract: header, metadata, ip, apiname,
+                    apiversion, routename, cel, or constant.
+                  enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+                key:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: Header name or metadata key for header / metadata / constant types.
+                  minLength: 1
+                  maxLength: 256
+                expression:
+                  type: string
+                  x-wso2-policy-advanced-param: false
+                  description: CEL expression for the cel type. Must return a string.
+                  maxLength: 1024
+              allOf:
+                - if:
+                    properties:
+                      type:
+                        enum: ["header", "metadata", "constant"]
+                    required: ["type"]
+                  then:
+                    required: ["key"]
+                - if:
+                    properties:
+                      type:
+                        const: "cel"
+                    required: ["type"]
+                  then:
+                    required: ["expression"]
+                    properties:
+                      expression:
+                        minLength: 1
+
+    keyExtraction:
+      type: array
+      x-wso2-policy-advanced-param: true
+      description: |
+        Global key extraction applied to any entry that does not set its own
+        keyExtraction. If omitted or empty, the policy defaults to [routename].
+        The matched capability identifier is always appended automatically.
+      minItems: 0
+      maxItems: 5
+      items:
+        type: object
+        additionalProperties: false
+        required: ["type"]
+        properties:
+          type:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: |
+              Which key component to extract: header, metadata, ip, apiname,
+              apiversion, routename, cel, or constant.
+            enum: ["header", "metadata", "ip", "apiname", "apiversion", "routename", "cel", "constant"]
+          key:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: Header name or metadata key for header / metadata / constant types.
+            minLength: 1
+            maxLength: 256
+          expression:
+            type: string
+            x-wso2-policy-advanced-param: false
+            description: CEL expression for the cel type. Must return a string.
+            maxLength: 1024
+        allOf:
+          - if:
+              properties:
+                type:
+                  enum: ["header", "metadata", "constant"]
+              required: ["type"]
+            then:
+              required: ["key"]
+          - if:
+              properties:
+                type:
+                  const: "cel"
+              required: ["type"]
+            then:
+              required: ["expression"]
+              properties:
+                expression:
+                  minLength: 1
+
+    onRateLimitExceeded:
+      type: object
+      x-wso2-policy-advanced-param: true
+      description: |
+        Customizes the response returned when a request exceeds rate limits.
+        Defaults to a JSON-RPC error envelope so MCP clients can parse it.
+      additionalProperties: false
+      properties:
+        statusCode:
+          type: integer
+          x-wso2-policy-advanced-param: false
+          description: HTTP status code returned for rate-limited requests.
+          minimum: 400
+          maximum: 599
+          default: 429
+        body:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            Response body returned for rate-limited requests. When omitted,
+            the policy emits a JSON-RPC 2.0 error object with code -32000.
+          maxLength: 8192
+        bodyFormat:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: Response body format.
+          enum: ["json", "plain"]
+          default: "json"
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    algorithm:
+      type: string
+      description: |
+        Rate-limiting algorithm: gcra for smoother burst handling or
+        fixed-window for simple interval counting.
+      enum: ["gcra", "fixed-window"]
+      default: "fixed-window"
+      "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.algorithm}"
+
+    backend:
+      type: string
+      description: |
+        Storage backend: memory for single-instance limits or redis for
+        distributed limits.
+      enum: ["memory", "redis"]
+      default: "memory"
+      "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.backend}"
+
+    redis:
+      type: object
+      description: Redis configuration (only used when backend=redis).
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          default: "localhost"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.host}"
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 6379
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.port}"
+        password:
+          type: string
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.password}"
+        username:
+          type: string
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.username}"
+        db:
+          type: integer
+          minimum: 0
+          maximum: 15
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.db}"
+        keyPrefix:
+          type: string
+          default: "ratelimit:v1:"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.key_prefix}"
+        failureMode:
+          type: string
+          enum: ["open", "closed"]
+          default: "open"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.failure_mode}"
+        connectionTimeout:
+          type: string
+          default: "5s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.connection_timeout}"
+        readTimeout:
+          type: string
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.read_timeout}"
+        writeTimeout:
+          type: string
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.write_timeout}"
+
+    memory:
+      type: object
+      description: In-memory storage configuration (only used when backend=memory).
+      additionalProperties: false
+      properties:
+        maxEntries:
+          type: integer
+          minimum: 100
+          maximum: 10000000
+          default: 10000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.memory.max_entries}"
+        cleanupInterval:
+          type: string
+          default: "5m"
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.memory.cleanup_interval}"
+
+    headers:
+      type: object
+      description: Configures which rate-limit headers are added to responses.
+      additionalProperties: false
+      properties:
+        includeXRateLimit:
+          type: boolean
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_x_rate_limit}"
+        includeIETF:
+          type: boolean
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_ietf}"
+        includeRetryAfter:
+          type: boolean
+          default: true
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.headers.include_retry_after}"
