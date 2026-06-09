@@ -45,9 +45,13 @@ parameters:
       type: object
       x-wso2-policy-advanced-param: false
       description: >-
-        Static claim name→value pairs to include in every generated token regardless
-        of the authenticated user. These override any derived claims with the same name.
-        For example, {"env": "production"}.
+        Claim name→value pairs added to every generated token. String values prefixed
+        with "$ctx:" are resolved from the request context at runtime — for example,
+        "$ctx:auth.credential_id" injects the authenticated credential ID, and
+        "$ctx:request.header.x-tenant-id" injects a request header value. See
+        documentation for the full list of supported context variables. Non-resolvable
+        context references are silently skipped. Non-string values (numbers, booleans)
+        are included as-is. These run last and can override any derived claim.
       default: {}
       additionalProperties: {}
 
@@ -61,6 +65,7 @@ systemParameters:
         Private key used to sign the generated JWT. Specify exactly one of 'inline'
         (PEM-encoded key string) or 'path' (path to a PEM key file).
       additionalProperties: false
+      "wso2/defaultValue": "${config.policy_configurations.backendjwt_v1.signingkey}"
       oneOf:
         - required: ["inline"]
           not:
@@ -82,16 +87,19 @@ systemParameters:
         JWT signing algorithm. Must match the type of the configured private key:
         RS256/RS384/RS512 for RSA keys, ES256/ES384/ES512 for ECDSA keys.
       default: RS256
+      "wso2/defaultValue": "${config.policy_configurations.backendjwt_v1.algorithm}"
       enum: ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
     issuer:
       type: string
       description: Value for the 'iss' claim in generated tokens. Identifies the gateway as the token issuer.
       default: ""
+      "wso2/defaultValue": "${config.policy_configurations.backendjwt_v1.issuer}"
 
     tokenExpiry:
       type: string
       description: Validity duration of the generated token as a Go duration string (e.g. "15m", "1h").
       default: "15m"
+      "wso2/defaultValue": "${config.policy_configurations.backendjwt_v1.tokenexpiry}"
 
   required: ["signingKey"]

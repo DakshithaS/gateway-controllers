@@ -51,6 +51,35 @@ If no authentication context is present:
 | `claimMappings` | object | `{}` | Map `AuthContext.Properties` keys to JWT claim names |
 | `customClaims` | object | `{}` | Static claim name→value pairs added to every generated token |
 
+## Dynamic Context Claims
+
+`customClaims` values that start with `$ctx:` are resolved from the request context at runtime instead of being treated as static strings.
+
+| Variable | Resolves to |
+|---|---|
+| `$ctx:request.path` | Request path (e.g. `/petstore/v1/pets/42`) |
+| `$ctx:request.method` | HTTP method (`GET`, `POST`, …) |
+| `$ctx:request.authority` | Host authority |
+| `$ctx:request.scheme` | `http` or `https` |
+| `$ctx:request.header.<name>` | First value of request header `<name>` (case-insensitive) |
+| `$ctx:api.id` | API UUID |
+| `$ctx:api.name` | API name |
+| `$ctx:api.version` | API version |
+| `$ctx:api.context` | API base context path |
+| `$ctx:auth.subject` | Authenticated subject (same value as the `sub` claim) |
+| `$ctx:auth.type` | Auth type (`jwt`, `basic`, `apikey`) |
+| `$ctx:auth.credential_id` | Credential / application ID |
+| `$ctx:auth.property.<key>` | Custom property from `AuthContext.Properties` |
+
+Context variables that cannot be resolved (missing header, nil auth context, unknown variable name) are **silently skipped** — the claim is omitted from the token rather than causing an error or rejecting the request.
+
+Use this to put an auth context value under a different claim name. For example, to expose the application ID as `applicationId` rather than `credential_id`:
+
+```yaml
+customClaims:
+  applicationId: $ctx:auth.credential_id
+```
+
 ## Example
 
 ```yaml
@@ -72,7 +101,9 @@ policies:
         app_id: application_id
         org:    organization
       customClaims:
-        env: production
+        env: production                              # static
+        applicationId: $ctx:auth.credential_id      # dynamic — application/client ID
+        tenantId: $ctx:request.header.x-tenant-id   # dynamic — from request header
 ```
 
 The upstream service then validates the `x-jwt-assertion` header using the public key matching the gateway's private key.

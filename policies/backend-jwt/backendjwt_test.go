@@ -551,3 +551,207 @@ func TestAudienceAndCredentialID(t *testing.T) {
 	}
 	_ = audRaw // audience is present; exact type depends on JWT library serialisation
 }
+
+// ─── Context Claims Tests ─────────────────────────────────────────────────────
+
+func TestContextClaims_StaticPassthrough(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"env": "production"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "leo"})
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["env"] != "production" {
+		t.Errorf("expected env=production, got %v", claims["env"])
+	}
+}
+
+func TestContextClaims_RequestPath(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"req_path": "$ctx:request.path"}
+
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:   "r1",
+			Metadata:    make(map[string]interface{}),
+			AuthContext: &policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "mia"},
+		},
+		Headers: policy.NewHeaders(map[string][]string{}),
+		Path:    "/petstore/v1/pets/42",
+		Method:  "GET",
+	}
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["req_path"] != "/petstore/v1/pets/42" {
+		t.Errorf("expected req_path=/petstore/v1/pets/42, got %v", claims["req_path"])
+	}
+}
+
+func TestContextClaims_RequestHeader(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"tenant": "$ctx:request.header.x-tenant-id"}
+
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:   "r2",
+			Metadata:    make(map[string]interface{}),
+			AuthContext: &policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "noah"},
+		},
+		Headers: policy.NewHeaders(map[string][]string{"x-tenant-id": {"acme-corp"}}),
+		Path:    "/api/v1/data",
+		Method:  "GET",
+	}
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["tenant"] != "acme-corp" {
+		t.Errorf("expected tenant=acme-corp, got %v", claims["tenant"])
+	}
+}
+
+func TestContextClaims_APIName(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"api": "$ctx:api.name"}
+
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:   "r3",
+			Metadata:    make(map[string]interface{}),
+			APIName:     "PetStoreAPI",
+			AuthContext: &policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "olivia"},
+		},
+		Headers: policy.NewHeaders(map[string][]string{}),
+		Path:    "/api/v1",
+		Method:  "GET",
+	}
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["api"] != "PetStoreAPI" {
+		t.Errorf("expected api=PetStoreAPI, got %v", claims["api"])
+	}
+}
+
+func TestContextClaims_AuthCredentialID(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"applicationId": "$ctx:auth.credential_id"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "apikey",
+		Subject:       "peter",
+		CredentialID:  "app-xyz-999",
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["applicationId"] != "app-xyz-999" {
+		t.Errorf("expected applicationId=app-xyz-999, got %v", claims["applicationId"])
+	}
+}
+
+func TestContextClaims_AuthProperty(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"appName": "$ctx:auth.property.application_name"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "quinn",
+		Properties:    map[string]string{"application_name": "MyMobileApp"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["appName"] != "MyMobileApp" {
+		t.Errorf("expected appName=MyMobileApp, got %v", claims["appName"])
+	}
+}
+
+func TestContextClaims_MissingHeader(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"tenant": "$ctx:request.header.x-tenant-id"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "ryan"})
+	// x-tenant-id header is not set
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if _, present := claims["tenant"]; present {
+		t.Error("claim for missing header must be silently skipped")
+	}
+}
+
+func TestContextClaims_UnknownVariable(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{"x": "$ctx:unknown.variable.name"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{Authenticated: true, AuthType: "jwt", Subject: "sam"})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if _, present := claims["x"]; present {
+		t.Error("claim for unknown $ctx variable must be silently skipped")
+	}
+}
+
+func TestContextClaims_NilAuthContext(t *testing.T) {
+	// resolveClaimValue must return ("", false) for auth.* when AuthContext is nil —
+	// verify this directly since the full pipeline requires an authenticated context.
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "r9",
+			Metadata:  make(map[string]interface{}),
+			// AuthContext is deliberately nil
+		},
+		Headers: policy.NewHeaders(map[string][]string{}),
+		Path:    "/test",
+		Method:  "GET",
+	}
+
+	authVars := []string{
+		"$ctx:auth.credential_id",
+		"$ctx:auth.subject",
+		"$ctx:auth.type",
+		"$ctx:auth.property.foo",
+	}
+	for _, v := range authVars {
+		resolved, ok := resolveClaimValue(v, reqCtx)
+		if ok || resolved != "" {
+			t.Errorf("resolveClaimValue(%q) with nil AuthContext: expected (\"\", false), got (%q, %v)", v, resolved, ok)
+		}
+	}
+}

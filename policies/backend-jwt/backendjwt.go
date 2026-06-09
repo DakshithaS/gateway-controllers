@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,11 +155,23 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 		}
 	}
 
-	// Apply custom static claims (can override derived claims).
+	// Apply custom claims — string values starting with "$ctx:" resolve from request context.
 	if customRaw, ok := params["customClaims"]; ok {
 		if custom, ok := customRaw.(map[string]interface{}); ok {
 			for k, v := range custom {
-				claims[k] = v
+				strVal, ok := v.(string)
+				if !ok {
+					// Non-string values (numbers, booleans) pass through as-is.
+					claims[k] = v
+					continue
+				}
+				resolved, ok := resolveClaimValue(strVal, reqCtx)
+				if !ok {
+					slog.Debug("Backend JWT: skipping claim — context variable not resolvable",
+						"claim", k, "ref", strVal)
+					continue
+				}
+				claims[k] = resolved
 			}
 		}
 	}
@@ -333,6 +346,69 @@ func parseDuration(s string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+const ctxPrefix = "$ctx:"
+
+// resolveClaimValue returns the value to use for a custom JWT claim.
+// Values prefixed with "$ctx:" are resolved from the request context at runtime.
+// Returns ("", false) when a context variable cannot be resolved — the caller
+// silently skips the claim rather than treating it as an error.
+func resolveClaimValue(value string, reqCtx *policy.RequestHeaderContext) (string, bool) {
+	if !strings.HasPrefix(value, ctxPrefix) {
+		return value, true
+	}
+	variable := strings.ToLower(strings.TrimPrefix(value, ctxPrefix))
+
+	switch {
+	case variable == "request.path":
+		return reqCtx.Path, true
+	case variable == "request.method":
+		return reqCtx.Method, true
+	case variable == "request.authority":
+		return reqCtx.Authority, true
+	case variable == "request.scheme":
+		return reqCtx.Scheme, true
+	case strings.HasPrefix(variable, "request.header."):
+		name := strings.TrimPrefix(variable, "request.header.")
+		vals := reqCtx.Headers.Get(name)
+		if len(vals) == 0 {
+			return "", false
+		}
+		return vals[0], true
+	case variable == "api.id":
+		return reqCtx.APIId, true
+	case variable == "api.name":
+		return reqCtx.APIName, true
+	case variable == "api.version":
+		return reqCtx.APIVersion, true
+	case variable == "api.context":
+		return reqCtx.APIContext, true
+	case variable == "auth.subject":
+		if reqCtx.SharedContext.AuthContext == nil {
+			return "", false
+		}
+		return reqCtx.SharedContext.AuthContext.Subject, true
+	case variable == "auth.type":
+		if reqCtx.SharedContext.AuthContext == nil {
+			return "", false
+		}
+		return reqCtx.SharedContext.AuthContext.AuthType, true
+	case variable == "auth.credential_id":
+		if reqCtx.SharedContext.AuthContext == nil {
+			return "", false
+		}
+		return reqCtx.SharedContext.AuthContext.CredentialID, true
+	case strings.HasPrefix(variable, "auth.property."):
+		if reqCtx.SharedContext.AuthContext == nil {
+			return "", false
+		}
+		key := strings.TrimPrefix(variable, "auth.property.")
+		val, ok := reqCtx.SharedContext.AuthContext.Properties[key]
+		return val, ok
+	default:
+		return "", false
+	}
 }
 
 func internalError() policy.ImmediateResponse {
