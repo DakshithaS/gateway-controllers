@@ -29,18 +29,6 @@ parameters:
         If false, unauthenticated requests are forwarded without a backend JWT.
       default: false
 
-    claimMappings:
-      type: object
-      x-wso2-policy-advanced-param: false
-      description: >-
-        Maps AuthContext.Properties keys to JWT claim names in the generated token.
-        For example, {"app_id": "application_id"} adds an "application_id" claim
-        sourced from the authenticated context's "app_id" property. Keys that are
-        absent from the auth context are silently skipped.
-      default: {}
-      additionalProperties:
-        type: string
-
     customClaims:
       type: object
       x-wso2-policy-advanced-param: false

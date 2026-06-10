@@ -254,40 +254,6 @@ func TestCustomClaims(t *testing.T) {
 	}
 }
 
-func TestClaimMappings(t *testing.T) {
-	rsaKey, keyPEM := generateRSAKey(t)
-	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), tokenCache: make(map[string]cachedToken)}
-	params := baseParams(keyPEM)
-	params["claimMappings"] = map[string]interface{}{
-		"app_id":  "application_id",
-		"dept":    "department",
-		"missing": "should_not_appear",
-	}
-
-	reqCtx := newRequestContext(&policy.AuthContext{
-		Authenticated: true,
-		AuthType:      "apikey",
-		Subject:       "carol",
-		Properties: map[string]string{
-			"app_id": "app-xyz-123",
-			"dept":   "engineering",
-		},
-	})
-
-	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
-	mods := result.(policy.UpstreamRequestHeaderModifications)
-	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
-
-	if claims["application_id"] != "app-xyz-123" {
-		t.Errorf("expected application_id=app-xyz-123, got %v", claims["application_id"])
-	}
-	if claims["department"] != "engineering" {
-		t.Errorf("expected department=engineering, got %v", claims["department"])
-	}
-	if _, present := claims["should_not_appear"]; present {
-		t.Error("claim for missing property key must not appear in token")
-	}
-}
 
 func TestTokenExpiry(t *testing.T) {
 	rsaKey, keyPEM := generateRSAKey(t)
@@ -925,21 +891,21 @@ func TestContextClaims_AuthCredentialID(t *testing.T) {
 	rsaKey, keyPEM := generateRSAKey(t)
 	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), tokenCache: make(map[string]cachedToken)}
 	params := baseParams(keyPEM)
-	params["customClaims"] = map[string]interface{}{"applicationId": "$ctx:auth.credential_id"}
+	params["customClaims"] = map[string]interface{}{"clientId": "$ctx:auth.credential_id"}
 
 	reqCtx := newRequestContext(&policy.AuthContext{
 		Authenticated: true,
 		AuthType:      "apikey",
 		Subject:       "peter",
-		CredentialID:  "app-xyz-999",
+		CredentialID:  "cred-xyz-999",
 	})
 
 	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
 	mods := result.(policy.UpstreamRequestHeaderModifications)
 	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
 
-	if claims["applicationId"] != "app-xyz-999" {
-		t.Errorf("expected applicationId=app-xyz-999, got %v", claims["applicationId"])
+	if claims["clientId"] != "cred-xyz-999" {
+		t.Errorf("expected clientId=cred-xyz-999, got %v", claims["clientId"])
 	}
 }
 
@@ -947,21 +913,21 @@ func TestContextClaims_AuthProperty(t *testing.T) {
 	rsaKey, keyPEM := generateRSAKey(t)
 	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), tokenCache: make(map[string]cachedToken)}
 	params := baseParams(keyPEM)
-	params["customClaims"] = map[string]interface{}{"appName": "$ctx:auth.property.application_name"}
+	params["customClaims"] = map[string]interface{}{"clientName": "$ctx:auth.property.client_name"}
 
 	reqCtx := newRequestContext(&policy.AuthContext{
 		Authenticated: true,
 		AuthType:      "jwt",
 		Subject:       "quinn",
-		Properties:    map[string]string{"application_name": "MyMobileApp"},
+		Properties:    map[string]string{"client_name": "MyService"},
 	})
 
 	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
 	mods := result.(policy.UpstreamRequestHeaderModifications)
 	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
 
-	if claims["appName"] != "MyMobileApp" {
-		t.Errorf("expected appName=MyMobileApp, got %v", claims["appName"])
+	if claims["clientName"] != "MyService" {
+		t.Errorf("expected clientName=MyService, got %v", claims["clientName"])
 	}
 }
 
@@ -1025,5 +991,36 @@ func TestContextClaims_NilAuthContext(t *testing.T) {
 		if ok || resolved != "" {
 			t.Errorf("resolveClaimValue(%q) with nil AuthContext: expected (\"\", false), got (%q, %v)", v, resolved, ok)
 		}
+	}
+}
+
+func TestCustomClaims_RestrictedClaimsOverrideWithWarn(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), tokenCache: make(map[string]cachedToken)}
+	params := baseParams(keyPEM)
+	params["customClaims"] = map[string]interface{}{
+		"iss": "https://custom-issuer.example.com",
+		"sub": "overridden-subject",
+		"env": "production", // non-restricted, must also be present
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["iss"] != "https://custom-issuer.example.com" {
+		t.Errorf("iss must be overridden by customClaims, got %v", claims["iss"])
+	}
+	if claims["sub"] != "overridden-subject" {
+		t.Errorf("sub must be overridden by customClaims, got %v", claims["sub"])
+	}
+	if claims["env"] != "production" {
+		t.Errorf("non-restricted claim env must still be set, got %v", claims["env"])
 	}
 }

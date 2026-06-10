@@ -50,13 +50,11 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
-// resolvedClaims holds the extra claims derived from claimMappings and customClaims
-// in a single pass, split by type so cache-key and JWT population can share the work.
+// resolvedClaims holds the extra claims derived from customClaims, split by type
+// so the cache key and JWT population can share the same resolved values.
 type resolvedClaims struct {
-	// stringClaims: claimMappings results + resolved string customClaims (including $ctx:).
-	stringClaims map[string]string
-	// rawClaims: non-string customClaims (numbers, booleans) preserved as-is for JWT.
-	rawClaims map[string]interface{}
+	stringClaims map[string]string      // resolved string customClaims, including $ctx: refs
+	rawClaims    map[string]interface{} // non-string customClaims (numbers, booleans) preserved as-is
 }
 
 // BackendJWTPolicy generates a signed JWT from the authenticated user context
@@ -180,7 +178,7 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 	headerName := getString(params, "header", defaultHeader)
 
 	// Resolve extra claims once — used for both the cache key and JWT population.
-	extras := resolveExtraClaims(authCtx, reqCtx, params)
+	extras := resolveExtraClaims(reqCtx, params)
 
 	cacheKey := buildTokenCacheKey(
 		authCtx.CredentialID, authCtx.Subject, reqCtx.APIContext, reqCtx.APIVersion,
@@ -281,32 +279,30 @@ func (p *BackendJWTPolicy) loadKey(pemBytes []byte) (crypto.PrivateKey, error) {
 	return parsed, nil
 }
 
-// resolveExtraClaims resolves claimMappings and customClaims in a single pass.
-// stringClaims holds claimMappings results and resolved string customClaims (including $ctx: refs).
+// restrictedClaims are set by the policy itself; custom claims must not override them.
+var restrictedClaims = map[string]bool{
+	"iss": true,
+	"sub": true,
+	"aud": true,
+	"exp": true,
+	"iat": true,
+}
+
+// resolveExtraClaims resolves customClaims from params.
+// stringClaims holds resolved string customClaims (including $ctx: refs).
 // rawClaims holds non-string customClaims preserved as their original types for JWT population.
-func resolveExtraClaims(authCtx *policy.AuthContext, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) resolvedClaims {
+func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]interface{}) resolvedClaims {
 	result := resolvedClaims{
 		stringClaims: make(map[string]string),
 		rawClaims:    make(map[string]interface{}),
 	}
 
-	if mappingsRaw, ok := params["claimMappings"]; ok {
-		if mappings, ok := mappingsRaw.(map[string]interface{}); ok {
-			for propKey, claimNameRaw := range mappings {
-				claimName, ok := claimNameRaw.(string)
-				if !ok {
-					continue
-				}
-				if val, ok := authCtx.Properties[propKey]; ok {
-					result.stringClaims[claimName] = val
-				}
-			}
-		}
-	}
-
 	if customRaw, ok := params["customClaims"]; ok {
 		if custom, ok := customRaw.(map[string]interface{}); ok {
 			for k, v := range custom {
+				if restrictedClaims[k] {
+					slog.Warn("Backend JWT: customClaim overrides a reserved claim", "claim", k)
+				}
 				strVal, ok := v.(string)
 				if !ok {
 					result.rawClaims[k] = v

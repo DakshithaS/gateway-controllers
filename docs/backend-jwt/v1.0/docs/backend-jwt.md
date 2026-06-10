@@ -28,8 +28,7 @@ If no authentication context is present:
 | `auth_type` | `AuthContext.AuthType` (e.g. `jwt`, `basic`, `apikey`) |
 | `original_iss` | `AuthContext.Issuer` — the original token issuer (JWT auth only) |
 | `aud` | `AuthContext.Audience` (JWT auth only) |
-| `credential_id` | `AuthContext.CredentialID` (API key application ID, OAuth client_id) |
-| _mapped_ | Selected `AuthContext.Properties` keys via `claimMappings` |
+| `credential_id` | `AuthContext.CredentialID` (OAuth client_id, API key credential) |
 | _custom_ | Static values from `customClaims` |
 
 ## Configuration
@@ -50,7 +49,6 @@ If no authentication context is present:
 |---|---|---|---|
 | `header` | string | `x-jwt-assertion` | Upstream request header to set the generated JWT on |
 | `requireAuthentication` | boolean | `false` | Reject unauthenticated requests with 401 when true |
-| `claimMappings` | object | `{}` | Map `AuthContext.Properties` keys to JWT claim names |
 | `customClaims` | object | `{}` | Static claim name→value pairs added to every generated token |
 
 ## Dynamic Context Claims
@@ -70,16 +68,16 @@ If no authentication context is present:
 | `$ctx:api.context` | API base context path |
 | `$ctx:auth.subject` | Authenticated subject (same value as the `sub` claim) |
 | `$ctx:auth.type` | Auth type (`jwt`, `basic`, `apikey`) |
-| `$ctx:auth.credential_id` | Credential / application ID |
+| `$ctx:auth.credential_id` | Credential ID (OAuth client_id or API key) |
 | `$ctx:auth.property.<key>` | Custom property from `AuthContext.Properties` |
 
 Context variables that cannot be resolved (missing header, nil auth context, unknown variable name) are **silently skipped** — the claim is omitted from the token rather than causing an error or rejecting the request.
 
-Use this to put an auth context value under a different claim name. For example, to expose the application ID as `applicationId` rather than `credential_id`:
+Use this to put an auth context value under a different claim name. For example, to expose the credential ID as `clientId` rather than `credential_id`:
 
 ```yaml
 customClaims:
-  applicationId: $ctx:auth.credential_id
+  clientId: $ctx:auth.credential_id
 ```
 
 ## Example
@@ -99,12 +97,10 @@ policies:
     parameters:
       header: x-jwt-assertion
       requireAuthentication: true
-      claimMappings:
-        app_id: application_id
-        org:    organization
       customClaims:
         env: production                              # static
-        applicationId: $ctx:auth.credential_id      # dynamic — application/client ID
+        clientId: $ctx:auth.credential_id            # dynamic — credential ID
+        clientName: $ctx:auth.property.client_name  # dynamic — from auth context property
         tenantId: $ctx:request.header.x-tenant-id   # dynamic — from request header
 ```
 
@@ -114,4 +110,4 @@ The upstream service then validates the `x-jwt-assertion` header using the publi
 
 - [`jwt-auth`](../../jwt-auth/v1.0/docs/jwt-authentication.md) — validates incoming JWTs from clients
 - [`basic-auth`](../../basic-auth/) — authenticates clients with username/password; pairs well with Backend JWT to forward user identity
-- [`api-key-auth`](../../api-key-auth/) — authenticates clients with API keys; pairs well with Backend JWT to forward application identity
+- [`api-key-auth`](../../api-key-auth/) — authenticates clients with API keys; pairs well with Backend JWT to forward client identity
