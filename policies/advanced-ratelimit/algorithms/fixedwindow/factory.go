@@ -66,11 +66,11 @@ func NewLimiter(config limiter.Config) (limiter.Limiter, error) {
 			return nil, fmt.Errorf("redis client is required for redis-local-async backend")
 		}
 
-		syncEvery, failOpen := localAsyncConfig(config.AlgorithmConfig)
+		lac := localAsyncConfig(config.AlgorithmConfig)
 
 		if len(policies) == 1 {
 			backing := NewRedisLimiter(config.RedisClient, policies[0], config.KeyPrefix)
-			return NewRedisLocalAsyncLimiter(backing, syncEvery, failOpen), nil
+			return NewRedisLocalAsyncLimiter(backing, lac), nil
 		}
 
 		// Multi-limiter: one async limiter per policy, with a per-policy key prefix.
@@ -78,7 +78,7 @@ func NewLimiter(config limiter.Config) (limiter.Limiter, error) {
 		for i, policy := range policies {
 			policyPrefix := fmt.Sprintf("%sp%d:", config.KeyPrefix, i)
 			backing := NewRedisLimiter(config.RedisClient, policy, policyPrefix)
-			limiters[i] = NewRedisLocalAsyncLimiter(backing, syncEvery, failOpen)
+			limiters[i] = NewRedisLocalAsyncLimiter(backing, lac)
 		}
 		return NewMultiLimiter(limiters...), nil
 	}
@@ -99,28 +99,43 @@ func NewLimiter(config limiter.Config) (limiter.Limiter, error) {
 
 // localAsyncConfig extracts the redis-local-async tuning from Config.AlgorithmConfig.
 // Values are tolerant: syncInterval accepts a time.Duration or a Go-duration string;
-// failOpen accepts a bool. Missing/invalid values fall back to the defaults
-// (DefaultSyncInterval, fail-open).
-func localAsyncConfig(cfg map[string]interface{}) (syncEvery time.Duration, failOpen bool) {
-	syncEvery = DefaultSyncInterval
-	failOpen = true
+// failOpen accepts a bool; the int knobs accept int/int64/float64. Missing/invalid
+// values fall back to the defaults (applied in LocalAsyncConfig.withDefaults).
+func localAsyncConfig(cfg map[string]interface{}) LocalAsyncConfig {
+	out := LocalAsyncConfig{SyncInterval: DefaultSyncInterval, FailOpen: true}
 	if cfg == nil {
-		return syncEvery, failOpen
+		return out
 	}
 	switch d := cfg["syncInterval"].(type) {
 	case time.Duration:
 		if d > 0 {
-			syncEvery = d
+			out.SyncInterval = d
 		}
 	case string:
 		if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
-			syncEvery = parsed
+			out.SyncInterval = parsed
 		}
 	}
 	if v, ok := cfg["failOpen"].(bool); ok {
-		failOpen = v
+		out.FailOpen = v
 	}
-	return syncEvery, failOpen
+	out.MaxLocalEntries = intFromAny(cfg["maxLocalEntries"])
+	out.FlushWorkers = intFromAny(cfg["flushWorkers"])
+	out.MaxPipelineCommands = intFromAny(cfg["maxPipelineCommands"])
+	return out
+}
+
+// intFromAny coerces an AlgorithmConfig value (int/int64/float64) to int; 0 otherwise.
+func intFromAny(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 // convertLimits converts generic LimitConfig to fixed-window-specific Policy

@@ -410,6 +410,15 @@ systemParameters:
           default: "3s"
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.write_timeout}"
 
+        poolSize:
+          type: integer
+          description: |
+            Redis connection pool size for the shared client. 0 = go-redis default
+            (10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint config.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.pool_size}"
+
     memory:
       type: object
       description: Configures in-memory storage settings when backend is memory.
@@ -449,6 +458,35 @@ systemParameters:
             "1.5s", "1m30s").
           default: "50ms"
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.sync_interval}"
+
+        flushWorkers:
+          type: integer
+          description: |
+            Number of background flush workers shared by all redis-local-async limiters
+            in the process. 0 = auto (GOMAXPROCS/2, capped at 8). Only the first
+            registrant's value takes effect; a restart is required to change it.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.flush_workers}"
+
+        maxPipelineCommands:
+          type: integer
+          description: |
+            Maximum INCRBYs issued in a single Redis pipeline per flush; excess dirty keys
+            spill to the next flush tick.
+          minimum: 0
+          default: 5000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.max_pipeline_commands}"
+
+        maxLocalEntries:
+          type: integer
+          description: |
+            Maximum local key-state entries per limiter before eviction (carrying any
+            unflushed delta to Redis). Bounds memory under high/adversarial key
+            cardinality.
+          minimum: 0
+          default: 100000
+          "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.local.max_local_entries}"
 
     headers:
       type: object

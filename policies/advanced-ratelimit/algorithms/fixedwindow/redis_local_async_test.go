@@ -41,7 +41,12 @@ func runMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 		t.Fatalf("miniredis.Run: %v", err)
 	}
 	t.Cleanup(mr.Close)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	// Fast-fail timeouts so the Redis-down tests don't spend seconds on dial retries.
+	client := redis.NewClient(&redis.Options{
+		Addr:        mr.Addr(),
+		DialTimeout: 200 * time.Millisecond,
+		MaxRetries:  -1,
+	})
 	t.Cleanup(func() { _ = client.Close() })
 	return mr, client
 }
@@ -49,7 +54,7 @@ func runMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 func newAsyncLimiter(t *testing.T, client redis.UniversalClient, limit int64, failOpen bool, clk limiter.Clock) *RedisLocalAsyncLimiter {
 	t.Helper()
 	backing := NewRedisLimiter(client, NewPolicy(limit, time.Minute), "ratelimit:v1:")
-	lim := NewRedisLocalAsyncLimiter(backing, testNoAutoFlush, failOpen)
+	lim := NewRedisLocalAsyncLimiter(backing, LocalAsyncConfig{SyncInterval: testNoAutoFlush, FailOpen: failOpen})
 	if clk != nil {
 		lim.WithClock(clk)
 	}
@@ -278,7 +283,7 @@ func TestRedisLocalAsync_CloseDrains(t *testing.T) {
 	_, client := runMiniredis(t)
 	clk := limiter.NewFixedClock(time.Unix(8000, 0))
 	backing := NewRedisLimiter(client, NewPolicy(10, time.Minute), "ratelimit:v1:")
-	lim := NewRedisLocalAsyncLimiter(backing, testNoAutoFlush, true)
+	lim := NewRedisLocalAsyncLimiter(backing, LocalAsyncConfig{SyncInterval: testNoAutoFlush, FailOpen: true})
 	lim.WithClock(clk)
 	ws := NewPolicy(10, time.Minute).WindowStart(clk.Now())
 
@@ -338,7 +343,7 @@ func TestRedisLocalAsync_Factory(t *testing.T) {
 func TestRedisLocalAsync_Concurrent(t *testing.T) {
 	_, client := runMiniredis(t)
 	backing := NewRedisLimiter(client, NewPolicy(100000, time.Minute), "ratelimit:v1:")
-	lim := NewRedisLocalAsyncLimiter(backing, 5*time.Millisecond, true)
+	lim := NewRedisLocalAsyncLimiter(backing, LocalAsyncConfig{SyncInterval: 5 * time.Millisecond, FailOpen: true})
 	defer lim.Close()
 
 	var wg sync.WaitGroup
@@ -356,4 +361,118 @@ func TestRedisLocalAsync_Concurrent(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+func inActiveSet(c *flushCoordinator, shard int, l *RedisLocalAsyncLimiter) bool {
+	c.shards[shard].mu.Lock()
+	defer c.shards[shard].mu.Unlock()
+	_, ok := c.shards[shard].active[l]
+	return ok
+}
+
+// TestRedisLocalAsync_Coordinator drives a non-started coordinator manually and checks
+// the active-set lifecycle: inactive until traffic, flushed + removed by a due tick,
+// re-activated by new traffic.
+func TestRedisLocalAsync_Coordinator(t *testing.T) {
+	_, client := runMiniredis(t)
+	coord := newFlushCoordinator(1, false) // not started; we call tickShard directly
+	clk := limiter.NewFixedClock(time.Unix(9000, 0))
+	backing := NewRedisLimiter(client, NewPolicy(100, time.Minute), "ratelimit:v1:")
+	lim := newRedisLocalAsyncLimiterWith(backing, LocalAsyncConfig{SyncInterval: 10 * time.Millisecond, FailOpen: true}, coord)
+	lim.WithClock(clk)
+	defer lim.Close()
+	ws := NewPolicy(100, time.Minute).WindowStart(clk.Now())
+
+	if inActiveSet(coord, 0, lim) {
+		t.Fatal("limiter should be inactive before any traffic")
+	}
+	mustAllow(t, lim, "k")
+	mustAllow(t, lim, "k")
+	if !inActiveSet(coord, 0, lim) {
+		t.Fatal("limiter should be active after traffic")
+	}
+	if redisCount(t, client, "k", ws) != 0 {
+		t.Fatal("no flush should have happened before a tick")
+	}
+
+	// A due tick flushes and removes the limiter from the active set.
+	coord.tickShard(0, time.Now().Add(time.Hour))
+	if got := redisCount(t, client, "k", ws); got != 2 {
+		t.Fatalf("tick should flush 2, got %d", got)
+	}
+	if inActiveSet(coord, 0, lim) {
+		t.Fatal("limiter should be inactive after a clean flush")
+	}
+
+	// New traffic re-activates it.
+	mustAllow(t, lim, "k")
+	if !inActiveSet(coord, 0, lim) {
+		t.Fatal("new traffic should re-activate the limiter")
+	}
+}
+
+// TestRedisLocalAsync_PipelineSpill: with a small MaxPipelineCommands, one flush cannot
+// drain all dirty keys; it reports more=true and subsequent flushes finish without
+// losing any counts.
+func TestRedisLocalAsync_PipelineSpill(t *testing.T) {
+	_, client := runMiniredis(t)
+	clk := limiter.NewFixedClock(time.Unix(11000, 0))
+	backing := NewRedisLimiter(client, NewPolicy(100000, time.Minute), "ratelimit:v1:")
+	lim := newRedisLocalAsyncLimiterWith(backing,
+		LocalAsyncConfig{SyncInterval: testNoAutoFlush, FailOpen: true, MaxPipelineCommands: 8},
+		newFlushCoordinator(1, false))
+	lim.WithClock(clk)
+	defer lim.Close()
+	ws := NewPolicy(100000, time.Minute).WindowStart(clk.Now())
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		mustAllow(t, lim, fmt.Sprintf("k%d", i))
+	}
+	if !lim.flushPending() {
+		t.Fatal("first flush should report more=true (budget 8 < 20 keys)")
+	}
+	for lim.flushPending() { // drain the spill
+	}
+	total := 0
+	for i := 0; i < n; i++ {
+		total += int(redisCount(t, client, fmt.Sprintf("k%d", i), ws))
+	}
+	if total != n {
+		t.Fatalf("spill lost counts: total %d, want %d", total, n)
+	}
+}
+
+// TestRedisLocalAsync_EvictionCarriesDelta: when a key is evicted to bound local state,
+// its un-flushed delta is carried to Redis (not lost). stripeCap=1 forces an eviction.
+func TestRedisLocalAsync_EvictionCarriesDelta(t *testing.T) {
+	_, client := runMiniredis(t)
+	clk := limiter.NewFixedClock(time.Unix(13000, 0))
+	backing := NewRedisLimiter(client, NewPolicy(100000, time.Minute), "ratelimit:v1:")
+	lim := newRedisLocalAsyncLimiterWith(backing,
+		LocalAsyncConfig{SyncInterval: testNoAutoFlush, FailOpen: true, MaxLocalEntries: 16}, // stripeCap = 1
+		newFlushCoordinator(1, false))
+	lim.WithClock(clk)
+	defer lim.Close()
+	ws := NewPolicy(100000, time.Minute).WindowStart(clk.Now())
+
+	a := "key-a"
+	// Find a key b in the same stripe as a, so allowing b evicts a.
+	var b string
+	for i := 0; b == ""; i++ {
+		cand := fmt.Sprintf("key-b-%d", i)
+		if cand != a && lim.stripeFor(cand) == lim.stripeFor(a) {
+			b = cand
+		}
+	}
+	mustAllow(t, lim, a) // a: localDelta 1
+	mustAllow(t, lim, b) // evicts a (delta carried to evictedPending); b: localDelta 1
+	lim.flushPending()
+
+	if got := redisCount(t, client, a, ws); got != 1 {
+		t.Fatalf("evicted key's delta was lost: a count = %d, want 1", got)
+	}
+	if got := redisCount(t, client, b, ws); got != 1 {
+		t.Fatalf("b count = %d, want 1", got)
+	}
 }

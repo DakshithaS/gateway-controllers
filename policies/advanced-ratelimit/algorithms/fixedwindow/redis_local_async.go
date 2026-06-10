@@ -23,7 +23,10 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/wso2/gateway-controllers/policies/advanced-ratelimit/limiter"
 )
@@ -34,10 +37,44 @@ import (
 // interval) matters more than tight accuracy.
 const DefaultSyncInterval = 50 * time.Millisecond
 
+// DefaultMaxLocalEntries bounds the per-limiter local key-state map (across all stripes)
+// to cap memory under high/adversarial key cardinality (per-IP / per-user keys).
+const DefaultMaxLocalEntries = 100000
+
+// DefaultMaxPipelineCommands bounds how many INCRBYs one flush issues in a single Redis
+// pipeline; excess dirty keys spill to the next flush tick.
+const DefaultMaxPipelineCommands = 5000
+
 // failClosedThreshold is the number of consecutive failed flush ticks after which a
 // fail-closed limiter starts denying traffic (until a flush succeeds again). A small
 // threshold (>1) avoids flapping on a single transient Redis error.
 const failClosedThreshold = 2
+
+// numStripes shards a limiter's local state to remove single-mutex serialization of a
+// route's keys. Power of two for mask indexing.
+const numStripes = 16
+
+// LocalAsyncConfig configures a RedisLocalAsyncLimiter. Zero values take the defaults.
+type LocalAsyncConfig struct {
+	SyncInterval        time.Duration // <=0 -> DefaultSyncInterval
+	FailOpen            bool
+	MaxLocalEntries     int // <=0 -> DefaultMaxLocalEntries (per-limiter, across stripes)
+	FlushWorkers        int // 0 -> auto (GOMAXPROCS/2, cap 8); only the FIRST registrant wins
+	MaxPipelineCommands int // <=0 -> DefaultMaxPipelineCommands
+}
+
+func (c LocalAsyncConfig) withDefaults() LocalAsyncConfig {
+	if c.SyncInterval <= 0 {
+		c.SyncInterval = DefaultSyncInterval
+	}
+	if c.MaxLocalEntries <= 0 {
+		c.MaxLocalEntries = DefaultMaxLocalEntries
+	}
+	if c.MaxPipelineCommands <= 0 {
+		c.MaxPipelineCommands = DefaultMaxPipelineCommands
+	}
+	return c
+}
 
 // localState is the per-key counting state for the CURRENT window on this replica.
 type localState struct {
@@ -47,64 +84,118 @@ type localState struct {
 	blocked     bool  // true once the global count is known to have reached the limit this window
 }
 
+// pendingFlush is a snapshot of one key's un-flushed delta and the window it belongs to.
+type pendingFlush struct {
+	key     string
+	flushN  int64
+	ws      time.Time
+	evicted bool // delta came from an evicted state; do not deduct localDelta on apply
+}
+
+// stripe holds one shard of a limiter's local state.
+type stripe struct {
+	mu             sync.Mutex
+	states         map[string]*localState
+	dirty          map[string]struct{}
+	evictedPending []pendingFlush // deltas carried out of evicted states, owed to Redis
+}
+
 // RedisLocalAsyncLimiter implements fixed-window rate limiting with an in-memory hot
 // path and asynchronous reconciliation against Redis.
 //
 // Every request is decided locally (no Redis round-trip) from an estimate of the global
-// count, globalBase+localDelta. A background goroutine flushes the accumulated local
-// deltas to the SAME Redis key the pure-redis backend uses (atomic INCRBY) every
-// syncInterval and reads back the authoritative count, so all replicas converge on the
-// shared quota with bounded overshoot (≈ limit + (replicas-1)·rate·syncInterval).
+// count, globalBase+localDelta. A shared flush coordinator periodically flushes the
+// accumulated local deltas to the SAME Redis key the pure-redis backend uses (atomic
+// INCRBY, batched in a pipeline) every syncInterval and reads back the authoritative
+// count, so all replicas converge on the shared quota with bounded overshoot
+// (≈ limit + (replicas-1)·rate·syncInterval).
+//
+// State is sharded across numStripes stripes (no single-mutex serialization) and capped
+// at MaxLocalEntries (LRU-ish eviction carries any unflushed delta to Redis). A single
+// process-wide coordinator with a small worker pool drives all limiters' flushes (one
+// pipeline per shard per tick) instead of a goroutine+client per limiter.
 //
 // Only the commutative counting path (Allow/AllowN) is local. The cost-extraction
 // methods (GetAvailable/ConsumeOrClampN/ConsumeN) are inherited from the embedded
 // *RedisLimiter and remain synchronous so their atomic Lua/CAS semantics are unchanged.
+//
+// Concurrency invariants:
+//  1. Lock order: flushMu -> one stripe.mu at a time (never two). coordShard.mu is never
+//     held together with flushMu or stripe.mu. coordinator.mu (intervals) is never held
+//     while calling limiter methods. No cycles.
+//  2. Lost-wakeup prevention: AllowN marks a stripe dirty BEFORE the `enqueued` CAS;
+//     tickShard removes the limiter from its shard's active set and clears `enqueued`
+//     (under coordShard.mu) BEFORE flushPending snapshots. `enqueued` is cleared nowhere
+//     else. So every delta is either snapshotted now or re-enqueued for the next tick.
+//  3. flushMu serializes all flushes for a limiter (coordinator worker, Close drain,
+//     tests) so out-of-order INCRBY results cannot regress globalBase. failStreak and
+//     flushCursor are guarded by flushMu.
+//  4. cfg/coord/shard are immutable after the constructor returns.
 type RedisLocalAsyncLimiter struct {
 	*RedisLimiter // backing limiter: Redis client, policy, key scheme, clock, cost methods
 
-	syncEvery time.Duration
-	failOpen  bool
+	cfg       LocalAsyncConfig
+	stripeCap int
 
-	mu     sync.Mutex
-	states map[string]*localState
-	dirty  map[string]struct{} // keys with an un-flushed localDelta
+	stripes [numStripes]stripe
 
-	failStreak int  // consecutive failed flush ticks
-	redisDown  bool // fail-closed: Redis considered down -> deny on the hot path
+	enqueued    atomic.Bool  // member of the coordinator shard's active set
+	nextFlushAt atomic.Int64 // unix nanos; when this limiter is next due to flush
+	redisDown   atomic.Bool  // fail-closed: Redis considered down -> deny on the hot path
 
-	ticker    *time.Ticker
-	done      chan struct{}
+	flushMu     sync.Mutex // serializes flushPending
+	failStreak  int        // guarded by flushMu
+	flushCursor int        // rotating stripe start for the pipeline budget; guarded by flushMu
+
+	coord     *flushCoordinator
+	shard     int
 	closeOnce sync.Once
 }
 
 // NewRedisLocalAsyncLimiter wraps a fixed-window RedisLimiter with a local-first,
-// async-reconcile counting path. backing supplies the Redis client, policy, key prefix
-// and clock. It starts the background flusher; callers MUST Close() it (the policy's
-// limiter cache does this on reload/teardown) to stop the goroutine and drain.
-func NewRedisLocalAsyncLimiter(backing *RedisLimiter, syncEvery time.Duration, failOpen bool) *RedisLocalAsyncLimiter {
-	if syncEvery <= 0 {
-		syncEvery = DefaultSyncInterval
-	}
+// async-reconcile counting path, registering it with the process-wide flush coordinator.
+// Callers MUST Close() it (the policy's limiter cache does this on reload/teardown) to
+// deregister and drain.
+func NewRedisLocalAsyncLimiter(backing *RedisLimiter, cfg LocalAsyncConfig) *RedisLocalAsyncLimiter {
+	return newRedisLocalAsyncLimiterWith(backing, cfg, defaultFlushCoordinator(resolveFlushWorkers(cfg.FlushWorkers)))
+}
+
+// newRedisLocalAsyncLimiterWith is the testable constructor: it accepts an explicit
+// coordinator (e.g. a non-started one tests drive via tickShard).
+func newRedisLocalAsyncLimiterWith(backing *RedisLimiter, cfg LocalAsyncConfig, coord *flushCoordinator) *RedisLocalAsyncLimiter {
+	cfg = cfg.withDefaults()
 	r := &RedisLocalAsyncLimiter{
 		RedisLimiter: backing,
-		syncEvery:    syncEvery,
-		failOpen:     failOpen,
-		states:       make(map[string]*localState),
-		dirty:        make(map[string]struct{}),
-		done:         make(chan struct{}),
+		cfg:          cfg,
+		stripeCap:    max(1, cfg.MaxLocalEntries/numStripes),
+		coord:        coord,
 	}
-	r.ticker = time.NewTicker(syncEvery)
-	go r.flushLoop()
+	for i := range r.stripes {
+		r.stripes[i].states = make(map[string]*localState)
+		r.stripes[i].dirty = make(map[string]struct{})
+	}
+	r.shard = coord.register(r)
+	// Not due until one interval from now, so a freshly registered limiter is never
+	// flushed by the coordinator before it has any traffic (keeps tests deterministic).
+	r.nextFlushAt.Store(coord.now().Add(cfg.SyncInterval).UnixNano())
 	return r
 }
 
-// WithClock sets a custom clock (for testing). It updates the embedded RedisLimiter's
-// clock, which the local hot path and flusher also read.
+// WithClock sets a custom clock (for testing). Set before first use; not safe to call
+// concurrently with traffic (matches the embedded RedisLimiter contract).
 func (r *RedisLocalAsyncLimiter) WithClock(clock limiter.Clock) *RedisLocalAsyncLimiter {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.RedisLimiter.WithClock(clock)
 	return r
+}
+
+func (r *RedisLocalAsyncLimiter) stripeFor(key string) *stripe {
+	// FNV-1a, no allocation.
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return &r.stripes[h&(numStripes-1)]
 }
 
 // Allow checks if a single request is allowed for the given key.
@@ -119,28 +210,29 @@ func (r *RedisLocalAsyncLimiter) AllowN(_ context.Context, key string, n int64) 
 		n = 0
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	now := r.clock.Now()
 	windowStart := r.policy.WindowStart(now)
 	windowEnd := r.policy.WindowEnd(now)
 	limit := r.policy.Limit
 
-	st, ok := r.states[key]
+	s := r.stripeFor(key)
+	s.mu.Lock()
+
+	st, ok := s.states[key]
 	if !ok || !st.windowStart.Equal(windowStart) {
-		// New key, or a new window for an existing key: start fresh. Any residual
-		// un-flushed delta from a now-closed window is dropped (bounded by one sync
-		// interval of traffic and only affects an already-expired window).
+		if !ok {
+			r.ensureCapacityLocked(s, now) // evict before inserting a new key
+		}
 		st = &localState{windowStart: windowStart}
-		r.states[key] = st
+		s.states[key] = st
 	}
 
+	needEnqueue := len(s.evictedPending) > 0
 	allowed := false
 	switch {
 	case st.blocked:
 		// Local deny cache: global count already reached the limit this window.
-	case !r.failOpen && r.redisDown:
+	case !r.cfg.FailOpen && r.redisDown.Load():
 		// Fail-closed and Redis is down: block rather than admit un-reconciled traffic.
 	case st.globalBase+st.localDelta+n > limit:
 		// Estimate would exceed the limit; latch the deny cache for this window.
@@ -149,13 +241,20 @@ func (r *RedisLocalAsyncLimiter) AllowN(_ context.Context, key string, n int64) 
 		allowed = true
 		st.localDelta += n
 		if n > 0 {
-			r.dirty[key] = struct{}{}
+			s.dirty[key] = struct{}{}
+			needEnqueue = true
 		}
 	}
 
 	remaining := limit - (st.globalBase + st.localDelta)
 	if remaining < 0 {
 		remaining = 0
+	}
+	s.mu.Unlock()
+
+	// Enqueue with the coordinator on the clean->dirty transition (idempotent CAS).
+	if needEnqueue && r.enqueued.CompareAndSwap(false, true) {
+		r.coord.markActive(r)
 	}
 
 	result := &limiter.Result{
@@ -178,129 +277,219 @@ func (r *RedisLocalAsyncLimiter) AllowN(_ context.Context, key string, n int64) 
 	return result, nil
 }
 
-// flushLoop runs the background reconciliation until Close().
-func (r *RedisLocalAsyncLimiter) flushLoop() {
-	for {
-		select {
-		case <-r.ticker.C:
-			r.flushPending()
-		case <-r.done:
-			return
+// ensureCapacityLocked evicts an entry if the stripe is at capacity, carrying any
+// unflushed delta to evictedPending so the count is not lost. Caller holds s.mu.
+func (r *RedisLocalAsyncLimiter) ensureCapacityLocked(s *stripe, now time.Time) {
+	if len(s.states) < r.stripeCap {
+		return
+	}
+	// 1. Expired sweep first.
+	r.evictExpiredLocked(s, now)
+	if len(s.states) < r.stripeCap {
+		return
+	}
+	// 2. Approximate-random victim (Go map iteration is randomized); prefer a
+	//    fully-flushed (localDelta==0) entry, else the first scanned.
+	var vk string
+	var vst *localState
+	scanned := 0
+	for k, st := range s.states {
+		if vk == "" {
+			vk, vst = k, st
+		}
+		if st.localDelta == 0 {
+			vk, vst = k, st
+			break
+		}
+		if scanned++; scanned >= 8 {
+			break
+		}
+	}
+	if vk != "" {
+		r.evictLocked(s, vk, vst)
+	}
+}
+
+func (r *RedisLocalAsyncLimiter) evictLocked(s *stripe, k string, st *localState) {
+	if st.localDelta > 0 {
+		if len(s.evictedPending) < 2*r.stripeCap {
+			s.evictedPending = append(s.evictedPending, pendingFlush{
+				key: k, flushN: st.localDelta, ws: st.windowStart, evicted: true,
+			})
+		} else {
+			slog.Warn("FixedWindow(redis-local-async): evictedPending full, dropping delta",
+				"key", k, "delta", st.localDelta)
+		}
+	}
+	delete(s.states, k)
+	delete(s.dirty, k)
+}
+
+// evictExpiredLocked removes states for windows that ended over a minute ago and have no
+// un-flushed delta. Caller holds s.mu.
+func (r *RedisLocalAsyncLimiter) evictExpiredLocked(s *stripe, now time.Time) {
+	for k, st := range s.states {
+		if st.localDelta == 0 && now.After(st.windowStart.Add(r.policy.Duration).Add(time.Minute)) {
+			delete(s.states, k)
+			delete(s.dirty, k)
 		}
 	}
 }
 
-// pendingFlush is a snapshot of one key's un-flushed delta and the window it belongs to.
-type pendingFlush struct {
-	key    string
-	flushN int64
-	ws     time.Time
-}
+// flushPending pushes accumulated local deltas to Redis (pipelined) and reconciles
+// globalBase. It is the single synchronous flush, called by the coordinator worker, by
+// Close()'s drain, and by tests. Returns more=true if a budget spill or error residue
+// leaves work for the next tick. Each dirty key's delta is written to the key for the
+// window it was counted in (not "now").
+func (r *RedisLocalAsyncLimiter) flushPending() (more bool) {
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
 
-// flushPending pushes accumulated local deltas to Redis and reconciles globalBase.
-// Each dirty key's delta is written to the key for the window it was counted in (NOT
-// "now"), so a flush that lands just after a window roll updates the correct (old) key.
-func (r *RedisLocalAsyncLimiter) flushPending() {
-	// 1. Snapshot dirty keys under lock; evict fully-flushed expired states.
-	r.mu.Lock()
-	batch := make([]pendingFlush, 0, len(r.dirty))
-	for k := range r.dirty {
-		st := r.states[k]
-		if st == nil || st.localDelta == 0 {
-			delete(r.dirty, k)
-			continue
+	now := r.clock.Now()
+	budget := r.cfg.MaxPipelineCommands
+	batch := make([]pendingFlush, 0, 64)
+
+	// 1. Snapshot dirty/evicted entries across stripes from a rotating cursor.
+	for i := 0; i < numStripes; i++ {
+		if budget <= 0 {
+			more = true
+			break
 		}
-		batch = append(batch, pendingFlush{key: k, flushN: st.localDelta, ws: st.windowStart})
-		delete(r.dirty, k) // re-added below on failure
-	}
-	r.evictExpiredLocked()
-	r.mu.Unlock()
-
-	// 2. Reconcile each key against Redis outside the lock.
-	tickErr := false
-	for _, p := range batch {
-		redisKey := fmt.Sprintf("%s%s:%d", r.keyPrefix, p.key, p.ws.UnixNano())
-		ctx := context.Background() // bounded by the client's read/write timeouts
-
-		newGlobal, err := r.client.IncrBy(ctx, redisKey, p.flushN).Result()
-		if err == nil && newGlobal == p.flushN {
-			// First creator of this window key: set TTL with 0-5s jitter to spread
-			// expirations (mirrors the pure-redis backend).
-			jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
-			ttl := time.Until(p.ws.Add(r.policy.Duration)) + jitter
-			if ttl > 0 {
-				if expErr := r.client.Expire(ctx, redisKey, ttl).Err(); expErr != nil {
-					slog.Warn("FixedWindow(redis-local-async): EXPIRE failed", "redisKey", redisKey, "error", expErr)
-				}
+		s := &r.stripes[(r.flushCursor+i)%numStripes]
+		s.mu.Lock()
+		// Evicted deltas are already owed to Redis: drain them first.
+		if len(s.evictedPending) > 0 {
+			take := len(s.evictedPending)
+			if take > budget {
+				take = budget
+			}
+			batch = append(batch, s.evictedPending[:take]...)
+			s.evictedPending = append(s.evictedPending[:0], s.evictedPending[take:]...)
+			budget -= take
+			if len(s.evictedPending) > 0 {
+				more = true
 			}
 		}
+		for k := range s.dirty {
+			if budget <= 0 {
+				more = true
+				break
+			}
+			st := s.states[k]
+			if st == nil || st.localDelta == 0 {
+				delete(s.dirty, k)
+				continue
+			}
+			batch = append(batch, pendingFlush{key: k, flushN: st.localDelta, ws: st.windowStart})
+			delete(s.dirty, k)
+			budget--
+		}
+		r.evictExpiredLocked(s, now)
+		s.mu.Unlock()
+	}
+	r.flushCursor = (r.flushCursor + 1) % numStripes
 
-		r.mu.Lock()
-		st := r.states[p.key]
+	if len(batch) == 0 {
+		return more
+	}
+
+	// 2. Pipeline all INCRBYs in one round-trip.
+	ctx := context.Background() // bounded by the client's read/write timeouts
+	pipe := r.client.Pipeline()
+	cmds := make([]*redis.IntCmd, len(batch))
+	keys := make([]string, len(batch))
+	for i, p := range batch {
+		keys[i] = fmt.Sprintf("%s%s:%d", r.keyPrefix, p.key, p.ws.UnixNano())
+		cmds[i] = pipe.IncrBy(ctx, keys[i], p.flushN)
+	}
+	// Per-command errors are inspected below; execErr is the connection-level fallback
+	// (a dial/IO failure that may not be reflected on every individual command).
+	_, execErr := pipe.Exec(ctx)
+
+	// 3. Apply per-command results (one stripe lock at a time).
+	tickErr := false
+	var creators []int // batch indices that created their window key (newGlobal == flushN)
+	for i, p := range batch {
+		newGlobal, err := cmds[i].Result()
+		if err == nil && execErr != nil {
+			err = execErr // connection-level failure not surfaced on this command
+		}
+		s := r.stripeFor(p.key)
 		if err != nil {
 			tickErr = true
-			slog.Warn("FixedWindow(redis-local-async): flush INCRBY failed", "redisKey", redisKey, "error", err)
-			if st != nil {
-				r.dirty[p.key] = struct{}{} // keep the delta for retry next tick
+			more = true
+			s.mu.Lock()
+			if p.evicted {
+				if len(s.evictedPending) < 2*r.stripeCap {
+					s.evictedPending = append(s.evictedPending, p)
+				}
+			} else if st := s.states[p.key]; st != nil && st.windowStart.Equal(p.ws) {
+				s.dirty[p.key] = struct{}{} // keep the delta for retry
 			}
-			r.mu.Unlock()
+			s.mu.Unlock()
 			continue
 		}
-		if st != nil && st.windowStart.Equal(p.ws) {
+		if newGlobal == p.flushN {
+			creators = append(creators, i)
+		}
+		s.mu.Lock()
+		if st := s.states[p.key]; st != nil && st.windowStart.Equal(p.ws) {
 			st.globalBase = newGlobal
-			st.localDelta -= p.flushN
-			if st.localDelta < 0 {
-				st.localDelta = 0
+			if !p.evicted {
+				st.localDelta -= p.flushN
+				if st.localDelta < 0 {
+					st.localDelta = 0
+				}
 			}
 			if newGlobal >= r.policy.Limit {
 				st.blocked = true
 			}
 			if st.localDelta != 0 {
-				r.dirty[p.key] = struct{}{} // more arrived during the flush
+				s.dirty[p.key] = struct{}{} // more arrived during the flush
+				more = true
 			}
 		}
-		// If the window rolled over (st.windowStart != p.ws), the INCRBY already updated
-		// the correct old-window key in Redis; the new window's state is independent.
-		r.mu.Unlock()
+		s.mu.Unlock()
 	}
 
-	// 3. Update the fail streak (drives fail-closed blocking).
-	r.mu.Lock()
+	// 4. Second pipeline: set TTL (with jitter) on freshly created window keys.
+	if len(creators) > 0 {
+		ep := r.client.Pipeline()
+		issued := false
+		for _, i := range creators {
+			jitter := time.Duration(rand.Int63n(int64(5 * time.Second)))
+			ttl := time.Until(batch[i].ws.Add(r.policy.Duration)) + jitter
+			if ttl > 0 {
+				ep.Expire(ctx, keys[i], ttl)
+				issued = true
+			}
+		}
+		if issued {
+			if _, err := ep.Exec(ctx); err != nil {
+				slog.Warn("FixedWindow(redis-local-async): EXPIRE pipeline failed", "error", err)
+			}
+		}
+	}
+
+	// 5. Fail streak drives fail-closed blocking.
 	if tickErr {
 		r.failStreak++
-		if !r.failOpen && r.failStreak >= failClosedThreshold {
-			r.redisDown = true
-		}
+		r.redisDown.Store(!r.cfg.FailOpen && r.failStreak >= failClosedThreshold)
 	} else {
 		r.failStreak = 0
-		r.redisDown = false
+		r.redisDown.Store(false)
 	}
-	r.mu.Unlock()
+	return more
 }
 
-// evictExpiredLocked removes states for windows that ended over a minute ago and have no
-// un-flushed delta. Caller must hold r.mu.
-func (r *RedisLocalAsyncLimiter) evictExpiredLocked() {
-	now := r.clock.Now()
-	for k, st := range r.states {
-		windowEnd := st.windowStart.Add(r.policy.Duration)
-		if st.localDelta == 0 && now.After(windowEnd.Add(time.Minute)) {
-			delete(r.states, k)
-			delete(r.dirty, k)
-		}
-	}
-}
-
-// Close stops the flusher, drains any remaining local deltas to Redis, and releases the
-// backing limiter. Safe to call multiple times.
+// Close deregisters the limiter from the coordinator, drains remaining local deltas to
+// Redis, and releases the backing limiter. Safe to call multiple times.
 func (r *RedisLocalAsyncLimiter) Close() error {
 	r.closeOnce.Do(func() {
-		close(r.done)
-		if r.ticker != nil {
-			r.ticker.Stop()
+		r.coord.deregister(r)
+		// Final drain. Bounded so a Redis outage (persistent more=true) can't spin.
+		for i := 0; i <= numStripes && r.flushPending(); i++ {
 		}
-		// Final drain so un-flushed local deltas are not lost on shutdown.
-		r.flushPending()
 	})
 	return r.RedisLimiter.Close()
 }

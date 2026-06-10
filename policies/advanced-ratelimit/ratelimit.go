@@ -199,6 +199,9 @@ func GetPolicy(
 	redisFailOpen := true
 	redisKeyPrefix := getStringParam(params, "redis.keyPrefix", "ratelimit:v1:")
 	localSyncInterval := getDurationParam(params, "local.syncInterval", 50*time.Millisecond)
+	localFlushWorkers := getIntParam(params, "local.flushWorkers", 0)
+	localMaxPipelineCommands := getIntParam(params, "local.maxPipelineCommands", 0)
+	localMaxLocalEntries := getIntParam(params, "local.maxLocalEntries", 0)
 	var baseCacheKey string // Set for cache-backed backends (memory, redis-local-async)
 
 	usesRedis := backend == "redis" || backend == "redis-local-async"
@@ -221,27 +224,30 @@ func GetPolicy(
 		connTimeout := getDurationParam(params, "redis.connectionTimeout", 5*time.Second)
 		readTimeout := getDurationParam(params, "redis.readTimeout", 3*time.Second)
 		writeTimeout := getDurationParam(params, "redis.writeTimeout", 3*time.Second)
+		poolSize := getIntParam(params, "redis.poolSize", 0)
 
-		// Create Redis client
-		redisClient = redis.NewClient(&redis.Options{
-			Addr: fmt.Sprintf("%s:%d",
-				redisHost, redisPort),
+		// Get-or-create the process-wide shared client for this connection config.
+		// Sharing one pool across all policy instances (and reloads) avoids the
+		// per-instance client/connection explosion. Ping happens once, on creation.
+		var created bool
+		var pingErr error
+		redisClient, created, pingErr = getOrCreateRedisClient(&redis.Options{
+			Addr:         fmt.Sprintf("%s:%d", redisHost, redisPort),
 			Username:     redisUsername,
 			Password:     redisPassword,
 			DB:           redisDB,
 			DialTimeout:  connTimeout,
 			ReadTimeout:  readTimeout,
 			WriteTimeout: writeTimeout,
-		})
-
-		// Test connection (fail-fast if configured to fail closed)
-		ctx, cancel := context.WithTimeout(context.Background(), connTimeout)
-		defer cancel()
-		if err := redisClient.Ping(ctx).Err(); err != nil {
+			PoolSize:     poolSize,
+		}, connTimeout)
+		// Fail-fast only when we created the client and it failed to connect; a reused
+		// client is assumed healthy (go-redis reconnects lazily).
+		if created && pingErr != nil {
 			if !redisFailOpen {
-				return nil, fmt.Errorf("redis connection failed and failureMode=closed: %w", err)
+				return nil, fmt.Errorf("redis connection failed and failureMode=closed: %w", pingErr)
 			}
-			slog.Warn("Redis connection failed but failureMode=open", "error", err)
+			slog.Warn("Redis connection failed but failureMode=open", "error", pingErr)
 		}
 	}
 
@@ -344,8 +350,11 @@ func GetPolicy(
 					limiterConfig.RedisClient = redisClient
 					limiterConfig.KeyPrefix = redisKeyPrefix
 					limiterConfig.AlgorithmConfig = map[string]interface{}{
-						"syncInterval": localSyncInterval,
-						"failOpen":     redisFailOpen,
+						"syncInterval":        localSyncInterval,
+						"failOpen":            redisFailOpen,
+						"flushWorkers":        localFlushWorkers,
+						"maxPipelineCommands": localMaxPipelineCommands,
+						"maxLocalEntries":     localMaxLocalEntries,
 					}
 				}
 				rlLimiter, err := limiter.CreateLimiter(limiterConfig)
@@ -1118,6 +1127,20 @@ func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[s
 	h.Write([]byte("backend:"))
 	h.Write([]byte(backend))
 	h.Write([]byte("|"))
+
+	// For redis-local-async, fold the Redis endpoint and local tuning into the key so a
+	// config reload that changes them rebuilds the cached limiter instead of silently
+	// reusing the old one. (Counts survive in Redis; the coordinator's global settings
+	// are first-registrant-wins regardless.)
+	if backend == "redis-local-async" {
+		h.Write([]byte(fmt.Sprintf("redis:%s/%d|local:%s,w=%d,pipe=%d,max=%d|",
+			getStringParam(params, "redis.host", "localhost"),
+			getIntParam(params, "redis.db", 0),
+			getDurationParam(params, "local.syncInterval", 50*time.Millisecond),
+			getIntParam(params, "local.flushWorkers", 0),
+			getIntParam(params, "local.maxPipelineCommands", 0),
+			getIntParam(params, "local.maxLocalEntries", 0))))
+	}
 
 	// Include memory cleanup interval
 	cleanupInterval := getDurationParam(params, "memory.cleanupInterval", 5*time.Minute)
