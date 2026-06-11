@@ -290,8 +290,9 @@ var restrictedClaims = map[string]bool{
 	"iat": true,
 }
 
-// resolveExtraClaims resolves customClaims from params.
-// stringClaims holds resolved string customClaims (including $ctx: refs).
+// resolveExtraClaims resolves claimMappings and customClaims from params.
+// claimMappings are processed first; customClaims run after and take precedence.
+// stringClaims holds resolved string values (including $ctx: refs and mapped properties).
 // rawClaims holds non-string customClaims preserved as their original types for JWT population.
 func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]interface{}) resolvedClaims {
 	result := resolvedClaims{
@@ -299,11 +300,38 @@ func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]i
 		rawClaims:    make(map[string]interface{}),
 	}
 
+	authCtx := reqCtx.SharedContext.AuthContext
+
+	// Process claimMappings first so customClaims can override them.
+	if raw, ok := params["claimMappings"]; ok {
+		if cm, ok := raw.(map[string]interface{}); ok {
+			for dest, srcRaw := range cm {
+				src, ok := srcRaw.(string)
+				if !ok || src == "" {
+					continue
+				}
+				if restrictedClaims[dest] {
+					slog.Warn("Backend JWT: claimMapping targets a reserved claim; skipping", "claim", dest)
+					continue
+				}
+				if authCtx == nil {
+					continue
+				}
+				val, ok := authCtx.Properties[src]
+				if !ok {
+					continue
+				}
+				result.stringClaims[dest] = val
+			}
+		}
+	}
+
 	if customRaw, ok := params["customClaims"]; ok {
 		if custom, ok := customRaw.(map[string]interface{}); ok {
 			for k, v := range custom {
 				if restrictedClaims[k] {
-					slog.Warn("Backend JWT: customClaim overrides a reserved claim", "claim", k)
+					slog.Warn("Backend JWT: customClaim targets a reserved claim; skipping", "claim", k)
+					continue
 				}
 				strVal, ok := v.(string)
 				if !ok {

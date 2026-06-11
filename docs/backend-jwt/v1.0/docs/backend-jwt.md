@@ -49,7 +49,25 @@ If no authentication context is present:
 |---|---|---|---|
 | `header` | string | `x-jwt-assertion` | Upstream request header to set the generated JWT on |
 | `requireAuthentication` | boolean | `false` | Reject unauthenticated requests with 401 when true |
-| `customClaims` | object | `{}` | Static claim name→value pairs added to every generated token |
+| `claimMappings` | object | `{}` | Maps upstream JWT claim names to backend JWT claim names (see below) |
+| `customClaims` | object | `{}` | Static or dynamic claim name→value pairs added to every generated token (see below) |
+
+## Claim Mappings
+
+`claimMappings` provides a structured way to forward upstream JWT claims into the backend JWT under a different name. The key is the backend JWT claim name to set; the value is the property key from the authenticated context (populated by `jwt-auth` from the upstream JWT's custom claims).
+
+| `claimMappings` key | Source | Notes |
+|---|---|---|
+| any non-reserved name | `AuthContext.Properties[value]` | String values only |
+
+Claims mapped to reserved names (`iss`, `sub`, `aud`, `exp`, `iat`) are skipped with a warning. Missing source properties are silently skipped. `customClaims` entries take precedence over `claimMappings` — if the same destination claim appears in both, `customClaims` wins.
+
+```yaml
+claimMappings:
+  email: email           # forward AuthContext.Properties["email"] as "email"
+  clientRole: role       # forward AuthContext.Properties["role"] as "clientRole"
+  orgId: organization    # forward AuthContext.Properties["organization"] as "orgId"
+```
 
 ## Dynamic Context Claims
 
@@ -97,6 +115,9 @@ policies:
     parameters:
       header: x-jwt-assertion
       requireAuthentication: true
+      claimMappings:
+        email: email                                 # AuthContext.Properties["email"] → "email"
+        clientRole: role                             # AuthContext.Properties["role"] → "clientRole"
       customClaims:
         env: production                              # static
         clientId: $ctx:auth.credential_id            # dynamic — credential ID

@@ -1027,14 +1027,14 @@ func TestContextClaims_NilAuthContext(t *testing.T) {
 	}
 }
 
-func TestCustomClaims_RestrictedClaimsOverrideWithWarn(t *testing.T) {
+func TestCustomClaims_RestrictedClaimsSkippedWithWarn(t *testing.T) {
 	rsaKey, keyPEM := generateRSAKey(t)
 	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), pemCache: make(map[string][]byte), tokenCache: make(map[string]cachedToken)}
 	params := baseParams(keyPEM)
 	params["customClaims"] = map[string]interface{}{
 		"iss": "https://custom-issuer.example.com",
 		"sub": "overridden-subject",
-		"env": "production", // non-restricted, must also be present
+		"env": "production", // non-restricted, must still be present
 	}
 
 	reqCtx := newRequestContext(&policy.AuthContext{
@@ -1047,13 +1047,118 @@ func TestCustomClaims_RestrictedClaimsOverrideWithWarn(t *testing.T) {
 	mods := result.(policy.UpstreamRequestHeaderModifications)
 	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
 
-	if claims["iss"] != "https://custom-issuer.example.com" {
-		t.Errorf("iss must be overridden by customClaims, got %v", claims["iss"])
+	// Restricted claims must NOT be overridden — standard values win.
+	if claims["iss"] == "https://custom-issuer.example.com" {
+		t.Errorf("iss must not be overridden by customClaims; restricted claim should be skipped")
 	}
-	if claims["sub"] != "overridden-subject" {
-		t.Errorf("sub must be overridden by customClaims, got %v", claims["sub"])
+	if claims["sub"] != "alice" {
+		t.Errorf("sub must equal AuthContext.Subject (alice), got %v", claims["sub"])
 	}
+	// Non-restricted claims must still be set.
 	if claims["env"] != "production" {
 		t.Errorf("non-restricted claim env must still be set, got %v", claims["env"])
+	}
+}
+
+func TestClaimMappings_Basic(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), pemCache: make(map[string][]byte), tokenCache: make(map[string]cachedToken)}
+	params := baseParams(keyPEM)
+	params["claimMappings"] = map[string]interface{}{
+		"clientEmail": "email",
+		"clientRole":  "role",
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["clientEmail"] != "alice@example.com" {
+		t.Errorf("clientEmail must be mapped from Properties[email], got %v", claims["clientEmail"])
+	}
+	if claims["clientRole"] != "admin" {
+		t.Errorf("clientRole must be mapped from Properties[role], got %v", claims["clientRole"])
+	}
+}
+
+func TestClaimMappings_MissingPropertySkipped(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), pemCache: make(map[string][]byte), tokenCache: make(map[string]cachedToken)}
+	params := baseParams(keyPEM)
+	params["claimMappings"] = map[string]interface{}{
+		"orgId": "organization", // "organization" not in Properties
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if _, present := claims["orgId"]; present {
+		t.Errorf("orgId should be absent when source property is missing, got %v", claims["orgId"])
+	}
+}
+
+func TestClaimMappings_RestrictedDestinationSkipped(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), pemCache: make(map[string][]byte), tokenCache: make(map[string]cachedToken)}
+	params := baseParams(keyPEM)
+	params["claimMappings"] = map[string]interface{}{
+		"sub": "injected_subject", // "sub" is restricted
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"injected_subject": "mallory"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["sub"] != "alice" {
+		t.Errorf("sub must equal AuthContext.Subject (alice) when claimMapping target is restricted, got %v", claims["sub"])
+	}
+}
+
+func TestClaimMappings_CustomClaimsOverride(t *testing.T) {
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := &BackendJWTPolicy{keyCache: make(map[[32]byte]crypto.PrivateKey), pemCache: make(map[string][]byte), tokenCache: make(map[string]cachedToken)}
+	params := baseParams(keyPEM)
+	params["claimMappings"] = map[string]interface{}{
+		"role": "role", // maps Properties["role"] → "role"
+	}
+	params["customClaims"] = map[string]interface{}{
+		"role": "superadmin", // customClaims must win over claimMappings
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"role": "viewer"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["role"] != "superadmin" {
+		t.Errorf("customClaims must override claimMappings for same key, got %v", claims["role"])
 	}
 }
