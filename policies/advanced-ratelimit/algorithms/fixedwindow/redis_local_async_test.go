@@ -548,9 +548,15 @@ func TestRedisLocalAsync_BatchSingleRoundTrip(t *testing.T) {
 // on a dead client fails (fail-closed denies) while a limiter on a healthy client flushes
 // cleanly and keeps serving.
 func TestRedisLocalAsync_BatchFailIsolation(t *testing.T) {
-	mr1, _ := miniredis.Run()
+	mr1, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
 	t.Cleanup(mr1.Close)
-	mr2, _ := miniredis.Run()
+	mr2, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
 	fast := func(addr string) *redis.Client {
 		return redis.NewClient(&redis.Options{Addr: addr, DialTimeout: 200 * time.Millisecond, MaxRetries: -1})
 	}
@@ -593,7 +599,10 @@ func TestRedisLocalAsync_BatchFailIsolation(t *testing.T) {
 // TestRedisLocalAsync_BatchPerLimiterSpill: a per-limiter MaxPipelineCommands bounds each
 // limiter's contribution to the shared batch; the rest spills to later ticks with no loss.
 func TestRedisLocalAsync_BatchPerLimiterSpill(t *testing.T) {
-	mr, _ := miniredis.Run()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
 	t.Cleanup(mr.Close)
 	hook := &pipeCounter{}
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DisableIdentity: true})

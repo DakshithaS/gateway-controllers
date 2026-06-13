@@ -114,6 +114,15 @@ type RateLimitPolicy struct {
 	includeRetry   bool
 }
 
+// redisBacked reports whether the backend talks to Redis — the synchronous "redis"
+// backend or the local-first "redis-local-async" backend. The request/response error
+// paths use this so failureMode=open is honored for BOTH: redis-local-async inherits the
+// synchronous cost-extraction methods (GetAvailable/ConsumeOrClampN/ConsumeN), which can
+// still return Redis errors that must fail open when configured to.
+func (p *RateLimitPolicy) redisBacked() bool {
+	return p.backend == "redis" || p.backend == "redis-local-async"
+}
+
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
 func GetPolicy(
 	metadata policy.PolicyMetadata,
@@ -1279,7 +1288,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 				if requestCost == 0 {
 					available, err := q.Limiter.GetAvailable(context.Background(), key)
 					if err != nil {
-						if p.backend == "redis" && p.redisFailOpen {
+						if p.redisBacked() && p.redisFailOpen {
 							slog.Warn("Rate limit state lookup failed (fail-open)", "error", err, "quota", quotaName)
 							continue
 						}
@@ -1305,7 +1314,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 				cost := int64(requestCost)
 				result, err := q.Limiter.AllowN(context.Background(), key, cost)
 				if err != nil {
-					if p.backend == "redis" && p.redisFailOpen {
+					if p.redisBacked() && p.redisFailOpen {
 						slog.Warn("Rate limit check failed (fail-open)", "error", err, "quota", quotaName)
 						continue
 					}
@@ -1332,7 +1341,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 				// actual consumption is deferred to OnRequestBody or OnResponse.
 				available, err := q.Limiter.GetAvailable(context.Background(), key)
 				if err != nil {
-					if p.backend == "redis" && p.redisFailOpen {
+					if p.redisBacked() && p.redisFailOpen {
 						slog.Warn("Rate limit pre-check failed (fail-open)", "error", err, "quota", quotaName)
 						continue
 					}
@@ -1367,7 +1376,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 			cost := int64(1)
 			result, err := q.Limiter.AllowN(context.Background(), key, cost)
 			if err != nil {
-				if p.backend == "redis" && p.redisFailOpen {
+				if p.redisBacked() && p.redisFailOpen {
 					slog.Warn("Rate limit check failed (fail-open)", "error", err, "quota", quotaName)
 					continue
 				}
@@ -1577,7 +1586,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 					if requestCost == 0 {
 						available, err := q.Limiter.GetAvailable(context.Background(), key)
 						if err != nil {
-							if p.backend == "redis" && p.redisFailOpen {
+							if p.redisBacked() && p.redisFailOpen {
 								slog.Warn("Rate limit state lookup failed (fail-open)", "error", err, "quota", quotaName)
 								continue
 							}
@@ -1604,7 +1613,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 					cost := int64(requestCost)
 					result, err := q.Limiter.AllowN(context.Background(), key, cost)
 					if err != nil {
-						if p.backend == "redis" && p.redisFailOpen {
+						if p.redisBacked() && p.redisFailOpen {
 							slog.Warn("Rate limit check failed (fail-open)", "error", err, "quota", quotaName)
 							continue
 						}
@@ -1642,7 +1651,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 				// Use GetAvailable to check remaining without consuming tokens
 				available, err := q.Limiter.GetAvailable(context.Background(), key)
 				if err != nil {
-					if p.backend == "redis" && p.redisFailOpen {
+					if p.redisBacked() && p.redisFailOpen {
 						slog.Warn("Rate limit pre-check failed (fail-open)", "error", err, "key", key, "quota", quotaName)
 						continue
 					}
@@ -1690,7 +1699,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 
 			result, err := q.Limiter.AllowN(context.Background(), key, cost)
 			if err != nil {
-				if p.backend == "redis" && p.redisFailOpen {
+				if p.redisBacked() && p.redisFailOpen {
 					slog.Warn("Rate limit check failed (fail-open)", "error", err, "quota", quotaName)
 					continue
 				}
@@ -1847,7 +1856,7 @@ func (p *RateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy
 				result, err = q.Limiter.ConsumeOrClampN(context.Background(), key, int64(actualCost))
 			}
 			if err != nil {
-				if p.backend == "redis" && p.redisFailOpen {
+				if p.redisBacked() && p.redisFailOpen {
 					slog.Warn("Post-response rate limit check failed (fail-open)",
 						"error", err, "key", key, "cost", actualCost, "quota", quotaName)
 					continue
@@ -2063,7 +2072,7 @@ func (p *RateLimitPolicy) OnResponseBody(ctx context.Context, respCtx *policy.Re
 					result, err = q.Limiter.ConsumeOrClampN(context.Background(), key, int64(actualCost))
 				}
 				if err != nil {
-					if p.backend == "redis" && p.redisFailOpen {
+					if p.redisBacked() && p.redisFailOpen {
 						slog.Warn("Post-response rate limit check failed (fail-open)",
 							"error", err, "key", key, "cost", actualCost, "quota", quotaName)
 						continue
@@ -2401,7 +2410,7 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 		// CostTracker; it clamps the deduction to the available balance.
 		if tracker, ok := q.Limiter.(limiter.CostTracker); ok {
 			if _, err := tracker.ConsumeN(ctx, key, int64(actualCost)); err != nil {
-				if p.backend == "redis" && p.redisFailOpen {
+				if p.redisBacked() && p.redisFailOpen {
 					slog.Warn("Streaming EOS cost consumption failed (fail-open)",
 						"error", err, "quota", quotaName, "key", key, "cost", actualCost)
 					continue
@@ -2412,7 +2421,7 @@ func (p *RateLimitPolicy) finalizeAndConsumeStreamingCosts(
 			}
 		} else {
 			if _, err := q.Limiter.ConsumeOrClampN(ctx, key, int64(actualCost)); err != nil {
-				if p.backend == "redis" && p.redisFailOpen {
+				if p.redisBacked() && p.redisFailOpen {
 					slog.Warn("Streaming EOS cost consumption failed (fail-open)",
 						"error", err, "quota", quotaName, "key", key, "cost", actualCost)
 					continue
