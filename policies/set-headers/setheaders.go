@@ -25,13 +25,21 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// HeaderEntry represents a single header to be set
+// Mode values controlling how configured headers are applied.
+const (
+	// ModeSet overwrites any existing header with the configured value.
+	ModeSet = "set"
+	// ModeAppend appends the configured value, preserving any existing values.
+	ModeAppend = "append"
+)
+
+// HeaderEntry represents a single header to be set or appended
 type HeaderEntry struct {
 	Name  string
 	Value string
 }
 
-// SetHeadersPolicy implements header setting for both request and response
+// SetHeadersPolicy implements header setting/appending for both request and response
 type SetHeadersPolicy struct{}
 
 var ins = &SetHeadersPolicy{}
@@ -56,6 +64,11 @@ func (p *SetHeadersPolicy) Mode() policy.ProcessingMode {
 
 // Validate validates the policy configuration parameters
 func (p *SetHeadersPolicy) Validate(params map[string]interface{}) error {
+	// Mode is optional; when present it must be either "set" or "append".
+	if err := p.validateMode(params); err != nil {
+		return err
+	}
+
 	// At least one of request.headers or response.headers must be specified.
 	// Legacy flat keys are also accepted for runtime compatibility.
 	requestHeadersRaw, hasRequestHeaders, err := p.getPhaseHeaders(params, "request", "requestHeaders")
@@ -86,6 +99,32 @@ func (p *SetHeadersPolicy) Validate(params map[string]interface{}) error {
 	}
 
 	return nil
+}
+
+// validateMode validates the optional top-level "mode" parameter.
+func (p *SetHeadersPolicy) validateMode(params map[string]interface{}) error {
+	modeRaw, ok := params["mode"]
+	if !ok {
+		return nil
+	}
+	mode, ok := modeRaw.(string)
+	if !ok {
+		return fmt.Errorf("mode must be a string")
+	}
+	if mode != ModeSet && mode != ModeAppend {
+		return fmt.Errorf("mode must be either '%s' or '%s'", ModeSet, ModeAppend)
+	}
+	return nil
+}
+
+// getMode returns the configured mode, defaulting to ModeSet when absent or invalid.
+func (p *SetHeadersPolicy) getMode(params map[string]interface{}) string {
+	if modeRaw, ok := params["mode"]; ok {
+		if mode, ok := modeRaw.(string); ok && mode == ModeAppend {
+			return ModeAppend
+		}
+	}
+	return ModeSet
 }
 
 // getPhaseHeaders extracts headers for a phase, supporting both nested
@@ -187,6 +226,9 @@ func (p *SetHeadersPolicy) parseHeaderEntries(headersRaw interface{}) []HeaderEn
 // Returns map[string]string for SetHeaders (overwrites existing headers)
 // Multiple headers with the same name will have the last value win (map behavior)
 func (p *SetHeadersPolicy) convertToSetHeaderMap(entries []HeaderEntry) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
 	headerMap := make(map[string]string)
 	for _, entry := range entries {
 		headerMap[entry.Name] = entry.Value // Last value wins for duplicate names
@@ -194,44 +236,62 @@ func (p *SetHeadersPolicy) convertToSetHeaderMap(entries []HeaderEntry) map[stri
 	return headerMap
 }
 
-// buildRequestHeaders extracts and parses request headers from params.
+// convertToAppendHeaderMap converts header entries to a map for AppendHeaders
+// (appends to existing headers). Multiple entries with the same name are all
+// kept, preserving their configured order.
+func (p *SetHeadersPolicy) convertToAppendHeaderMap(entries []HeaderEntry) map[string][]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	headerMap := make(map[string][]string)
+	for _, entry := range entries {
+		headerMap[entry.Name] = append(headerMap[entry.Name], entry.Value)
+	}
+	return headerMap
+}
+
+// buildRequestHeaderEntries extracts and parses request header entries from params.
 // Returns nil if no headers are configured.
-func (p *SetHeadersPolicy) buildRequestHeaders(params map[string]interface{}) map[string]string {
+func (p *SetHeadersPolicy) buildRequestHeaderEntries(params map[string]interface{}) []HeaderEntry {
 	headersRaw, ok, err := p.getPhaseHeaders(params, "request", "requestHeaders")
 	if err != nil || !ok {
 		return nil
 	}
-	entries := p.parseHeaderEntries(headersRaw)
-	if len(entries) == 0 {
-		return nil
-	}
-	return p.convertToSetHeaderMap(entries)
+	return p.parseHeaderEntries(headersRaw)
 }
 
-// OnRequestHeaders sets headers on the request (v2alpha.RequestHeaderPolicy).
+// OnRequestHeaders sets or appends headers on the request (v2alpha.RequestHeaderPolicy).
 func (p *SetHeadersPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
+	entries := p.buildRequestHeaderEntries(params)
+	if p.getMode(params) == ModeAppend {
+		return policy.UpstreamRequestHeaderModifications{
+			HeadersToAppend: p.convertToAppendHeaderMap(entries),
+		}
+	}
 	return policy.UpstreamRequestHeaderModifications{
-		HeadersToSet: p.buildRequestHeaders(params),
+		HeadersToSet: p.convertToSetHeaderMap(entries),
 	}
 }
 
-// buildResponseHeaders extracts and parses response headers from params.
+// buildResponseHeaderEntries extracts and parses response header entries from params.
 // Returns nil if no headers are configured.
-func (p *SetHeadersPolicy) buildResponseHeaders(params map[string]interface{}) map[string]string {
+func (p *SetHeadersPolicy) buildResponseHeaderEntries(params map[string]interface{}) []HeaderEntry {
 	headersRaw, ok, err := p.getPhaseHeaders(params, "response", "responseHeaders")
 	if err != nil || !ok {
 		return nil
 	}
-	entries := p.parseHeaderEntries(headersRaw)
-	if len(entries) == 0 {
-		return nil
-	}
-	return p.convertToSetHeaderMap(entries)
+	return p.parseHeaderEntries(headersRaw)
 }
 
-// OnResponseHeaders sets headers on the response (v2alpha.ResponseHeaderPolicy).
+// OnResponseHeaders sets or appends headers on the response (v2alpha.ResponseHeaderPolicy).
 func (p *SetHeadersPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext, params map[string]interface{}) policy.ResponseHeaderAction {
+	entries := p.buildResponseHeaderEntries(params)
+	if p.getMode(params) == ModeAppend {
+		return policy.DownstreamResponseHeaderModifications{
+			HeadersToAppend: p.convertToAppendHeaderMap(entries),
+		}
+	}
 	return policy.DownstreamResponseHeaderModifications{
-		HeadersToSet: p.buildResponseHeaders(params),
+		HeadersToSet: p.convertToSetHeaderMap(entries),
 	}
 }

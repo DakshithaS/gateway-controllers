@@ -763,6 +763,392 @@ func TestSetHeadersPolicy_OnResponseHeaders_NestedHeaders(t *testing.T) {
 	}
 }
 
+// ─── Mode parameter tests ────────────────────────────────────────────────────
+
+func TestSetHeadersPolicy_Validate_ModeSet(t *testing.T) {
+	p := &SetHeadersPolicy{}
+
+	params := map[string]interface{}{
+		"mode": "set",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Request-Header",
+				"value": "request-value",
+			},
+		},
+	}
+
+	err := p.Validate(params)
+	if err != nil {
+		t.Errorf("Expected no error for mode 'set', got: %v", err)
+	}
+}
+
+func TestSetHeadersPolicy_Validate_ModeAppend(t *testing.T) {
+	p := &SetHeadersPolicy{}
+
+	params := map[string]interface{}{
+		"mode": "append",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Request-Header",
+				"value": "request-value",
+			},
+		},
+	}
+
+	err := p.Validate(params)
+	if err != nil {
+		t.Errorf("Expected no error for mode 'append', got: %v", err)
+	}
+}
+
+func TestSetHeadersPolicy_Validate_InvalidModeValue(t *testing.T) {
+	p := &SetHeadersPolicy{}
+
+	params := map[string]interface{}{
+		"mode": "merge", // Not a supported mode
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Request-Header",
+				"value": "request-value",
+			},
+		},
+	}
+
+	err := p.Validate(params)
+	if err == nil || !strings.Contains(err.Error(), "mode must be either 'set' or 'append'") {
+		t.Errorf("Expected 'mode must be either' error, got: %v", err)
+	}
+}
+
+func TestSetHeadersPolicy_Validate_InvalidModeType(t *testing.T) {
+	p := &SetHeadersPolicy{}
+
+	params := map[string]interface{}{
+		"mode": 123, // Not a string
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Request-Header",
+				"value": "request-value",
+			},
+		},
+	}
+
+	err := p.Validate(params)
+	if err == nil || !strings.Contains(err.Error(), "mode must be a string") {
+		t.Errorf("Expected 'mode must be a string' error, got: %v", err)
+	}
+}
+
+func TestSetHeadersPolicy_OnRequestHeaders_AppendMode(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{
+			"x-roles": "admin",
+		}),
+	}
+
+	params := map[string]interface{}{
+		"mode": "append",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Roles",
+				"value": "editor",
+			},
+		},
+	}
+
+	result := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
+	}
+
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers in HeadersToSet for append mode, got %d", len(mods.HeadersToSet))
+	}
+
+	if len(mods.HeadersToAppend) != 1 {
+		t.Errorf("Expected 1 header in HeadersToAppend, got %d", len(mods.HeadersToAppend))
+	}
+
+	values := mods.HeadersToAppend["x-roles"]
+	if len(values) != 1 || values[0] != "editor" {
+		t.Errorf("Expected 'x-roles' to append ['editor'], got %v", values)
+	}
+}
+
+func TestSetHeadersPolicy_OnRequestHeaders_AppendMode_DuplicateNames(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{}),
+	}
+
+	// In append mode duplicate names must all be preserved, in configured order,
+	// instead of last-value-wins.
+	params := map[string]interface{}{
+		"mode": "append",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Roles",
+				"value": "editor",
+			},
+			map[string]interface{}{
+				"name":  "X-Roles",
+				"value": "viewer",
+			},
+			map[string]interface{}{
+				"name":  "X-Other",
+				"value": "other-value",
+			},
+		},
+	}
+
+	result := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
+	}
+
+	if len(mods.HeadersToAppend) != 2 {
+		t.Errorf("Expected 2 unique header names in HeadersToAppend, got %d", len(mods.HeadersToAppend))
+	}
+
+	roles := mods.HeadersToAppend["x-roles"]
+	if len(roles) != 2 || roles[0] != "editor" || roles[1] != "viewer" {
+		t.Errorf("Expected 'x-roles' to append ['editor', 'viewer'] in order, got %v", roles)
+	}
+
+	other := mods.HeadersToAppend["x-other"]
+	if len(other) != 1 || other[0] != "other-value" {
+		t.Errorf("Expected 'x-other' to append ['other-value'], got %v", other)
+	}
+}
+
+func TestSetHeadersPolicy_OnRequestHeaders_AppendMode_HeaderNameNormalization(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{}),
+	}
+
+	params := map[string]interface{}{
+		"mode": "append",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "  X-UPPER-CASE  ", // With spaces and uppercase
+				"value": "test-value",
+			},
+		},
+	}
+
+	result := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
+	}
+
+	values := mods.HeadersToAppend["x-upper-case"] // Should be trimmed and lowercase
+	if len(values) != 1 || values[0] != "test-value" {
+		t.Errorf("Expected header 'x-upper-case' to be normalized and appended, got headers: %v",
+			mods.HeadersToAppend)
+	}
+}
+
+func TestSetHeadersPolicy_OnResponseHeaders_AppendMode(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		ResponseHeaders: createTestHeaders(map[string]string{
+			"vary": "Accept",
+		}),
+	}
+
+	params := map[string]interface{}{
+		"mode": "append",
+		"responseHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "Vary",
+				"value": "Accept-Encoding",
+			},
+		},
+	}
+
+	result := p.OnResponseHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.DownstreamResponseHeaderModifications)
+	if !ok {
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", result)
+	}
+
+	if len(mods.HeadersToSet) != 0 {
+		t.Errorf("Expected no headers in HeadersToSet for append mode, got %d", len(mods.HeadersToSet))
+	}
+
+	values := mods.HeadersToAppend["vary"]
+	if len(values) != 1 || values[0] != "Accept-Encoding" {
+		t.Errorf("Expected 'vary' to append ['Accept-Encoding'], got %v", values)
+	}
+}
+
+func TestSetHeadersPolicy_OnRequestHeaders_ExplicitSetMode(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{}),
+	}
+
+	params := map[string]interface{}{
+		"mode": "set",
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Custom-Header",
+				"value": "custom-value",
+			},
+		},
+	}
+
+	result := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
+	}
+
+	if len(mods.HeadersToAppend) != 0 {
+		t.Errorf("Expected no headers in HeadersToAppend for set mode, got %d", len(mods.HeadersToAppend))
+	}
+
+	if mods.HeadersToSet["x-custom-header"] != "custom-value" {
+		t.Errorf("Expected 'x-custom-header' to be set to 'custom-value', got '%s'",
+			mods.HeadersToSet["x-custom-header"])
+	}
+}
+
+func TestSetHeadersPolicy_OnRequestHeaders_DefaultModeIsSet(t *testing.T) {
+	p := &SetHeadersPolicy{}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{}),
+	}
+
+	// No mode key — must behave exactly like mode "set"
+	params := map[string]interface{}{
+		"requestHeaders": []interface{}{
+			map[string]interface{}{
+				"name":  "X-Custom-Header",
+				"value": "custom-value",
+			},
+		},
+	}
+
+	result := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	mods, ok := result.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", result)
+	}
+
+	if len(mods.HeadersToAppend) != 0 {
+		t.Errorf("Expected no headers in HeadersToAppend when mode is absent, got %d", len(mods.HeadersToAppend))
+	}
+
+	if mods.HeadersToSet["x-custom-header"] != "custom-value" {
+		t.Errorf("Expected default mode to set 'x-custom-header' to 'custom-value', got '%s'",
+			mods.HeadersToSet["x-custom-header"])
+	}
+}
+
+func TestSetHeadersPolicy_AppendMode_NestedConfiguration(t *testing.T) {
+	p := &SetHeadersPolicy{}
+
+	params := map[string]interface{}{
+		"mode": "append",
+		"request": map[string]interface{}{
+			"headers": []interface{}{
+				map[string]interface{}{
+					"name":  "X-Nested-Request",
+					"value": "nested-request-value",
+				},
+			},
+		},
+		"response": map[string]interface{}{
+			"headers": []interface{}{
+				map[string]interface{}{
+					"name":  "X-Nested-Response",
+					"value": "nested-response-value",
+				},
+			},
+		},
+	}
+
+	if err := p.Validate(params); err != nil {
+		t.Errorf("Expected no error for nested append configuration, got: %v", err)
+	}
+
+	reqCtx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		Headers: createTestHeaders(map[string]string{}),
+	}
+
+	reqResult := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	reqMods, ok := reqResult.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Errorf("Expected UpstreamRequestHeaderModifications, got %T", reqResult)
+	}
+
+	reqValues := reqMods.HeadersToAppend["x-nested-request"]
+	if len(reqValues) != 1 || reqValues[0] != "nested-request-value" {
+		t.Errorf("Expected nested request header to be appended, got %v", reqMods.HeadersToAppend)
+	}
+
+	respCtx := &policy.ResponseHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID: "req-1",
+			Metadata:  map[string]interface{}{},
+		},
+		ResponseHeaders: createTestHeaders(map[string]string{}),
+	}
+
+	respResult := p.OnResponseHeaders(context.Background(), respCtx, params)
+	respMods, ok := respResult.(policy.DownstreamResponseHeaderModifications)
+	if !ok {
+		t.Errorf("Expected DownstreamResponseHeaderModifications, got %T", respResult)
+	}
+
+	respValues := respMods.HeadersToAppend["x-nested-response"]
+	if len(respValues) != 1 || respValues[0] != "nested-response-value" {
+		t.Errorf("Expected nested response header to be appended, got %v", respMods.HeadersToAppend)
+	}
+}
+
 func TestSetHeadersPolicy_Validate_NestedConfiguration(t *testing.T) {
 	p := &SetHeadersPolicy{}
 
