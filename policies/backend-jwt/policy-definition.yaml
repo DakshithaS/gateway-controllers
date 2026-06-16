@@ -59,6 +59,32 @@ parameters:
         the system-level tokenExpiry for this API. If omitted, the system default applies.
       pattern: "^[0-9]+(ns|us|µs|ms|s|m|h)$"
 
+    dialect:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: >-
+        Namespace prefix applied to auto-forwarded original-JWT claims only. When set,
+        each claim forwarded from the incoming JWT's Properties is emitted as
+        "<dialect><claimName>" instead of "<claimName>" (e.g. "http://wso2.org/claims/"
+        turns "email" into "http://wso2.org/claims/email"). Does not affect standard
+        registered claims (sub, scope, etc.) nor explicitly configured claimMappings or
+        customClaims — those are emitted under the exact names the user configured.
+        Default "" leaves claim names unchanged.
+      default: ""
+
+    excludedClaims:
+      type: array
+      x-wso2-policy-advanced-param: true
+      description: >-
+        List of original-JWT claim names (matched by their original name, before any
+        dialect prefix is applied) that must not be forwarded into the backend JWT.
+        Applies only to auto-forwarded original-JWT claims (the Properties loop); it does
+        not affect standard registered claims, claimMappings, or customClaims. Default []
+        forwards all non-restricted claims.
+      default: []
+      items:
+        type: string
+
 systemParameters:
   type: object
   additionalProperties: false

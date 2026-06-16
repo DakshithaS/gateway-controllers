@@ -49,8 +49,9 @@ const (
 // resolvedClaims holds the extra claims derived from customClaims, split by type
 // so the cache key and JWT population can share the same resolved values.
 type resolvedClaims struct {
-	stringClaims map[string]string      // resolved string customClaims, including $ctx: refs
-	rawClaims    map[string]interface{} // non-string customClaims (numbers, booleans) preserved as-is
+	stringClaims  map[string]string      // resolved string customClaims, including $ctx: refs
+	rawClaims     map[string]interface{} // non-string customClaims (numbers, booleans) preserved as-is
+	mappedSources map[string]bool        // Properties keys consumed by claimMappings; skip in auto-forward
 }
 
 // BackendJWTPolicy generates a signed JWT from the authenticated user context
@@ -144,6 +145,8 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 	headerName := getString(params, "header", defaultHeader)
 
 	tokenCaching := getBool(params, "tokenCaching", true)
+	dialect := getString(params, "dialect", "")
+	excluded := getStringSet(params, "excludedClaims")
 
 	// Resolve extra claims once — used for both the cache key and JWT population.
 	extras := resolveExtraClaims(reqCtx, params)
@@ -195,9 +198,6 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 	if authCtx != nil && authCtx.AuthType != "" {
 		claims["auth_type"] = authCtx.AuthType
 	}
-	if authCtx != nil && authCtx.Issuer != "" {
-		claims["original_iss"] = authCtx.Issuer
-	}
 	if authCtx != nil && len(authCtx.Audience) > 0 {
 		claims["aud"] = authCtx.Audience
 	}
@@ -208,9 +208,10 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 	// original names. claimMappings and customClaims applied below can add aliases or override.
 	if authCtx != nil && authCtx.AuthType == "jwt" {
 		for k, v := range authCtx.Properties {
-			if !restrictedClaims[k] {
-				claims[k] = v
+			if restrictedClaims[k] || excluded[k] || extras.mappedSources[k] {
+				continue
 			}
+			claims[dialect+k] = v
 		}
 		if len(authCtx.Scopes) > 0 {
 			scopes := make([]string, 0, len(authCtx.Scopes))
@@ -282,8 +283,9 @@ var restrictedClaims = map[string]bool{
 // rawClaims holds non-string customClaims preserved as their original types for JWT population.
 func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]interface{}) resolvedClaims {
 	result := resolvedClaims{
-		stringClaims: make(map[string]string),
-		rawClaims:    make(map[string]interface{}),
+		stringClaims:  make(map[string]string),
+		rawClaims:     make(map[string]interface{}),
+		mappedSources: make(map[string]bool),
 	}
 
 	authCtx := reqCtx.SharedContext.AuthContext
@@ -308,6 +310,7 @@ func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]i
 					continue
 				}
 				result.stringClaims[dest] = val
+				result.mappedSources[src] = true
 			}
 		}
 	}
@@ -632,6 +635,22 @@ func getBool(params map[string]interface{}, key string, defaultVal bool) bool {
 		}
 	}
 	return defaultVal
+}
+
+// getStringSet reads a string-array param into a lookup set. Non-string
+// elements are skipped. Returns an empty (non-nil) set when absent.
+func getStringSet(params map[string]interface{}, key string) map[string]bool {
+	out := make(map[string]bool)
+	if raw, ok := params[key]; ok {
+		if arr, ok := raw.([]interface{}); ok {
+			for _, e := range arr {
+				if s, ok := e.(string); ok && s != "" {
+					out[s] = true
+				}
+			}
+		}
+	}
+	return out
 }
 
 

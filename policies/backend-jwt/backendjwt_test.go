@@ -1485,3 +1485,214 @@ func TestClaimMappings_CustomClaimsOverride(t *testing.T) {
 		t.Errorf("customClaims must override claimMappings for same key, got %v", claims["role"])
 	}
 }
+
+// ─── Dialect Tests ────────────────────────────────────────────────────────────
+
+func TestDialect_PrefixesForwardedClaims(t *testing.T) {
+	// Dialect must prefix auto-forwarded original-JWT claims; the bare key must be absent.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	params["dialect"] = "http://wso2.org/claims/"
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	// Prefixed keys must be present.
+	if claims["http://wso2.org/claims/email"] != "alice@example.com" {
+		t.Errorf("expected prefixed claim http://wso2.org/claims/email=alice@example.com, got %v", claims["http://wso2.org/claims/email"])
+	}
+	if claims["http://wso2.org/claims/role"] != "admin" {
+		t.Errorf("expected prefixed claim http://wso2.org/claims/role=admin, got %v", claims["http://wso2.org/claims/role"])
+	}
+	// Bare keys must not be present.
+	if _, present := claims["email"]; present {
+		t.Errorf("bare key 'email' must not appear when dialect is set; only the prefixed form should")
+	}
+	if _, present := claims["role"]; present {
+		t.Errorf("bare key 'role' must not appear when dialect is set; only the prefixed form should")
+	}
+}
+
+func TestDialect_DoesNotAffectStandardOrConfiguredClaims(t *testing.T) {
+	// dialect must not affect sub, scope, or explicitly configured claimMappings/customClaims.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	params["dialect"] = "http://wso2.org/claims/"
+	params["customClaims"] = map[string]interface{}{"org": "acme"}
+	params["claimMappings"] = map[string]interface{}{"clientEmail": "email"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Scopes:        map[string]bool{"read": true},
+		Properties:    map[string]string{"email": "alice@example.com"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	// Standard claims must use their standard names (no prefix).
+	if claims["sub"] != "alice" {
+		t.Errorf("sub must not be prefixed, got %v", claims["sub"])
+	}
+	if claims["scope"] != "read" {
+		t.Errorf("scope must not be prefixed, got %v", claims["scope"])
+	}
+	// customClaims must use their configured name (no prefix).
+	if claims["org"] != "acme" {
+		t.Errorf("customClaim 'org' must not be prefixed by dialect, got %v", claims["org"])
+	}
+	// claimMappings must use their configured destination name (no prefix).
+	if claims["clientEmail"] != "alice@example.com" {
+		t.Errorf("claimMapping destination 'clientEmail' must not be prefixed by dialect, got %v", claims["clientEmail"])
+	}
+}
+
+// ─── ExcludedClaims Tests ─────────────────────────────────────────────────────
+
+func TestExcludedClaims_DropsListedClaims(t *testing.T) {
+	// Listed claims must not appear; non-listed claims must still be forwarded.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	params["excludedClaims"] = []interface{}{"role"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin", "org": "acme"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if _, present := claims["role"]; present {
+		t.Errorf("excluded claim 'role' must not be forwarded to the backend JWT")
+	}
+	// Non-excluded claims must still be forwarded.
+	if claims["email"] != "alice@example.com" {
+		t.Errorf("non-excluded claim 'email' must still be forwarded, got %v", claims["email"])
+	}
+	if claims["org"] != "acme" {
+		t.Errorf("non-excluded claim 'org' must still be forwarded, got %v", claims["org"])
+	}
+}
+
+// ─── Combined Dialect + ExcludedClaims Tests ─────────────────────────────────
+
+func TestDialectAndExcludedClaims_Combined(t *testing.T) {
+	// Excluded claim must be absent even with dialect set; remaining claims must be prefixed.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	params["dialect"] = "http://wso2.org/claims/"
+	params["excludedClaims"] = []interface{}{"role"}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	// Excluded claim must be absent in both prefixed and bare form.
+	if _, present := claims["role"]; present {
+		t.Errorf("excluded claim 'role' (bare) must not appear")
+	}
+	if _, present := claims["http://wso2.org/claims/role"]; present {
+		t.Errorf("excluded claim 'role' (prefixed) must not appear")
+	}
+	// Non-excluded claim must appear under the prefixed key.
+	if claims["http://wso2.org/claims/email"] != "alice@example.com" {
+		t.Errorf("non-excluded claim must appear prefixed, got %v", claims["http://wso2.org/claims/email"])
+	}
+	// Bare non-excluded key must not appear.
+	if _, present := claims["email"]; present {
+		t.Errorf("bare 'email' must not appear when dialect is set")
+	}
+}
+
+// ─── Empty Defaults Regression Guard ─────────────────────────────────────────
+
+func TestDialectAndExcludedClaims_EmptyDefaults_PreserveCurrentBehavior(t *testing.T) {
+	// With no dialect and no excludedClaims, forwarding behavior must be identical
+	// to the pre-feature baseline: bare original claim names forwarded unchanged.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	// Explicitly set empty values (matching the param defaults).
+	params["dialect"] = ""
+	params["excludedClaims"] = []interface{}{}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["email"] != "alice@example.com" {
+		t.Errorf("empty dialect: 'email' must be forwarded as-is, got %v", claims["email"])
+	}
+	if claims["role"] != "admin" {
+		t.Errorf("empty dialect: 'role' must be forwarded as-is, got %v", claims["role"])
+	}
+	if claims["sub"] != "alice" {
+		t.Errorf("sub must be present, got %v", claims["sub"])
+	}
+}
+
+func TestClaimMapping_SourceNotDuplicated(t *testing.T) {
+	// A claim that is remapped via claimMappings must appear ONLY under its destination
+	// name — the original source key must not also appear in the backend JWT.
+	rsaKey, keyPEM := generateRSAKey(t)
+	p := newTestPolicy()
+	params := baseParams(keyPEM)
+	params["claimMappings"] = map[string]interface{}{
+		"user_email": "email", // source "email" → dest "user_email"
+	}
+
+	reqCtx := newRequestContext(&policy.AuthContext{
+		Authenticated: true,
+		AuthType:      "jwt",
+		Subject:       "alice",
+		Properties:    map[string]string{"email": "alice@example.com", "role": "admin"},
+	})
+
+	result := p.OnRequestHeaders(context.Background(), reqCtx, params)
+	mods := result.(policy.UpstreamRequestHeaderModifications)
+	claims := decodeJWT(t, mods.HeadersToSet[defaultHeader], &rsaKey.PublicKey)
+
+	if claims["user_email"] != "alice@example.com" {
+		t.Errorf("claimMapping destination 'user_email' must be present, got %v", claims["user_email"])
+	}
+	if _, ok := claims["email"]; ok {
+		t.Errorf("claimMapping source 'email' must not appear in the backend JWT (got %v)", claims["email"])
+	}
+	// Non-remapped claims still forwarded normally.
+	if claims["role"] != "admin" {
+		t.Errorf("non-mapped claim 'role' must still be forwarded, got %v", claims["role"])
+	}
+}
