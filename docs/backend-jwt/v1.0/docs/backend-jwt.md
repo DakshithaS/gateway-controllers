@@ -43,7 +43,8 @@ If no authentication context is present (no auth policy in the chain), a backend
 | `signingKey.path` | string | — | Path to a PEM private key file (mutually exclusive with `inline`) |
 | `algorithm` | string | `SHA256withRSA` | Signing algorithm: `SHA256withRSA` (RSA) or `ES256` (ECDSA) or `NONE` (unsigned) |
 | `issuer` | string | `""` | Value of the `iss` claim in generated tokens |
-| `tokenExpiry` | string | `15m` | Token validity as a Go duration string (e.g. `"15m"`, `"1h"`) |
+| `tokenExpiry` | string | `15m` | Default token validity as a Go duration string (e.g. `"15m"`, `"1h"`). Can be overridden per-API via the user parameter of the same name. |
+| `tokenCaching` | boolean | `true` | When `false`, disables token caching — every request signs a new token. Useful for debugging or when dynamic claims must reflect per-request state without a cache window. |
 
 ### User Parameters
 
@@ -52,6 +53,7 @@ If no authentication context is present (no auth policy in the chain), a backend
 | `header` | string | `x-jwt-assertion` | Upstream request header to set the generated JWT on |
 | `claimMappings` | object | `{}` | Maps upstream JWT claim names to backend JWT claim names (see below) |
 | `customClaims` | object | `{}` | Static or dynamic claim name→value pairs added to every generated token (see below) |
+| `tokenExpiry` | string | _(system default)_ | Override the system `tokenExpiry` for this API (e.g. `"5m"`, `"1h"`). When set, takes precedence over the system-level value. |
 
 ## Claim Mappings
 
@@ -115,6 +117,7 @@ policies:
   - name: backend-jwt
     parameters:
       header: x-jwt-assertion
+      tokenExpiry: 5m                               # override system default for this API
       claimMappings:
         email: email                                 # AuthContext.Properties["email"] → "email"
         clientRole: role                             # AuthContext.Properties["role"] → "clientRole"

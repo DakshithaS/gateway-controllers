@@ -51,6 +51,14 @@ parameters:
       default: {}
       additionalProperties: {}
 
+    tokenExpiry:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: >-
+        Token validity as a Go duration string (e.g. "5m", "1h"). When set, overrides
+        the system-level tokenExpiry for this API. If omitted, the system default applies.
+      pattern: "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+
 systemParameters:
   type: object
   additionalProperties: false
