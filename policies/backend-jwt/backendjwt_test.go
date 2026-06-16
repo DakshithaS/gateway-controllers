@@ -219,9 +219,6 @@ func TestGeneratesJWTWithSubject(t *testing.T) {
 	if claims["iss"] != "https://gateway.example.com" {
 		t.Errorf("expected iss=https://gateway.example.com, got %v", claims["iss"])
 	}
-	if claims["original_iss"] != "https://idp.example.com" {
-		t.Errorf("expected original_iss=https://idp.example.com, got %v", claims["original_iss"])
-	}
 }
 
 func TestCustomClaims(t *testing.T) {

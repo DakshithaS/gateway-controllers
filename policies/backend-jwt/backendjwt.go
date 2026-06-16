@@ -49,9 +49,10 @@ const (
 // resolvedClaims holds the extra claims derived from customClaims, split by type
 // so the cache key and JWT population can share the same resolved values.
 type resolvedClaims struct {
-	stringClaims  map[string]string      // resolved string customClaims, including $ctx: refs
-	rawClaims     map[string]interface{} // non-string customClaims (numbers, booleans) preserved as-is
-	mappedSources map[string]bool        // Properties keys consumed by claimMappings; skip in auto-forward
+	stringClaims       map[string]string      // resolved string customClaims, including $ctx: refs
+	rawClaims          map[string]interface{} // non-string customClaims (numbers, booleans) preserved as-is
+	mappedSources      map[string]bool        // Properties keys consumed by claimMappings; skip in auto-forward
+	dynamicStringClaims map[string]string     // subset of stringClaims resolved from $ctx: refs; used for cache key
 }
 
 // BackendJWTPolicy generates a signed JWT from the authenticated user context
@@ -283,9 +284,10 @@ var restrictedClaims = map[string]bool{
 // rawClaims holds non-string customClaims preserved as their original types for JWT population.
 func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]interface{}) resolvedClaims {
 	result := resolvedClaims{
-		stringClaims:  make(map[string]string),
-		rawClaims:     make(map[string]interface{}),
-		mappedSources: make(map[string]bool),
+		stringClaims:        make(map[string]string),
+		rawClaims:           make(map[string]interface{}),
+		mappedSources:       make(map[string]bool),
+		dynamicStringClaims: make(map[string]string),
 	}
 
 	authCtx := reqCtx.SharedContext.AuthContext
@@ -334,6 +336,9 @@ func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]i
 					continue
 				}
 				result.stringClaims[k] = resolved
+				if strings.HasPrefix(strVal, ctxPrefix) {
+					result.dynamicStringClaims[k] = resolved
+				}
 			}
 		}
 	}
@@ -346,21 +351,22 @@ var keyBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
 
 // buildTokenCacheKey returns a cache key for the token cache.
 //
-//   - TokenId, no extras:  raw concatenation — TokenId + api name + path + method.
-//   - TokenId, with extras: SHA256 of the above + resolved claim values.
-//   - authCtx nil:          FNV-64a of api name + path + method + extras.
-//   - otherwise:            FNV-64a of all identity fields + api name + path + method + extras.
+//   - TokenId, no dynamic extras:  raw concatenation — TokenId + api name + path + method.
+//   - TokenId, with dynamic extras: SHA256 of the above + resolved $ctx: claim values.
+//   - authCtx nil:                  SHA256 of api name + path + method + dynamic extras.
+//   - otherwise:                    SHA256 of all identity fields + api name + path + method + dynamic extras.
 //
-// Extras (resolved customClaims / claimMappings) are included in all paths so that
-// dynamic values such as $ctx:request.header.* produce distinct cache entries per request.
+// Only $ctx:-resolved customClaims are included in the key because they vary per-request.
+// Static customClaims and claimMappings are constant per-API config (already disambiguated by
+// apiName) or per-identity (already captured in the identity hash), so they add no information.
 func buildTokenCacheKey(authCtx *policy.AuthContext, apiName, path, method string, extras resolvedClaims) string {
 	if i := strings.IndexByte(path, '?'); i != -1 {
 		path = path[:i]
 	}
 
 	var extraKeys []string
-	if len(extras.stringClaims) > 0 || len(extras.rawClaims) > 0 {
-		extraKeys = sortedExtraKeys(extras)
+	if len(extras.dynamicStringClaims) > 0 {
+		extraKeys = sortedDynamicKeys(extras)
 	}
 
 	if authCtx != nil && authCtx.TokenId != "" {
@@ -462,14 +468,9 @@ func appendExtras(buf *bytes.Buffer, keys []string, extras resolvedClaims) {
 		buf.WriteByte('|')
 		buf.WriteString(k)
 		buf.WriteByte('=')
-		if v, ok := extras.stringClaims[k]; ok {
-			buf.WriteString(v)
-		} else {
-			fmt.Fprintf(buf, "%v", extras.rawClaims[k])
-		}
+		buf.WriteString(extras.dynamicStringClaims[k])
 	}
 }
-
 
 func sortedSlice(s []string) []string {
 	out := make([]string, len(s))
@@ -478,15 +479,10 @@ func sortedSlice(s []string) []string {
 	return out
 }
 
-func sortedExtraKeys(extras resolvedClaims) []string {
-	keys := make([]string, 0, len(extras.stringClaims)+len(extras.rawClaims))
-	for k := range extras.stringClaims {
+func sortedDynamicKeys(extras resolvedClaims) []string {
+	keys := make([]string, 0, len(extras.dynamicStringClaims))
+	for k := range extras.dynamicStringClaims {
 		keys = append(keys, k)
-	}
-	for k := range extras.rawClaims {
-		if _, exists := extras.stringClaims[k]; !exists {
-			keys = append(keys, k)
-		}
 	}
 	sort.Strings(keys)
 	return keys
