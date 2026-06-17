@@ -142,4 +142,4 @@ systemParameters:
       default: true
       "wso2/defaultValue": "${config.policy_configurations.backendjwt_v1.tokencaching}"
 
-  required: ["signingKey"]
+  required: []

@@ -13,9 +13,9 @@ Backend services can verify the generated JWT using the gateway's corresponding 
 
 When the incoming credential is a JWT (authenticated by `jwt-auth`), all non-standard claims from the original token are automatically forwarded to the backend JWT under their original names. Standard claims (`iss`, `aud`, `sub`, etc.) are handled via their dedicated typed fields (see table below). Scopes are forwarded as a space-delimited `scope` claim. `claimMappings` and `customClaims` can add aliases or override any auto-forwarded claim.
 
-Generated tokens are cached in memory for half their configured `tokenExpiry` (minimum 30 seconds). The cache key is derived from the authenticated client identity, API operation path, and all resolved claim values. Requests from the same client hitting the same operation within the cache window receive the previously signed token, avoiding repeated cryptographic operations. Dynamic custom claims that differ between requests (e.g. `$ctx:request.header.*`) produce separate cache entries, preserving correctness.
+Generated tokens are cached in memory for half their configured `tokenExpiry` (minimum 30 seconds). The cache key is derived from the authenticated client identity and the operation path and method. Only `customClaims` values resolved from `$ctx:` references are included in the key, because static claims and `claimMappings` values are constant per-operation or already captured in the identity hash. Requests from the same client hitting the same operation within the cache window receive the previously signed token, avoiding repeated cryptographic operations. Dynamic custom claims that differ between requests (e.g. `$ctx:request.header.*`) produce separate cache entries, preserving correctness.
 
-If no authentication context is present (no auth policy in the chain), a backend JWT is still generated using the available system claims (`iss`, `iat`, `exp`). Auth-derived claims (`sub`, `auth_type`, `original_iss`, `aud`, `credential_id`) are omitted. Static `customClaims` and request-context variables (`$ctx:request.*`, `$ctx:api.*`) still resolve normally. To enforce that authentication must have occurred before this policy runs, add an auth policy earlier in the chain.
+If no authentication context is present (no auth policy in the chain), a backend JWT is still generated using the available system claims (`iss`, `iat`, `exp`). Auth-derived claims (`sub`, `auth_type`, `aud`, `credential_id`) are omitted. Static `customClaims` and request-context variables (`$ctx:request.*`, `$ctx:api.*`) still resolve normally. To enforce that authentication must have occurred before this policy runs, add an auth policy earlier in the chain.
 
 ## Claims in the Generated Token
 
@@ -26,7 +26,6 @@ If no authentication context is present (no auth policy in the chain), a backend
 | `iat` | Current time |
 | `exp` | Current time + `system.tokenExpiry` |
 | `auth_type` | `AuthContext.AuthType` (e.g. `jwt`, `basic`, `apikey`) |
-| `original_iss` | `AuthContext.Issuer` — the original token issuer (JWT auth only) |
 | `aud` | `AuthContext.Audience` (JWT auth only) |
 | `credential_id` | `AuthContext.CredentialID` (OAuth client_id, API key credential) |
 | `scope` | `AuthContext.Scopes` as space-delimited string (JWT auth only) |
@@ -39,9 +38,9 @@ If no authentication context is present (no auth policy in the chain), a backend
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `signingKey.inline` | string | — | PEM-encoded RSA or ECDSA private key (mutually exclusive with `path`) |
-| `signingKey.path` | string | — | Path to a PEM private key file (mutually exclusive with `inline`) |
-| `algorithm` | string | `SHA256withRSA` | Signing algorithm: `SHA256withRSA` (RSA) or `ES256` (ECDSA) or `NONE` (unsigned) |
+| `signingKey.inline` | string | — | PEM-encoded RSA or ECDSA private key (mutually exclusive with `path`). Not required when `algorithm` is `NONE`. |
+| `signingKey.path` | string | — | Path to a PEM private key file (mutually exclusive with `inline`). Not required when `algorithm` is `NONE`. |
+| `algorithm` | string | `SHA256withRSA` | Signing algorithm: `SHA256withRSA` (RSA) or `ES256` (ECDSA) or `NONE` (unsigned, no key required) |
 | `issuer` | string | `""` | Value of the `iss` claim in generated tokens |
 | `tokenExpiry` | string | `15m` | Default token validity as a Go duration string (e.g. `"15m"`, `"1h"`). Can be overridden per-API via the user parameter of the same name. |
 | `tokenCaching` | boolean | `true` | When `false`, disables token caching — every request signs a new token. Useful for debugging or when dynamic claims must reflect per-request state without a cache window. |
@@ -54,6 +53,8 @@ If no authentication context is present (no auth policy in the chain), a backend
 | `claimMappings` | object | `{}` | Maps upstream JWT claim names to backend JWT claim names (see below) |
 | `customClaims` | object | `{}` | Static or dynamic claim name→value pairs added to every generated token (see below) |
 | `tokenExpiry` | string | _(system default)_ | Override the system `tokenExpiry` for this API (e.g. `"5m"`, `"1h"`). When set, takes precedence over the system-level value. |
+| `dialect` | string | `""` | Namespace prefix applied to auto-forwarded original-JWT claims. When set, each claim forwarded from the incoming JWT's properties is emitted as `<dialect><claimName>` (e.g. `"http://wso2.org/claims/"` turns `email` into `http://wso2.org/claims/email`). Does not affect standard claims (`sub`, `scope`, etc.) or explicitly configured `claimMappings`/`customClaims`. |
+| `excludedClaims` | string[] | `[]` | List of original-JWT claim names to exclude from auto-forwarding. Matched by original name before any `dialect` prefix is applied. Does not affect standard claims or explicitly configured `claimMappings`/`customClaims`. |
 
 ## Claim Mappings
 
