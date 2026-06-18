@@ -8,5 +8,3 @@ require (
 )
 
 require github.com/patrickmn/go-cache v2.1.0+incompatible
-
-replace github.com/wso2/api-platform/sdk/core => /Users/dineth/Code/api-platform/sdk/core
