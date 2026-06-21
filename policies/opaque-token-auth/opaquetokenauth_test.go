@@ -26,12 +26,15 @@ import (
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	"github.com/wso2/api-platform/sdk/core/utils/cache"
 )
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
 func newPolicy() *OpaqueTokenAuthPolicy {
-	return &OpaqueTokenAuthPolicy{cacheStore: make(map[string]*cachedIntrospection)}
+	return &OpaqueTokenAuthPolicy{
+		cache: cache.NewInMemoryCache[*cachedIntrospection](cacheName, cacheMaxSize, 0, cache.LRUEvictionPolicy),
+	}
 }
 
 // activeResponder writes the given introspection claims as a JSON response.

@@ -31,15 +31,21 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	"github.com/wso2/api-platform/sdk/core/utils/cache"
 )
 
 const (
 	// AuthType identifies this authentication mechanism in AuthContext.
 	AuthType = "opaque"
+
+	// cacheName labels the introspection cache in SDK cache statistics.
+	cacheName = "opaque-token-introspection"
+
+	// cacheMaxSize bounds the number of cached introspection results (LRU eviction).
+	cacheMaxSize = 10000
 )
 
 // standardIntrospectionClaims lists RFC 7662 introspection response members that
@@ -54,8 +60,10 @@ var standardIntrospectionClaims = map[string]bool{
 // token introspection, caching active responses to reduce load on the
 // authorization server.
 type OpaqueTokenAuthPolicy struct {
-	cacheMutex sync.RWMutex
-	cacheStore map[string]*cachedIntrospection // key = sha256(providerURI \x00 token)
+	// cache stores active introspection results keyed by sha256(providerURI \x00 token).
+	// The SDK cache is constructed with no TTL (entries are bounded by their own
+	// expiresAt, which is min(configured TTL, token exp)) and an LRU size cap.
+	cache cache.Cache[*cachedIntrospection]
 }
 
 // cachedIntrospection holds an active introspection result with its expiry.
@@ -97,7 +105,7 @@ type IntrospectionResult struct {
 }
 
 var ins = &OpaqueTokenAuthPolicy{
-	cacheStore: make(map[string]*cachedIntrospection),
+	cache: cache.NewInMemoryCache[*cachedIntrospection](cacheName, cacheMaxSize, 0, cache.LRUEvictionPolicy),
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -256,15 +264,14 @@ func (p *OpaqueTokenAuthPolicy) introspect(ctx context.Context, token string, pr
 		return nil, fmt.Errorf("invalid introspection retry count: %d", retryCount)
 	}
 
-	cacheKey := introspectionCacheKey(provider.URI, token)
+	cacheKey := cache.CacheKey{Key: introspectionCacheKey(provider.URI, token)}
 
-	p.cacheMutex.RLock()
-	if cached, ok := p.cacheStore[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
-		p.cacheMutex.RUnlock()
+	// The SDK cache has no TTL of its own; each entry carries its own expiresAt
+	// (bounded by the token's exp), so a stale hit is treated as a miss.
+	if cached, ok := p.cache.Get(ctx, cacheKey); ok && time.Now().Before(cached.expiresAt) {
 		slog.Debug("Opaque Token Auth Policy: Introspection cache hit", "provider", provider.Name)
 		return cached.result, nil
 	}
-	p.cacheMutex.RUnlock()
 
 	var lastErr error
 	for attempt := 0; attempt <= retryCount; attempt++ {
@@ -278,9 +285,7 @@ func (p *OpaqueTokenAuthPolicy) introspect(ctx context.Context, token string, pr
 					}
 				}
 				if expiresAt.After(time.Now()) {
-					p.cacheMutex.Lock()
-					p.cacheStore[cacheKey] = &cachedIntrospection{result: result, expiresAt: expiresAt}
-					p.cacheMutex.Unlock()
+					_ = p.cache.Set(ctx, cacheKey, &cachedIntrospection{result: result, expiresAt: expiresAt})
 				}
 			}
 			return result, nil
