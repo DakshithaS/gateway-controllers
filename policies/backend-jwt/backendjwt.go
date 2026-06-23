@@ -282,50 +282,7 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 		signKey = key
 	}
 
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"iat": now.Unix(),
-		"exp": now.Add(expiry).Unix(),
-	}
-	if issuer != "" {
-		claims["iss"] = issuer
-	}
-	if authCtx != nil && authCtx.Subject != "" {
-		claims["sub"] = authCtx.Subject
-	}
-	if authCtx != nil && authCtx.AuthType != "" {
-		claims["auth_type"] = authCtx.AuthType
-	}
-	if authCtx != nil && len(authCtx.Audience) > 0 {
-		claims["aud"] = authCtx.Audience
-	}
-	if authCtx != nil && authCtx.CredentialID != "" {
-		claims["credential_id"] = authCtx.CredentialID
-	}
-	// For JWT auth: forward all non-standard claims from the incoming token under their
-	// original names. claimMappings and customClaims applied below can add aliases or override.
-	if authCtx != nil && authCtx.AuthType == "jwt" {
-		for k, v := range authCtx.Properties {
-			if restrictedClaims[k] || excluded[k] || extras.mappedSources[k] {
-				continue
-			}
-			claims[dialect+k] = v
-		}
-		if len(authCtx.Scopes) > 0 {
-			scopes := make([]string, 0, len(authCtx.Scopes))
-			for s := range authCtx.Scopes {
-				scopes = append(scopes, s)
-			}
-			sort.Strings(scopes)
-			claims["scope"] = strings.Join(scopes, " ")
-		}
-	}
-	for k, v := range extras.stringClaims {
-		claims[dialect+k] = v
-	}
-	for k, v := range extras.rawClaims {
-		claims[dialect+k] = v
-	}
+	claims := buildClaims(authCtx, issuer, dialect, expiry, excluded, extras, time.Now())
 
 	token := jwt.NewWithClaims(signingMethod, claims)
 	signed, err := token.SignedString(signKey)
@@ -344,6 +301,59 @@ func (p *BackendJWTPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.
 			headerName: signed,
 		},
 	}
+}
+
+// buildClaims assembles the JWT claim set: the standard registered claims (iat/exp/iss),
+// identity claims derived from the auth context, the auto-forwarded original-JWT claims (jwt
+// auth only), and the resolved custom and mapped claims. The dialect prefix is applied to
+// user-configured and auto-forwarded claim names; standard claims the policy sets itself are
+// never prefixed. now anchors iat and exp.
+func buildClaims(authCtx *policy.AuthContext, issuer, dialect string, expiry time.Duration, excluded map[string]bool, extras resolvedClaims, now time.Time) jwt.MapClaims {
+	claims := jwt.MapClaims{
+		"iat": now.Unix(),
+		"exp": now.Add(expiry).Unix(),
+	}
+	if issuer != "" {
+		claims["iss"] = issuer
+	}
+
+	if authCtx != nil {
+		if authCtx.Subject != "" {
+			claims["sub"] = authCtx.Subject
+		}
+		if authCtx.AuthType != "" {
+			claims["auth_type"] = authCtx.AuthType
+		}
+		if len(authCtx.Audience) > 0 {
+			claims["aud"] = authCtx.Audience
+		}
+		if authCtx.CredentialID != "" {
+			claims["credential_id"] = authCtx.CredentialID
+		}
+
+		// For JWT auth, forward the incoming token's non-standard claims under their original
+		// names. Reserved, excluded, and already-mapped claims are skipped; the claimMappings
+		// and customClaims applied below can still add aliases or override.
+		if authCtx.AuthType == "jwt" {
+			for k, v := range authCtx.Properties {
+				if restrictedClaims[k] || excluded[k] || extras.mappedSources[k] {
+					continue
+				}
+				claims[dialect+k] = v
+			}
+			if scope := sortedScopeString(authCtx.Scopes); scope != "" {
+				claims["scope"] = scope
+			}
+		}
+	}
+
+	for k, v := range extras.stringClaims {
+		claims[dialect+k] = v
+	}
+	for k, v := range extras.rawClaims {
+		claims[dialect+k] = v
+	}
+	return claims
 }
 
 // loadKey returns a cached private key, parsing and caching it on first use.
@@ -375,7 +385,7 @@ var restrictedClaims = map[string]bool{
 	"jti": true,
 }
 
-// resolveExtraClaims resolves claimMappings and customClaims from params.
+// resolveExtraClaims resolves claimMappings and customClaims from params into a resolvedClaims.
 // claimMappings are processed first; customClaims run after and take precedence.
 // stringClaims holds resolved string values (including $ctx: refs and mapped properties).
 // rawClaims holds non-string customClaims preserved as their original types for JWT population.
@@ -385,69 +395,69 @@ func resolveExtraClaims(reqCtx *policy.RequestHeaderContext, params map[string]i
 		rawClaims:     make(map[string]interface{}),
 		mappedSources: make(map[string]bool),
 	}
-
-	authCtx := reqCtx.SharedContext.AuthContext
-
-	// Process claimMappings first so customClaims can override them.
-	if raw, ok := params["claimMappings"]; ok {
-		if cm, ok := raw.(map[string]interface{}); ok {
-			for dest, srcRaw := range cm {
-				src, ok := srcRaw.(string)
-				if !ok || src == "" {
-					continue
-				}
-				if restrictedClaims[dest] {
-					slog.Warn("Backend JWT: claimMapping targets a reserved claim; skipping", "claim", dest)
-					continue
-				}
-				if authCtx == nil {
-					continue
-				}
-				val, ok := authCtx.Properties[src]
-				if !ok {
-					continue
-				}
-				result.stringClaims[dest] = val
-				result.mappedSources[src] = true
-			}
-		}
-	}
-
-	if customRaw, ok := params["customClaims"]; ok {
-		if custom, ok := customRaw.(map[string]interface{}); ok {
-			for k, v := range custom {
-				if restrictedClaims[k] {
-					slog.Warn("Backend JWT: customClaim targets a reserved claim; skipping", "claim", k)
-					continue
-				}
-				strVal, ok := v.(string)
-				if !ok {
-					result.rawClaims[k] = v
-					continue
-				}
-				resolved, ok := resolveClaimValue(strVal, reqCtx)
-				if !ok {
-					slog.Debug("Backend JWT: skipping claim — context variable not resolvable",
-						"claim", k, "ref", strVal)
-					continue
-				}
-				result.stringClaims[k] = resolved
-			}
-		}
-	}
-
+	result.applyClaimMappings(objectParam(params, "claimMappings"), reqCtx.SharedContext.AuthContext)
+	result.applyCustomClaims(objectParam(params, "customClaims"), reqCtx)
 	return result
 }
 
-// keyBufPool reuses byte buffers across cache key constructions to reduce GC pressure.
-var keyBufPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+// applyClaimMappings copies authenticated-context properties into destination claim names per the
+// claimMappings config. Reserved destinations are skipped with a warning; non-string or empty
+// entries and missing source properties are silently skipped. Each consumed source is recorded in
+// mappedSources so the auto-forward loop in buildClaims won't also emit it under its original name.
+func (r resolvedClaims) applyClaimMappings(mappings map[string]interface{}, authCtx *policy.AuthContext) {
+	for dest, srcRaw := range mappings {
+		src, ok := srcRaw.(string)
+		if !ok || src == "" {
+			continue
+		}
+		if restrictedClaims[dest] {
+			slog.Warn("Backend JWT: claimMapping targets a reserved claim; skipping", "claim", dest)
+			continue
+		}
+		if authCtx == nil {
+			continue
+		}
+		val, ok := authCtx.Properties[src]
+		if !ok {
+			continue
+		}
+		r.stringClaims[dest] = val
+		r.mappedSources[src] = true
+	}
+}
 
-// buildTokenCacheKey returns a cache key for the token cache.
+// applyCustomClaims adds the configured customClaims, which take precedence over claimMappings.
+// Reserved names are skipped with a warning. Non-string values are preserved as-is in rawClaims;
+// string values are resolved through resolveClaimValue ($ctx: refs), skipping any that don't
+// resolve.
+func (r resolvedClaims) applyCustomClaims(custom map[string]interface{}, reqCtx *policy.RequestHeaderContext) {
+	for k, v := range custom {
+		if restrictedClaims[k] {
+			slog.Warn("Backend JWT: customClaim targets a reserved claim; skipping", "claim", k)
+			continue
+		}
+		strVal, ok := v.(string)
+		if !ok {
+			r.rawClaims[k] = v
+			continue
+		}
+		resolved, ok := resolveClaimValue(strVal, reqCtx)
+		if !ok {
+			slog.Debug("Backend JWT: skipping claim — context variable not resolvable",
+				"claim", k, "ref", strVal)
+			continue
+		}
+		r.stringClaims[k] = resolved
+	}
+}
+
+// buildTokenCacheKey returns a cache key for the token cache. Every component is concatenated
+// into a single buffer and SHA256-hashed, so the key is a fixed-length digest of everything
+// regardless of identity shape:
 //
-//   - TokenId, no claims:    raw concatenation — TokenId + path + method.
-//   - TokenId, with claims:  SHA256 of the above + the configured claim set.
-//   - authCtx nil:           SHA256 of path + method + the configured claim set.
-//   - otherwise:             SHA256 of all identity fields + path + method + the configured claim set.
+//   - TokenId present:  namespace + TokenId + path + method (+ claims).
+//   - authCtx nil:      namespace + path + method (+ claims).
+//   - otherwise:        namespace + all identity fields + path + method (+ claims).
 //
 // The key is a complete function of the token: ns folds in the API namespace plus the
 // token-shaping config that is not part of the caller identity (issuer, algorithm, dialect,
@@ -462,88 +472,69 @@ func buildTokenCacheKey(ns keyNamespace, authCtx *policy.AuthContext, path, meth
 		path = path[:i]
 	}
 
-	nsPrefix := ns.prefix()
 	claimPairs := keyClaims(extras)
 
-	if authCtx != nil && authCtx.TokenId != "" {
-		if len(claimPairs) == 0 {
-			// Fast path: no claims configured, no hash needed.
-			key := nsPrefix + authCtx.TokenId + "\x00" + path + "\x00" + method
-			slog.Debug("Backend JWT: cache key (TokenId)", "path", path, "method", method, "cacheKey", key)
-			return key
-		}
-		// Claims present: SHA256 to normalize key length.
-		buf := keyBufPool.Get().(*bytes.Buffer)
-		buf.Reset()
+	var buf bytes.Buffer
+
+	// Namespace: API plus the token-shaping config that is not part of the caller identity.
+	buf.WriteString(ns.prefix())
+
+	var keyType string
+	switch {
+	case authCtx != nil && authCtx.TokenId != "":
+		keyType = "tokenId"
 		buf.WriteString(authCtx.TokenId)
 		buf.WriteByte('|')
 		buf.WriteString(path)
 		buf.WriteByte('|')
 		buf.WriteString(method)
-		appendClaims(buf, claimPairs)
-		sum := sha256.Sum256(buf.Bytes())
-		keyBufPool.Put(buf)
-		key := nsPrefix + fmt.Sprintf("%x", sum)
-		slog.Debug("Backend JWT: cache key (TokenId+claims)", "path", path, "method", method, "claims", claimPairs, "cacheKey", key)
-		return key
-	}
 
-	buf := keyBufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer keyBufPool.Put(buf)
-
-	if authCtx == nil {
+	case authCtx == nil:
+		keyType = "no-auth"
 		buf.WriteString(path)
 		buf.WriteByte('|')
 		buf.WriteString(method)
-		appendClaims(buf, claimPairs)
-		sum := sha256.Sum256(buf.Bytes())
-		key := nsPrefix + fmt.Sprintf("%x", sum)
-		slog.Debug("Backend JWT: cache key (no-auth)", "path", path, "method", method, "claims", claimPairs, "cacheKey", key)
-		return key
+
+	default:
+		// Non-nil authCtx without TokenId: include all available identity fields.
+		keyType = "identity"
+		buf.WriteString(authCtx.AuthType)
+		buf.WriteByte('|')
+		buf.WriteString(authCtx.Issuer)
+		buf.WriteByte('|')
+		buf.WriteString(authCtx.Subject)
+		buf.WriteByte('|')
+		buf.WriteString(authCtx.CredentialID)
+		buf.WriteByte('|')
+		buf.WriteString(strings.Join(sortedSlice(authCtx.Audience), ","))
+		propKeys := make([]string, 0, len(authCtx.Properties))
+		for k := range authCtx.Properties {
+			propKeys = append(propKeys, k)
+		}
+		sort.Strings(propKeys)
+		for _, k := range propKeys {
+			buf.WriteByte('|')
+			buf.WriteString(k)
+			buf.WriteByte('=')
+			buf.WriteString(authCtx.Properties[k])
+		}
+		if scope := sortedScopeString(authCtx.Scopes); scope != "" {
+			buf.WriteByte('|')
+			buf.WriteString("scope=")
+			buf.WriteString(scope)
+		}
+		buf.WriteByte('|')
+		buf.WriteString(path)
+		buf.WriteByte('|')
+		buf.WriteString(method)
 	}
 
-	// Non-nil authCtx without TokenId: include all available identity fields.
-	buf.WriteString(authCtx.AuthType)
-	buf.WriteByte('|')
-	buf.WriteString(authCtx.Issuer)
-	buf.WriteByte('|')
-	buf.WriteString(authCtx.Subject)
-	buf.WriteByte('|')
-	buf.WriteString(authCtx.CredentialID)
-	buf.WriteByte('|')
-	buf.WriteString(strings.Join(sortedSlice(authCtx.Audience), ","))
-	propKeys := make([]string, 0, len(authCtx.Properties))
-	for k := range authCtx.Properties {
-		propKeys = append(propKeys, k)
-	}
-	sort.Strings(propKeys)
-	for _, k := range propKeys {
-		buf.WriteByte('|')
-		buf.WriteString(k)
-		buf.WriteByte('=')
-		buf.WriteString(authCtx.Properties[k])
-	}
-	if len(authCtx.Scopes) > 0 {
-		scopeKeys := make([]string, 0, len(authCtx.Scopes))
-		for s := range authCtx.Scopes {
-			scopeKeys = append(scopeKeys, s)
-		}
-		sort.Strings(scopeKeys)
-		buf.WriteByte('|')
-		buf.WriteString("scope=")
-		buf.WriteString(strings.Join(scopeKeys, " "))
-	}
-	buf.WriteByte('|')
-	buf.WriteString(path)
-	buf.WriteByte('|')
-	buf.WriteString(method)
-	appendClaims(buf, claimPairs)
+	appendClaims(&buf, claimPairs)
 
 	sum := sha256.Sum256(buf.Bytes())
-	key := nsPrefix + fmt.Sprintf("%x", sum)
-	slog.Debug("Backend JWT: cache key (identity hash)",
-		"authType", authTypeLabel(authCtx),
+	key := fmt.Sprintf("%x", sum)
+	slog.Debug("Backend JWT: cache key",
+		"keyType", keyType,
 		"path", path,
 		"method", method,
 		"claims", claimPairs,
@@ -584,6 +575,20 @@ func sortedSlice(s []string) []string {
 	copy(out, s)
 	sort.Strings(out)
 	return out
+}
+
+// sortedScopeString renders the scope set as the JWT "scope" claim: scope names sorted for
+// determinism and joined by a single space. Returns "" when there are no scopes.
+func sortedScopeString(scopes map[string]bool) string {
+	if len(scopes) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(scopes))
+	for s := range scopes {
+		names = append(names, s)
+	}
+	sort.Strings(names)
+	return strings.Join(names, " ")
 }
 
 // sortedSetKeys returns the keys of a string set as a sorted slice, for deterministic key building.
@@ -773,6 +778,17 @@ func getInt(params map[string]interface{}, key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+// objectParam returns params[key] as a map[string]interface{}, or nil when the key is absent or
+// not an object. Ranging over the nil result is a no-op, so callers need no separate presence check.
+func objectParam(params map[string]interface{}, key string) map[string]interface{} {
+	if raw, ok := params[key]; ok {
+		if m, ok := raw.(map[string]interface{}); ok {
+			return m
+		}
+	}
+	return nil
 }
 
 // getStringSet reads a string-array param into a lookup set. Non-string
