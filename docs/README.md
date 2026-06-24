@@ -34,6 +34,7 @@ All available policies, sorted alphabetically.
 | [API Key Auth](./api-key-auth/v1.0/docs/apikey-authentication.md) | Security, AI, WebSub, WebBroker | Implements API Key Authentication to protect APIs with pre-shared API keys. |
 | [AWS Bedrock Guardrail](./aws-bedrock-guardrail/v1.0/docs/aws-bedrock-guardrail.md) | Guardrails, AI | Validates request or response body content against AWS Bedrock Guardrails. |
 | [Azure Content Safety Content Moderation](./azure-content-safety-content-moderation/v1.0/docs/azure-content-safety.md) | Guardrails, AI | Validates request or response body content against Azure Content Safety API for content moderation. |
+| [Backend JWT](./backend-jwt/v1.0/docs/backend-jwt.md) | Security | Generates a signed JWT containing authenticated user information and injects it into the upstream request header. |
 | [Basic Auth](./basic-auth/v1.0/docs/basic-auth.md) | Security, AI, WebSub, WebBroker | Implements HTTP Basic Authentication to protect APIs with username and password credentials. |
 | [Content Length Guardrail](./content-length-guardrail/v1.0/docs/content-length.md) | Guardrails, AI | Validates the byte length of request or response body content. |
 | [CORS](./cors/v1.0/docs/cors.md) | Security, AI, MCP | Cross-Origin Resource Sharing (CORS) policy that handles preflight requests and adds appropriate CORS headers to responses. |
