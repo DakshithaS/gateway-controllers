@@ -247,14 +247,12 @@ func (p *OpaqueTokenAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *po
 		}
 	}
 
-	// Scope assertion.
+	// Scope assertion: passes when the token contains at least one required scope (OR).
 	if len(userRequiredScopes) > 0 {
 		scopes := parseScopes(result.raw["scope"], result.raw["scp"])
-		for _, required := range userRequiredScopes {
-			if !contains(scopes, required) {
-				slog.Debug("Opaque Token Auth Policy: Required scope not found", "missingScope", required)
-				return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, fmt.Sprintf("required scope '%s' not found", required))
-			}
+		if !anyMatch(userRequiredScopes, scopes) {
+			slog.Debug("Opaque Token Auth Policy: No required scope found in token", "requiredScopes", userRequiredScopes)
+			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "token does not contain any required scope")
 		}
 	}
 
@@ -287,9 +285,11 @@ func (p *OpaqueTokenAuthPolicy) introspect(ctx context.Context, token string, pr
 		slog.Debug("Opaque Token Auth Policy: Introspection cache hit", "provider", provider.Name)
 		return cached.result, nil
 	}
+	slog.Debug("Opaque Token Auth Policy: Introspection cache miss", "provider", provider.Name)
 
 	var lastErr error
 	for attempt := 0; attempt <= retryCount; attempt++ {
+		slog.Debug("Opaque Token Auth Policy: Introspection attempt", "provider", provider.Name, "attempt", attempt+1, "maxAttempts", retryCount+1)
 		result, err := p.doIntrospect(ctx, token, provider, timeout)
 		if err == nil {
 			var expiresAt time.Time
@@ -304,10 +304,12 @@ func (p *OpaqueTokenAuthPolicy) introspect(ctx context.Context, token string, pr
 				expiresAt = time.Now().Add(negativeCacheTtl)
 			}
 			if !expiresAt.IsZero() && expiresAt.After(time.Now()) {
+				slog.Debug("Opaque Token Auth Policy: Caching introspection result", "provider", provider.Name, "active", result.Active, "expiresAt", expiresAt)
 				_ = p.cache.Set(ctx, cacheKey, &cachedIntrospection{result: result, expiresAt: expiresAt})
 			}
 			return result, nil
 		}
+		slog.Debug("Opaque Token Auth Policy: Introspection attempt failed", "provider", provider.Name, "attempt", attempt+1, "error", err)
 		lastErr = err
 		if attempt < retryCount {
 			select {
@@ -343,12 +345,19 @@ func (p *OpaqueTokenAuthPolicy) doIntrospect(ctx context.Context, token string, 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
+	authMethod := "none"
 	switch {
 	case provider.BearerToken != "":
 		req.Header.Set("Authorization", "Bearer "+provider.BearerToken)
+		authMethod = "bearer"
+	case provider.AuthStyle == "post" && provider.ClientID != "":
+		// credentials already added to form body above
+		authMethod = "client_secret_post"
 	case provider.AuthStyle != "post" && provider.ClientID != "":
 		req.SetBasicAuth(provider.ClientID, provider.ClientSecret)
+		authMethod = "client_secret_basic"
 	}
+	slog.Debug("Opaque Token Auth Policy: Sending introspection request", "provider", provider.Name, "uri", provider.URI, "authMethod", authMethod, "timeout", timeout)
 
 	client := &http.Client{Timeout: timeout}
 	if provider.httpTransport != nil {
@@ -360,6 +369,7 @@ func (p *OpaqueTokenAuthPolicy) doIntrospect(ctx context.Context, token string, 
 		return nil, fmt.Errorf("introspection request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	slog.Debug("Opaque Token Auth Policy: Received introspection response", "provider", provider.Name, "status", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("introspection endpoint returned status %d", resp.StatusCode)
@@ -374,11 +384,13 @@ func (p *OpaqueTokenAuthPolicy) doIntrospect(ctx context.Context, token string, 
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse introspection response: %w", err)
 	}
+	// Best-effort: populate typed convenience fields (active, exp, sub, etc.).
+	// Errors are ignored because polymorphic members like scope/aud may not match
+	// the struct field types; raw is the authoritative source for all claim access.
 	var result IntrospectionResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse introspection response: %w", err)
-	}
+	_ = json.Unmarshal(body, &result)
 	result.raw = raw
+	slog.Debug("Opaque Token Auth Policy: Parsed introspection result", "provider", provider.Name, "active", result.Active, "sub", result.Sub, "exp", result.Exp)
 	return &result, nil
 }
 
@@ -397,6 +409,7 @@ func (p *OpaqueTokenAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedCo
 		}
 	}
 
+	slog.Debug("Opaque Token Auth Policy: Building auth context", "subject", subject, "issuer", result.Iss, "clientId", result.ClientID, "forwardToken", forwardToken, "forwardedTokenHeader", forwardedTokenHeader)
 	shared.AuthContext = &policy.AuthContext{
 		Authenticated: true,
 		AuthType:      AuthType,
@@ -548,10 +561,12 @@ func (p *OpaqueTokenAuthPolicy) getProviders(params map[string]interface{}) ([]*
 	if h == p.provHash {
 		providers := p.providers
 		p.provMu.RUnlock()
+		slog.Debug("Opaque Token Auth Policy: Using cached provider list", "count", len(providers))
 		return providers, nil
 	}
 	p.provMu.RUnlock()
 
+	slog.Debug("Opaque Token Auth Policy: Introspection provider config changed, rebuilding provider list")
 	providers, err := parseIntrospectionProviders(params)
 	if err != nil {
 		return nil, err
@@ -562,8 +577,10 @@ func (p *OpaqueTokenAuthPolicy) getProviders(params map[string]interface{}) ([]*
 	if h != p.provHash {
 		p.provHash = h
 		p.providers = providers
+		slog.Debug("Opaque Token Auth Policy: Provider list rebuilt", "count", len(providers))
 	} else {
 		providers = p.providers
+		slog.Debug("Opaque Token Auth Policy: Provider list already rebuilt by another goroutine", "count", len(providers))
 	}
 	p.provMu.Unlock()
 	return providers, nil
@@ -686,21 +703,31 @@ func parseAudience(audClaim interface{}) []string {
 	return []string{}
 }
 
-// parseScopes parses scopes from a space-delimited `scope` string and/or an
-// array `scp` value.
+// parseScopes parses scopes from `scope` and/or `scp` introspection members.
+// Each can be either a space-delimited string or an array of strings.
 func parseScopes(scopeClaim, scpClaim interface{}) []string {
 	var scopes []string
-	if scopeStr, ok := scopeClaim.(string); ok {
-		scopes = append(scopes, strings.Fields(scopeStr)...)
-	}
-	if scpArr, ok := scpClaim.([]interface{}); ok {
-		for _, s := range scpArr {
-			if sStr, ok := s.(string); ok {
-				scopes = append(scopes, sStr)
+	scopes = append(scopes, parseScopeValue(scopeClaim)...)
+	scopes = append(scopes, parseScopeValue(scpClaim)...)
+	return scopes
+}
+
+// parseScopeValue accepts a scope value that is either a space-delimited string
+// or an array of strings.
+func parseScopeValue(v interface{}) []string {
+	switch val := v.(type) {
+	case string:
+		return strings.Fields(val)
+	case []interface{}:
+		result := make([]string, 0, len(val))
+		for _, s := range val {
+			if str, ok := s.(string); ok {
+				result = append(result, str)
 			}
 		}
+		return result
 	}
-	return scopes
+	return nil
 }
 
 // buildScopesMap converts scope/scp values into a set for AuthContext.Scopes.

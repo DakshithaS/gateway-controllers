@@ -328,19 +328,52 @@ func TestClaimMappings(t *testing.T) {
 }
 
 func TestScopeEnforcement(t *testing.T) {
-	srv := newServer(t, activeResponder(map[string]interface{}{
-		"active": true, "sub": "u", "scope": "read",
-	}))
+	// All four scope formats: scope/scp × string/array.
+	formats := []struct {
+		name   string
+		claims map[string]interface{}
+	}{
+		{"scope as string", map[string]interface{}{"active": true, "sub": "u", "scope": "read write"}},
+		{"scope as array", map[string]interface{}{"active": true, "sub": "u", "scope": []interface{}{"read", "write"}}},
+		{"scp as string", map[string]interface{}{"active": true, "sub": "u", "scp": "read write"}},
+		{"scp as array", map[string]interface{}{"active": true, "sub": "u", "scp": []interface{}{"read", "write"}}},
+	}
+	for _, tc := range formats {
+		t.Run(tc.name+"/pass", func(t *testing.T) {
+			srv := newServer(t, activeResponder(tc.claims))
+			params := baseParams(provider("idp", srv.URL, nil))
+			params["requiredScopes"] = []interface{}{"read"}
+			reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
+			assertSuccess(t, reqCtx, action)
+		})
+		t.Run(tc.name+"/fail", func(t *testing.T) {
+			srv := newServer(t, activeResponder(tc.claims))
+			params := baseParams(provider("idp", srv.URL, nil))
+			params["requiredScopes"] = []interface{}{"admin"}
+			reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
+			assertFailure(t, reqCtx, action, 401)
+		})
+	}
 
-	t.Run("pass", func(t *testing.T) {
+	// OR semantics: token has "read"; requiring ["read","admin"] passes because
+	// at least one required scope is present.
+	t.Run("OR semantics/one match passes", func(t *testing.T) {
+		srv := newServer(t, activeResponder(map[string]interface{}{
+			"active": true, "sub": "u", "scope": "read",
+		}))
 		params := baseParams(provider("idp", srv.URL, nil))
-		params["requiredScopes"] = []interface{}{"read"}
+		params["requiredScopes"] = []interface{}{"read", "admin"}
 		reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
 		assertSuccess(t, reqCtx, action)
 	})
-	t.Run("fail", func(t *testing.T) {
+
+	// OR semantics: token has neither required scope → fails.
+	t.Run("OR semantics/no match fails", func(t *testing.T) {
+		srv := newServer(t, activeResponder(map[string]interface{}{
+			"active": true, "sub": "u", "scope": "read",
+		}))
 		params := baseParams(provider("idp", srv.URL, nil))
-		params["requiredScopes"] = []interface{}{"admin"}
+		params["requiredScopes"] = []interface{}{"write", "admin"}
 		reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
 		assertFailure(t, reqCtx, action, 401)
 	})
