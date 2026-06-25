@@ -49,16 +49,6 @@ parameters:
       additionalProperties:
         type: string
 
-    claimMappings:
-      type: object
-      x-wso2-policy-advanced-param: true
-      description: Maps introspection response members to upstream headers as `claimName -> headerName`.
-      default: {}
-      additionalProperties:
-        type: string
-        minLength: 1
-        pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
-
     authHeaderPrefix:
       type: string
       x-wso2-policy-advanced-param: true

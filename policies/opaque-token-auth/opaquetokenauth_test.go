@@ -314,19 +314,6 @@ func TestForwardTokenMoved(t *testing.T) {
 	}
 }
 
-func TestClaimMappings(t *testing.T) {
-	srv := newServer(t, activeResponder(map[string]interface{}{
-		"active": true, "sub": "u", "username": "alice",
-	}))
-	params := baseParams(provider("idp", srv.URL, nil))
-	params["claimMappings"] = map[string]interface{}{"username": "X-User-Name"}
-
-	reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
-	mods := assertSuccess(t, reqCtx, action)
-	if mods.HeadersToSet["X-User-Name"] != "alice" {
-		t.Errorf("X-User-Name = %q, want alice", mods.HeadersToSet["X-User-Name"])
-	}
-}
 
 func TestScopeEnforcement(t *testing.T) {
 	// All four scope formats: scope/scp × string/array.

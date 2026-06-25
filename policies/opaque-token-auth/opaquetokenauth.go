@@ -166,7 +166,6 @@ func (p *OpaqueTokenAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *po
 	userAudiences := getStringArrayParam(params, "audiences", []string{})
 	userRequiredScopes := getStringArrayParam(params, "requiredScopes", []string{})
 	userRequiredClaims := getStringMapParam(params, "requiredClaims", map[string]string{})
-	userClaimMappings := getStringMapParam(params, "claimMappings", map[string]string{})
 	userIdClaim := getStringParam(params, "userIdClaim", "sub")
 	userAuthHeaderPrefix := getStringParam(params, "authHeaderPrefix", "")
 	forwardToken := getBoolParam(params, "forwardToken", true)
@@ -274,7 +273,7 @@ func (p *OpaqueTokenAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *po
 	}
 
 	slog.Debug("Opaque Token Auth Policy: All validations passed, authentication successful")
-	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, result, token, userClaimMappings, userIdClaim, headerName, authHeader, forwardToken, forwardedTokenHeader)
+	return p.handleAuthSuccessHeaders(reqCtx.SharedContext, result, token, userIdClaim, headerName, authHeader, forwardToken, forwardedTokenHeader)
 }
 
 // introspect returns the (possibly cached) introspection result for a token at a
@@ -405,7 +404,7 @@ func (p *OpaqueTokenAuthPolicy) doIntrospect(ctx context.Context, token string, 
 
 // handleAuthSuccessHeaders populates AuthContext and request-header modifications
 // after a successful introspection.
-func (p *OpaqueTokenAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, result *IntrospectionResult, token string, claimMappings map[string]string,
+func (p *OpaqueTokenAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, result *IntrospectionResult, token string,
 	userIdClaim string, headerName string, authHeaderValue string, forwardToken bool, forwardedTokenHeader string) policy.RequestHeaderAction {
 
 	subject := result.Sub
@@ -447,15 +446,6 @@ func (p *OpaqueTokenAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedCo
 	} else if canonicalOut != canonicalIn {
 		modifications.HeadersToSet[canonicalOut] = authHeaderValue
 		modifications.HeadersToRemove = []string{canonicalIn}
-	}
-
-	for claimName, outHeader := range claimMappings {
-		if claimValue, ok := result.raw[claimName]; ok {
-			if forwardToken && http.CanonicalHeaderKey(outHeader) == canonicalOut {
-				continue
-			}
-			modifications.HeadersToSet[outHeader] = claimValueToString(claimValue)
-		}
 	}
 
 	return modifications
