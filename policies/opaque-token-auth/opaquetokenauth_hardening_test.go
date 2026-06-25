@@ -282,6 +282,9 @@ func TestErrorMessageFormats(t *testing.T) {
 		params["errorMessageFormat"] = "minimal"
 		reqCtx, action := execute(t, newPolicy(), params, bearerHeader("tok"))
 		ir := assertFailure(t, reqCtx, action, 401)
+		if ir.Headers["content-type"] != "text/plain" {
+			t.Errorf("content-type = %q, want text/plain", ir.Headers["content-type"])
+		}
 		if string(ir.Body) != "Unauthorized" {
 			t.Errorf("body = %q, want Unauthorized", string(ir.Body))
 		}

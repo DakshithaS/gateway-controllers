@@ -17,7 +17,6 @@ Use this policy when your authorization server issues opaque (reference) tokens.
 - Custom CA / skip-TLS-verify options for the introspection endpoint
 - Short-lived caching of active responses, never beyond the token's `exp`
 - Configurable audience, scope, and required-claim validation
-- Claim-to-header mappings for downstream services
 - Authorization header scheme enforcement and clock skew tolerance
 - Customizable error responses
 - Optional `userIdClaim` mapping for analytics
@@ -29,7 +28,7 @@ Use this policy when your authorization server issues opaque (reference) tokens.
 2. It selects introspection providers (by the user-level `issuers` list, or all providers in order).
 3. For each selected provider, it POSTs `token` (and `token_type_hint`) to the introspection endpoint as `application/x-www-form-urlencoded`, authenticating itself with the configured client credentials or bearer token, until a provider reports the token `active`.
 4. Active responses are cached, keyed by a SHA-256 of the token, expiring at `min(introspectionCacheTtl, token exp)`. Inactive responses are never cached.
-5. The policy then enforces audiences, scopes, and required claims, populates the authentication context, and applies any claim-to-header mappings before forwarding upstream.
+5. The policy then enforces audiences, scopes, and required claims, and populates the authentication context before forwarding upstream.
 
 ## Configuration
 
@@ -104,7 +103,6 @@ skipTlsVerify = false
 | `audiences` | array | No | Acceptable audience values. The response must contain at least one. |
 | `requiredScopes` | array | No | Required scopes. Uses the space-delimited `scope` member or array `scp` member. |
 | `requiredClaims` | object | No | Map of claim name to expected value. |
-| `claimMappings` | object | No | Map of introspection response member to downstream header name. |
 | `authHeaderPrefix` | string | No | Overrides the configured authorization header scheme for this route. |
 | `headerName` | string | No | Header name to extract the token from. Overrides `system.headerName`. Must be a valid HTTP header field name. |
 | `userIdClaim` | string | No | Member to extract the user ID for analytics. Defaults to `sub`. |
@@ -178,7 +176,7 @@ spec:
               - read:data
 ```
 
-### Example 3: Claim Mapping to Downstream Headers
+### Example 3: Required Claim Validation
 
 ```yaml
 apiVersion: gateway.api-platform.wso2.com/v1alpha1
@@ -201,10 +199,8 @@ spec:
           params:
             issuers:
               - PrimaryIDP
-            claimMappings:
-              sub: X-User-ID
-              username: X-User-Name
-              client_id: X-Client-ID
+            requiredClaims:
+              tenant: acme-corp
 ```
 
 ### Example 4: Strip Token Before Forwarding to Upstream

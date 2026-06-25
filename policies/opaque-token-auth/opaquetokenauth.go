@@ -66,16 +66,16 @@ var standardIntrospectionClaims = map[string]bool{
 // token introspection, caching active responses to reduce load on the
 // authorization server.
 type OpaqueTokenAuthPolicy struct {
-	// cache stores active introspection results keyed by sha256(providerURI \x00 token).
+	// cache stores introspection results keyed by sha256(providerName \x00 token).
 	// The SDK cache is constructed with no TTL (entries are bounded by their own
 	// expiresAt, which is min(configured TTL, token exp)) and an LRU size cap.
 	cache cache.Cache[*cachedIntrospection]
 
-	// provMu guards provHash and providers so they are rebuilt only when the
-	// introspectionProviders config actually changes (typically once, at startup).
-	provMu    sync.RWMutex
-	provHash  string
+	// provOnce ensures the provider list is parsed exactly once from config.toml,
+	// which is loaded at startup and does not change at runtime.
+	provOnce  sync.Once
 	providers []*IntrospectionProvider
+	provErr   error
 }
 
 // cachedIntrospection holds an active introspection result with its expiry.
@@ -398,7 +398,7 @@ func (p *OpaqueTokenAuthPolicy) doIntrospect(ctx context.Context, token string, 
 	var result IntrospectionResult
 	_ = json.Unmarshal(body, &result)
 	result.raw = raw
-	slog.Debug("Opaque Token Auth Policy: Parsed introspection result", "provider", provider.Name, "active", result.Active, "sub", result.Sub, "exp", result.Exp)
+	slog.Debug("Opaque Token Auth Policy: Parsed introspection result", "provider", provider.Name, "active", result.Active, "exp", result.Exp)
 	return &result, nil
 }
 
@@ -417,7 +417,7 @@ func (p *OpaqueTokenAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedCo
 		}
 	}
 
-	slog.Debug("Opaque Token Auth Policy: Building auth context", "subject", subject, "issuer", result.Iss, "clientId", result.ClientID, "forwardToken", forwardToken, "forwardedTokenHeader", forwardedTokenHeader)
+	slog.Debug("Opaque Token Auth Policy: Building auth context", "issuer", result.Iss, "forwardToken", forwardToken, "forwardedTokenHeader", forwardedTokenHeader)
 	shared.AuthContext = &policy.AuthContext{
 		Authenticated: true,
 		AuthType:      AuthType,
@@ -473,6 +473,7 @@ func (p *OpaqueTokenAuthPolicy) handleAuthFailureHeaders(shared *policy.SharedCo
 		headers["content-type"] = "text/plain"
 	case "minimal":
 		body = "Unauthorized"
+		headers["content-type"] = "text/plain"
 	default:
 		errResponse := map[string]interface{}{
 			"error":   "Unauthorized",
@@ -503,6 +504,7 @@ func parseIntrospectionProviders(params map[string]interface{}) ([]*Introspectio
 	}
 
 	providers := make([]*IntrospectionProvider, 0, len(list))
+	seenNames := make(map[string]struct{}, len(list))
 	for _, item := range list {
 		pm, ok := item.(map[string]interface{})
 		if !ok {
@@ -513,6 +515,10 @@ func parseIntrospectionProviders(params map[string]interface{}) ([]*Introspectio
 			slog.Debug("Opaque Token Auth Policy: Skipping provider with empty name")
 			continue
 		}
+		if _, exists := seenNames[name]; exists {
+			return nil, fmt.Errorf("duplicate introspection provider name %q", name)
+		}
+		seenNames[name] = struct{}{}
 		introspection, ok := pm["introspection"].(map[string]interface{})
 		if !ok {
 			slog.Debug("Opaque Token Auth Policy: Skipping provider without introspection config", "name", name)
@@ -547,6 +553,10 @@ func parseIntrospectionProviders(params map[string]interface{}) ([]*Introspectio
 			tokenRegexp:   tokenRegexp,
 		}
 
+		if provider.BearerToken != "" && provider.ClientID != "" {
+			return nil, fmt.Errorf("provider %q: bearerToken and clientId are mutually exclusive", name)
+		}
+
 		certPath := getString(introspection["certificatePath"])
 		skipTlsVerify := getBool(introspection["skipTlsVerify"])
 		if certPath != "" || skipTlsVerify {
@@ -562,47 +572,14 @@ func parseIntrospectionProviders(params map[string]interface{}) ([]*Introspectio
 	return providers, nil
 }
 
-// getProviders returns the parsed provider list, rebuilding it only when the
-// introspectionProviders config has changed. Rebuilds are rare (typically once,
-// at startup); all other calls return the cached slice under a read lock.
+// getProviders returns the provider list, parsing it exactly once from the
+// startup config. config.toml is not reloaded at runtime so this is safe.
 func (p *OpaqueTokenAuthPolicy) getProviders(params map[string]interface{}) ([]*IntrospectionProvider, error) {
-	h := configHash(params["introspectionProviders"])
-
-	p.provMu.RLock()
-	if h == p.provHash {
-		providers := p.providers
-		p.provMu.RUnlock()
-		slog.Debug("Opaque Token Auth Policy: Using cached provider list", "count", len(providers))
-		return providers, nil
-	}
-	p.provMu.RUnlock()
-
-	slog.Debug("Opaque Token Auth Policy: Introspection provider config changed, rebuilding provider list")
-	providers, err := parseIntrospectionProviders(params)
-	if err != nil {
-		return nil, err
-	}
-
-	p.provMu.Lock()
-	// Re-check: another goroutine may have already updated while we were parsing.
-	if h != p.provHash {
-		p.provHash = h
-		p.providers = providers
-		slog.Debug("Opaque Token Auth Policy: Provider list rebuilt", "count", len(providers))
-	} else {
-		providers = p.providers
-		slog.Debug("Opaque Token Auth Policy: Provider list already rebuilt by another goroutine", "count", len(providers))
-	}
-	p.provMu.Unlock()
-	return providers, nil
-}
-
-// configHash returns a hex SHA-256 of the JSON-marshalled value, used to detect
-// introspectionProviders config changes without a deep equality check.
-func configHash(v interface{}) string {
-	b, _ := json.Marshal(v)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	p.provOnce.Do(func() {
+		p.providers, p.provErr = parseIntrospectionProviders(params)
+		slog.Debug("Opaque Token Auth Policy: Provider list parsed", "count", len(p.providers))
+	})
+	return p.providers, p.provErr
 }
 
 // selectProviders narrows the provider list by the user-supplied issuers (matched
