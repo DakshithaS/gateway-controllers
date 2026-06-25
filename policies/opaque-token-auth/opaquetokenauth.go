@@ -653,18 +653,12 @@ func buildTLSConfig(certPath string, skipTlsVerify bool) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// introspectionCacheKey returns a hex SHA-256 keyed on the provider identity
-// (URI + auth style + client id + bearer token) and the raw token, so cached
-// results cannot cross providers that share a URI but differ in credentials.
+// introspectionCacheKey returns a hex SHA-256 keyed on the provider name and
+// the raw token, scoped per-provider so negative cache entries from one
+// provider do not suppress introspection attempts at another.
 func introspectionCacheKey(provider *IntrospectionProvider, token string) string {
 	h := sha256.New()
-	h.Write([]byte(provider.URI))
-	h.Write([]byte{0})
-	h.Write([]byte(provider.AuthStyle))
-	h.Write([]byte{0})
-	h.Write([]byte(provider.ClientID))
-	h.Write([]byte{0})
-	h.Write([]byte(provider.BearerToken))
+	h.Write([]byte(provider.Name))
 	h.Write([]byte{0})
 	h.Write([]byte(token))
 	return hex.EncodeToString(h.Sum(nil))
