@@ -12,11 +12,11 @@ Use this policy when your authorization server issues opaque (reference) tokens.
 ## Features
 
 - Validates opaque access tokens via RFC 7662 token introspection
-- Supports multiple introspection providers with ordered fallback
+- Supports multiple introspection providers with ordered fallback and optional token-pattern routing
 - Gateway client authentication via `client_secret_basic`, `client_secret_post`, or a static bearer token
 - Custom CA / skip-TLS-verify options for the introspection endpoint
-- Short-lived caching of active responses, never beyond the token's `exp`
-- Configurable audience, scope, and required-claim validation
+- Short-lived caching of active and inactive responses, never beyond the token's `exp`
+- Configurable audience, scope (OR semantics), and required-claim validation
 - Authorization header scheme enforcement and clock skew tolerance
 - Customizable error responses
 - Optional `userIdClaim` mapping for analytics
@@ -27,7 +27,7 @@ Use this policy when your authorization server issues opaque (reference) tokens.
 1. The policy extracts the token from the configured authorization header.
 2. It selects introspection providers (by the user-level `issuers` list, or all providers in order).
 3. For each selected provider, it POSTs `token` (and `token_type_hint`) to the introspection endpoint as `application/x-www-form-urlencoded`, authenticating itself with the configured client credentials or bearer token, until a provider reports the token `active`.
-4. Active responses are cached, keyed by a SHA-256 of the token, expiring at `min(introspectionCacheTtl, token exp)`. Inactive responses are never cached.
+4. Active responses are cached per-provider, keyed by a SHA-256 of the provider name and token, expiring at `min(introspectionCacheTtl, token exp)`. Inactive (`active: false`) responses are cached separately for `introspectionNegativeCacheTtl`. Transport errors and non-200 responses are never cached.
 5. The policy then enforces audiences, scopes, and required claims, and populates the authentication context before forwarding upstream.
 
 ## Configuration
@@ -40,13 +40,14 @@ Opaque Token Authentication requires two levels of configuration.
 | --- | --- | --- | --- | --- |
 | `introspectionproviders` | ```IntrospectionProvider``` array | Yes | - | List of introspection endpoint definitions. |
 | `introspectioncachettl` | string | No | `"60s"` | Cache TTL for active introspection responses (never exceeds token `exp`). |
+| `introspectionnegativecachettl` | string | No | `"30s"` | Cache TTL for inactive (`active: false`) responses. Set to `"0s"` to disable. Transport errors are never cached regardless of this setting. |
 | `introspectiontimeout` | string | No | `"5s"` | Timeout for each introspection request. |
 | `introspectionretrycount` | integer | No | `2` | Introspection retry count on transient failures. |
 | `introspectionretryinterval` | string | No | `"1s"` | Interval between introspection retries. |
 | `leeway` | string | No | `"30s"` | Clock skew allowance for local exp/nbf re-checks. |
 | `authheaderscheme` | string | No | `"Bearer"` | Expected authorization scheme prefix. |
 | `headername` | string | No | `"Authorization"` | Header name to extract the token from. |
-| `onfailurestatuscode` | integer | No | `401` | HTTP status code on authentication failure. |
+| `onfailurestatuscode` | integer | No | `401` | HTTP status code on authentication failure. Must be `401` or `403`. |
 | `errormessageformat` | string | No | `"json"` | Error format: `"json"`, `"plain"`, or `"minimal"`. |
 | `errormessage` | string | No | `"Authentication failed"` | Error message body for failures. |
 
@@ -58,11 +59,12 @@ Each entry in `introspectionproviders` must include a unique `name` and an `intr
 | --- | --- | --- | --- |
 | `name` | string | Yes | Unique provider name (referenced by `user.issuers`). |
 | `issuer` | string | No | Optional issuer value for this provider (also matchable via `user.issuers`). |
+| `tokenPattern` | string | No | Regex matched against the raw token. When set, only tokens matching the pattern are sent to this provider. See [Token Pattern Routing](#token-pattern-routing). |
 | `introspection.uri` | string | Yes | RFC 7662 introspection endpoint URL. |
-| `introspection.clientId` | string | No | OAuth2 client id for gateway client authentication. |
+| `introspection.clientId` | string | No | OAuth2 client id for gateway client authentication. Mutually exclusive with `bearerToken`. |
 | `introspection.clientSecret` | string | No | OAuth2 client secret paired with `clientId`. |
 | `introspection.authStyle` | string | No | `"basic"` (client_secret_basic, default) or `"post"` (client_secret_post). |
-| `introspection.bearerToken` | string | No | Static bearer token used instead of client credentials. |
+| `introspection.bearerToken` | string | No | Static bearer token used instead of client credentials. Mutually exclusive with `clientId`. |
 | `introspection.tokenTypeHint` | string | No | `token_type_hint` sent with the request (default `access_token`). |
 | `introspection.certificatePath` | string | No | CA cert path for a self-signed introspection endpoint. |
 | `introspection.skipTlsVerify` | boolean | No | Skip TLS verification (use with caution). |
@@ -100,14 +102,14 @@ skipTlsVerify = false
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `issuers` | array | No | List of provider names (or issuer values) to use. If omitted, providers are tried in order until one reports the token active. |
-| `audiences` | array | No | Acceptable audience values. The response must contain at least one. |
-| `requiredScopes` | array | No | Required scopes. Uses the space-delimited `scope` member or array `scp` member. |
-| `requiredClaims` | object | No | Map of claim name to expected value. |
-| `authHeaderPrefix` | string | No | Overrides the configured authorization header scheme for this route. |
+| `audiences` | array | No | Acceptable audience values. The token must contain at least one of the listed values in its `aud` claim. |
+| `requiredScopes` | array | No | Required scopes (OR semantics — the token must contain at least one). Checked against the space-delimited `scope` member or array `scp` member. |
+| `requiredClaims` | object | No | Map of claim name to expected value. All entries must match (AND semantics). |
+| `authHeaderPrefix` | string | No | Overrides `system.authHeaderScheme` for this route only. |
 | `headerName` | string | No | Header name to extract the token from. Overrides `system.headerName`. Must be a valid HTTP header field name. |
-| `userIdClaim` | string | No | Member to extract the user ID for analytics. Defaults to `sub`. |
-| `forwardToken` | boolean | No | If `true` (default), the token is forwarded to the upstream after successful validation. Set to `false` to strip the token header before proxying. |
-| `forwardedTokenHeader` | string | No | Header name used to forward the token to the upstream when `forwardToken` is `true`. Defaults to `x-forwarded-authorization`. If this differs from `headerName`, the original header is removed and the token is forwarded under this name instead. Has no effect when `forwardToken` is `false`. |
+| `userIdClaim` | string | No | Introspection response member to use as the user ID for analytics. Defaults to `sub`. |
+| `forwardToken` | boolean | No | If `true` (default), the token is forwarded to the upstream. If `false`, the authorization header is stripped before proxying. |
+| `forwardedTokenHeader` | string | No | Header name under which the token is forwarded when `forwardToken` is `true`. Defaults to `x-forwarded-authorization`. By default, the original `Authorization` header is removed and the full header value (e.g. `Bearer <token>`) is re-sent under `x-forwarded-authorization`. Has no effect when `forwardToken` is `false`. |
 
 **Note:**
 
@@ -231,10 +233,38 @@ spec:
             forwardToken: false
 ```
 
+## Token Pattern Routing
+
+When multiple introspection providers are configured, the gateway tries them in order by default. Setting `tokenPattern` on a provider restricts it to tokens whose raw value matches the regex, so each provider only receives the tokens it can validate.
+
+This is recommended whenever providers issue tokens with distinguishable formats (for example, a UUID-prefixed token for one IdP and an `opaque_` prefixed token for another). It improves performance by avoiding unnecessary introspection calls and improves cache efficiency by ensuring tokens are always routed to the same provider, producing stable per-provider cache keys.
+
+```toml
+[[policy_configurations.opaquetokenauth_v1.introspectionproviders]]
+name = "AsgardeoIDP"
+tokenPattern = "^[0-9a-f]{8}-"   # UUID-like prefix
+
+[policy_configurations.opaquetokenauth_v1.introspectionproviders.introspection]
+uri = "https://asgardeo.example.com/oauth2/introspect"
+clientId = "gateway-client"
+clientSecret = "gateway-secret"
+
+[[policy_configurations.opaquetokenauth_v1.introspectionproviders]]
+name = "LocalIDP"
+tokenPattern = "^opaque_"         # local token format
+
+[policy_configurations.opaquetokenauth_v1.introspectionproviders.introspection]
+uri = "https://idp.internal/oauth2/introspect"
+bearerToken = "introspect-secret"
+```
+
+Providers without a `tokenPattern` match all tokens and act as a fallback for any token that does not match a pattern-restricted provider.
+
 ## Notes
 
 - **Transport security:** Always use HTTPS introspection endpoints. RFC 7662 mandates TLS for the introspection request; `skipTlsVerify` should only be used for testing or trusted internal endpoints.
 - **Caching vs. revocation latency:** A longer `introspectionCacheTtl` reduces load on the authorization server but increases the window during which a revoked token is still accepted. Cached entries never outlive the token's `exp`. Tune the TTL to your revocation requirements.
+- **Negative caching:** By default, inactive (`active: false`) responses are cached for `introspectionNegativeCacheTtl` (`"30s"`). This reduces load for repeated requests with invalid tokens. Set to `"0s"` to disable if your use case requires re-checking every request.
 - **Provider fallback:** When no `issuers` are configured, every provider is tried in order until one reports the token active. Constrain this with `issuers` (or per-provider `issuer` values) to avoid presenting tokens to unintended authorization servers.
 
 ## Related Policies
