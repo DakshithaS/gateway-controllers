@@ -139,10 +139,13 @@ func GetPolicy(
 		routeName = "unknown-route"
 	}
 
-	// Extract API metadata for scope-based caching
-	apiId := ""
-	apiName := ""
-	apiVersion := ""
+	// Extract API metadata for scope-based caching. These feed getBaseCacheKey /
+	// getQuotaCacheKey so that apiname-scoped quotas share one limiter per API (and,
+	// crucially, do NOT collide across different APIs that happen to use the same
+	// quota shape — without this the cache key degenerates to "apiScope:" for everyone).
+	apiId := metadata.APIId
+	apiName := metadata.APIName
+	apiVersion := metadata.APIVersion
 
 	// Parse onRateLimitExceeded (optional)
 	statusCode := 429
