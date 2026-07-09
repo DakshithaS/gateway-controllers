@@ -11,6 +11,7 @@ The API Key Authentication policy validates API keys to secure APIs by verifying
 
 - Validates API keys from request headers
 - Configurable key extraction from headers (case-insensitive)
+- Optional value prefix stripping before validation (e.g., `Bearer `)
 - Pre-generated key validation against gateway-managed key lists
 - Request context enrichment with authentication metadata
 - Issuer-based key validation via system configuration
@@ -28,6 +29,7 @@ These parameters are configured per-API/route by the API developer:
 |-----------|------|----------|---------|-------------|
 | `key` | string | Yes | `API-Key` | The name of the header that contains the API key. Case-insensitive matching is used (e.g., "X-API-Key", "Authorization"). Length: 1-128 characters. |
 | `in` | string | Yes | `header` | Specifies where to look for the API key. Currently only "header" is supported. |
+| `value-prefix` | string | No | `""` | Advanced parameter. Optional prefix stripped from the header value before validation (e.g., `Bearer ` when the key is sent in an `Authorization` header). Matching and removal are case-insensitive. If the parameter is set but the header value does not start with the prefix, the request is rejected as malformed. Length: 1-64 characters. |
 
 ### System Parameters (config.toml)
 
@@ -189,11 +191,45 @@ spec:
       path: /alerts/active
 ```
 
+### Example 5: Stripping a Value Prefix
+
+Extract the API key from an `Authorization` header that carries a `Bearer ` prefix. The prefix is removed before validation, so a request sending `Authorization: Bearer <api-key>` is validated against `<api-key>`.
+
+```yaml
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: RestApi
+metadata:
+  name: weather-api-v1.0
+spec:
+  displayName: Weather-API
+  version: v1.0
+  context: /weather/$version
+  upstream:
+    main:
+      url: http://sample-backend:5000/api/v2
+  policies:
+    - name: api-key-auth
+      version: v1
+      params:
+        key: Authorization
+        in: header
+        value-prefix: "Bearer "
+  operations:
+    - method: GET
+      path: /{country_code}/{city}
+    - method: GET
+      path: /alerts/active
+    - method: POST
+      path: /alerts/active
+```
+
 ## How it Works
 
 - On each request, the gateway policy reads `key` and `in` from the policy configuration and validates that required parameters are present.
 
 - Based on `in`, it extracts the API key from a request header (case-insensitive header lookup).
+
+- If `value-prefix` is configured, the policy strips the prefix from the extracted value (case-insensitive) before validation. If the value does not start with the configured prefix, the resulting key is empty and the request is rejected as malformed.
 
 - If the key is missing, empty, or the required API context values are unavailable, the policy short-circuits the request and returns `401 Unauthorized` with a JSON error response.
 
