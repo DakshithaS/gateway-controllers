@@ -22,6 +22,82 @@ func apiScopedParams() map[string]interface{} {
 	}
 }
 
+// basicOpParams returns an OPERATION-level advanced-ratelimit config with no keyExtraction,
+// so it is routename-scoped (limit 3/1h). This models the per-operation basic-ratelimit in
+// llm-provider-wide-ratelimit scenarios 9/10 that is attached ONLY to /chat/completions,
+// alongside the apiname-scoped global quota.
+func basicOpParams() map[string]interface{} {
+	return map[string]interface{}{
+		"backend":   "memory",
+		"algorithm": "fixed-window",
+		"quotas": []interface{}{
+			map[string]interface{}{
+				"name":   "default",
+				"limits": []interface{}{map[string]interface{}{"limit": float64(3), "duration": "1h"}},
+			},
+		},
+	}
+}
+
+// TestReproMixedGlobalAndOperationSharing is the exact topology of llm-provider-wide-ratelimit
+// scenarios 9/10 that the other apiname tests miss: the /chat/completions route carries BOTH the
+// apiname-scoped global quota AND a separate routename-scoped operation quota, while /embeddings
+// carries only the global.
+//
+// The two policies on /chat/completions share the same baseCacheKey (same route + shared params;
+// the quota set is not part of baseCacheKey), so without the AttachedTo-aware reconcileKey they
+// land in the same stale-cleanup bucket. Building the operation policy then evicts (Close()s) the
+// global apiname limiter that /embeddings still references, breaking cross-route sharing —
+// /embeddings then gets a fresh independent bucket. The non-deterministic IT failure is made
+// deterministic here by ordering the operation build before the embeddings build.
+func TestReproMixedGlobalAndOperationSharing(t *testing.T) {
+	clearCaches()
+	defer clearCaches()
+
+	const api = "Mix RateLimit Provider"
+	// The API-level global policy is materialised into each route's chain with AttachedTo=LevelAPI;
+	// the operation policy is attached at the route level (AttachedTo=LevelRoute). Same route name,
+	// different attachment level — exactly how the controller emits them (restapi.go:260 vs :290).
+	mdChatGlobal := policy.PolicyMetadata{RouteName: "GET|/mix/chat/completions|*", APIName: api, APIVersion: "v1.0", AttachedTo: policy.LevelAPI}
+	mdChatOp := policy.PolicyMetadata{RouteName: "GET|/mix/chat/completions|*", APIName: api, APIVersion: "v1.0", AttachedTo: policy.LevelRoute}
+	mdEmbGlobal := policy.PolicyMetadata{RouteName: "GET|/mix/embeddings|*", APIName: api, APIVersion: "v1.0", AttachedTo: policy.LevelAPI}
+
+	// State-of-the-World build: chat's global, then chat's operation policy, then emb's global.
+	pChatGlobal, err := GetPolicy(mdChatGlobal, apiScopedParams())
+	if err != nil {
+		t.Fatalf("build chat global: %v", err)
+	}
+	if _, err := GetPolicy(mdChatOp, basicOpParams()); err != nil {
+		t.Fatalf("build chat operation: %v", err)
+	}
+	pEmbGlobal, err := GetPolicy(mdEmbGlobal, apiScopedParams())
+	if err != nil {
+		t.Fatalf("build emb global: %v", err)
+	}
+
+	limChat := pChatGlobal.(*RateLimitPolicy).quotas[0].Limiter
+	limEmb := pEmbGlobal.(*RateLimitPolicy).quotas[0].Limiter
+	if limChat != limEmb {
+		t.Fatalf("BUG: chat and embeddings do not share the apiname global limiter after the " +
+			"operation policy attached to chat (separate instances) — the operation policy evicted the shared limiter")
+	}
+
+	// Exhaust the shared global (limit 5) via chat's global policy.
+	for i := 1; i <= 5; i++ {
+		if !allowed(t, pChatGlobal, api) {
+			t.Fatalf("chat global request %d should be allowed", i)
+		}
+	}
+	if allowed(t, pChatGlobal, api) {
+		t.Fatalf("chat global request 6 should be denied (limit 5)")
+	}
+
+	// KEY ASSERTION: embeddings shares the now-exhausted global bucket.
+	if allowed(t, pEmbGlobal, api) {
+		t.Fatalf("BUG: embeddings allowed despite shared apiname bucket exhausted by chat")
+	}
+}
+
 func reqCtxForAPI(apiName string) *policy.RequestHeaderContext {
 	return &policy.RequestHeaderContext{
 		SharedContext: &policy.SharedContext{

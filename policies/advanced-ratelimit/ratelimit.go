@@ -55,8 +55,11 @@ type limiterCache struct {
 	mu sync.Mutex
 	// byQuotaKey maps quota cache keys to limiter entries with reference counts
 	byQuotaKey map[string]*limiterEntry
-	// quotaKeysByBaseKey tracks which quota keys exist for each base cache key
-	// This enables automatic cleanup of stale limiters when quota configurations change
+	// quotaKeysByBaseKey tracks which quota keys exist for each policy instance, keyed by a
+	// reconcileKey (see reconcileKeyFor) rather than the bare baseCacheKey. This enables
+	// automatic cleanup of stale limiters when a policy instance's quota configuration changes,
+	// without one policy instance evicting a limiter that another instance on the same route
+	// legitimately shares.
 	quotaKeysByBaseKey map[string]map[string]struct{}
 }
 
@@ -325,12 +328,21 @@ func GetPolicy(
 			desiredQuotaKeys[quotaCacheKey] = struct{}{}
 		}
 
+		// reconcileKey identifies THIS policy instance's limiter bucket for the stale-cleanup
+		// bookkeeping below. It must be unique per policy instance on a route: an API-level
+		// (global) policy and a route-level (operation) policy attached to the same route must
+		// NOT share a reconciliation bucket, or building one would evict (Close) the other's
+		// cached limiter — non-deterministically breaking apiname-scoped cross-route sharing.
+		// baseCacheKey alone collides for them (it hashes route + shared params, not the
+		// attachment level), so we extend it with AttachedTo.
+		reconcileKey := reconcileKeyFor(baseCacheKey, metadata.AttachedTo)
+
 		// Single lock for all cache operations - ensures atomicity
 		globalLimiterCache.mu.Lock()
 		defer globalLimiterCache.mu.Unlock()
 
-		// Get previous quota keys for this baseKey (may be nil)
-		oldQuotaKeys := globalLimiterCache.quotaKeysByBaseKey[baseCacheKey]
+		// Get previous quota keys for this policy instance (may be nil)
+		oldQuotaKeys := globalLimiterCache.quotaKeysByBaseKey[reconcileKey]
 
 		// Reconcile: process each quota
 		for _, info := range quotaInfos {
@@ -415,8 +427,8 @@ func GetPolicy(
 			}
 		}
 
-		// Update the index with current quota keys for this baseKey
-		globalLimiterCache.quotaKeysByBaseKey[baseCacheKey] = desiredQuotaKeys
+		// Update the index with current quota keys for this policy instance
+		globalLimiterCache.quotaKeysByBaseKey[reconcileKey] = desiredQuotaKeys
 	}
 
 	// Log quota details including cost extraction status
@@ -1181,6 +1193,19 @@ func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[s
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// reconcileKeyFor derives the bookkeeping key under which a policy instance's active quota cache
+// keys are tracked for stale-limiter cleanup. It extends baseCacheKey with the policy's attachment
+// level so that two rate-limit policies on the SAME route but attached at different levels — an
+// API-level (global) quota and a route-level (operation) quota — do NOT share a cleanup bucket and
+// evict each other's cached limiters. baseCacheKey alone collides for them: it hashes route +
+// shared params but not the attachment, so building the operation policy would treat the global
+// policy's shared apiname limiter as "stale" and Close it (breaking cross-route sharing). AttachedTo
+// is stable across config reloads, so a limit-only change to a single policy still reuses its bucket
+// and cleans up its old limiter (unlike keying on the mutable quota set).
+func reconcileKeyFor(baseCacheKey string, attachedTo policy.Level) string {
+	return baseCacheKey + "|attachedTo:" + string(attachedTo)
 }
 
 // getQuotaCacheKey produces final key per quota using base + quota-specific config.
