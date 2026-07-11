@@ -1,4 +1,4 @@
-module redirect
+module github.com/wso2/gateway-controllers/policies/redirect
 
 go 1.26.2
 

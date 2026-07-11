@@ -7,7 +7,7 @@ title: "Overview"
 
 The Redirect policy issues an HTTP redirect to the client without forwarding the request to the upstream backend. It runs in the request phase, builds a `Location` header, and short-circuits the request with the configured redirect status code. This implements the Gateway-API `RequestRedirect` filter semantics.
 
-Only the components you explicitly configure are overridden. Every component left unset — scheme, host, port, path, and query string — is preserved from the incoming request. Because the redirect is produced at the gateway, no upstream call is made and response-phase policies are not involved for that request path.
+Only the components you explicitly configure are overridden. Every component left unset — scheme, host, path, and query string — is preserved from the incoming request. The port is preserved too, except that overriding the scheme without also setting a port switches to the target scheme's default port. Because the redirect is produced at the gateway, no upstream call is made and response-phase policies are not involved for that request path.
 
 ## Features
 
@@ -291,7 +291,7 @@ Use this policy to move traffic to a new host, upgrade clients to `https`, or re
 
 **Security and Governance**
 
-Set `hostname` to trusted values only; redirecting to attacker-controlled hosts enables open-redirect abuse. Prefer `https` for the redirect scheme when moving authenticated traffic, and restrict who can change policy parameters, since this policy fully bypasses backend enforcement paths.
+Configure redirect targets with trusted host values, and restrict who can modify this policy's parameters through your standard configuration-governance process.
 
 **Performance and Reliability**
 

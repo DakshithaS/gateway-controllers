@@ -207,6 +207,8 @@ func TestGetPolicyValidation(t *testing.T) {
 		{"non-integer statusCode", map[string]interface{}{"statusCode": float64(302.5)}},
 		{"bad scheme", map[string]interface{}{"scheme": "ftp"}},
 		{"empty hostname", map[string]interface{}{"hostname": ""}},
+		{"hostname with disallowed character", map[string]interface{}{"hostname": "bad_host"}},
+		{"hostname with scheme and path", map[string]interface{}{"hostname": "https://example.org/x"}},
 		{"port too low", map[string]interface{}{"port": float64(0)}},
 		{"port too high", map[string]interface{}{"port": float64(70000)}},
 		{"path not object", map[string]interface{}{"path": "/x"}},

@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -36,11 +37,12 @@ import (
 )
 
 const (
-	defaultStatusCode = 302
-	hostnameMaxLen    = 253
-	pathValueMaxLen   = 8192
-	minPort           = 1
-	maxPort           = 65535
+	defaultStatusCode  = 302
+	hostnameMaxLen     = 253
+	hostnamePatternStr = `^[a-zA-Z0-9.-]+$`
+	pathValueMaxLen    = 8192
+	minPort            = 1
+	maxPort            = 65535
 
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
@@ -48,6 +50,10 @@ const (
 	pathModeFull   = "full"
 	pathModePrefix = "prefix"
 )
+
+// hostnamePattern mirrors the hostname constraint in policy-definition.yaml so the
+// runtime parser and the schema accept exactly the same values.
+var hostnamePattern = regexp.MustCompile(hostnamePatternStr)
 
 // validRedirectStatus is the set of redirect status codes Gateway-API allows.
 var validRedirectStatus = map[int]bool{301: true, 302: true, 303: true, 307: true, 308: true}
@@ -99,6 +105,9 @@ func GetPolicy(
 		}
 		if len(h) > hostnameMaxLen {
 			return nil, fmt.Errorf("hostname must not exceed %d characters", hostnameMaxLen)
+		}
+		if !hostnamePattern.MatchString(h) {
+			return nil, fmt.Errorf("hostname must contain only letters, digits, '.' and '-'")
 		}
 		p.hostname = &h
 	}
