@@ -1,7 +1,7 @@
 {
   "name": "redirect",
   "displayName": "Redirect",
-  "version": "1.0",
+  "version": "0.9",
   "provider": "WSO2",
   "categories": [
     "Transformation"

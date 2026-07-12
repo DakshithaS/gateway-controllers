@@ -51,7 +51,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 
 ```yaml
 - name: redirect
-  gomodule: github.com/wso2/gateway-controllers/policies/redirect@v1
+  gomodule: github.com/wso2/gateway-controllers/policies/redirect@v0
 ```
 
 ## Reference Scenarios:
@@ -74,7 +74,7 @@ spec:
       url: http://sample-backend:5000
   policies:
     - name: redirect
-      version: v1
+      version: v0
       params:
         hostname: example.org
   operations:
@@ -114,7 +114,7 @@ spec:
       url: http://sample-backend:5000
   policies:
     - name: redirect
-      version: v1
+      version: v0
       params:
         statusCode: 301
         hostname: example.org
@@ -155,7 +155,7 @@ spec:
       url: http://sample-backend:5000
   policies:
     - name: redirect
-      version: v1
+      version: v0
       params:
         scheme: https
   operations:
@@ -195,7 +195,7 @@ spec:
       url: http://sample-backend:5000
   policies:
     - name: redirect
-      version: v1
+      version: v0
       params:
         statusCode: 308
         hostname: example.org
@@ -242,7 +242,7 @@ spec:
       path: /shoes/*
       policies:
         - name: redirect
-          version: v1
+          version: v0
           params:
             path:
               mode: prefix

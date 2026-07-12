@@ -63,7 +63,7 @@ All available policies, sorted alphabetically.
 | [Prompt Template](./prompt-template/v1.0/docs/prompt-template.md) | AI | Dynamically modifies the prompt by applying custom templates using a configured strategy. |
 | [Rate Limit - Advanced](./advanced-ratelimit/v1.1/docs/advanced-ratelimit.md) | Security, AI | Rate limiting policy supporting multiple algorithms (GCRA, Fixed Window), multi-dimensional quotas, weighted rate limiting, flexible key extraction, and in-memory, Redis, and Redis-local-async backends. |
 | [Rate Limit - Basic](./basic-ratelimit/v1.0/docs/basic-ratelimit.md) | Security, AI | Simple request rate limiting policy that limits the number of requests per time window. |
-| [Redirect](./redirect/v1.0/docs/redirect.md) | Transformation | Issues an HTTP redirect to the client without forwarding the request to the upstream backend (Gateway-API RequestRedirect semantics). |
+| [Redirect](./redirect/v0.9/docs/redirect.md) | Transformation | Issues an HTTP redirect to the client without forwarding the request to the upstream backend (Gateway-API RequestRedirect semantics). |
 | [Regex Guardrail](./regex-guardrail/v1.0/docs/regex.md) | Guardrails, AI | Validates request or response body content against a regular expression pattern. |
 | [Remove Headers](./remove-headers/v1.0/docs/remove-headers.md) | Transformation, MCP, WebSub, WebBroker | This policy provides the capability to remove headers from either the request or the response. |
 | [Request Rewrite](./request-rewrite/v1.0/docs/request-rewrite.md) | Transformation | Rewrites incoming requests by updating path, query parameters, and/or HTTP method before forwarding to upstream services. |
