@@ -218,6 +218,10 @@ func (p *JwtAuthPolicy) ensureTokenCache(maxSize int) {
 	if p.tokenCache != nil && p.tokenCacheSize == maxSize {
 		return
 	}
+	slog.Debug("JWT Auth Policy: Rebuilding token verdict cache due to cacheMaxSize change, all cached verdicts flushed",
+		"previousMaxSize", p.tokenCacheSize,
+		"newMaxSize", maxSize,
+	)
 	p.tokenCache = newTokenCache(maxSize)
 	p.tokenCacheSize = maxSize
 }
@@ -245,6 +249,10 @@ func (p *JwtAuthPolicy) getCachedVerdict(ctx context.Context, key string) (cache
 		return cachedVerdict{}, false
 	}
 	if !time.Now().Before(v.expiresAt) {
+		slog.Debug("JWT Auth Policy: Cached verdict found but expired, evicting",
+			"cacheKey", key,
+			"expiresAt", v.expiresAt,
+		)
 		_ = tc.Delete(ctx, cacheKey)
 		return cachedVerdict{}, false
 	}
@@ -1493,16 +1501,26 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		cacheKey = buildTokenCacheKey(fingerprint, token)
 		if verdict, hit := p.getCachedVerdict(ctx, cacheKey); hit {
 			if verdict.ok {
-				slog.Debug("JWT Auth Policy: Token verdict cache hit (verified)")
+				slog.Debug("JWT Auth Policy: Token verdict cache hit (verified)",
+					"cacheKey", cacheKey,
+					"expiresAt", verdict.expiresAt,
+				)
 				return p.finishAuthentication(reqCtx, verdict.claims, onFailureStatusCode, errorMessageFormat, errorMessage,
 					userAudiences, userRequiredScopes, userRequiredClaims, userClaimMappings, userIdClaim,
 					headerName, authHeader, token, forwardToken, forwardedTokenHeader, forwardTokenStripScheme)
 			}
 			slog.Debug("JWT Auth Policy: Token verdict cache hit (failure)",
+				"cacheKey", cacheKey,
 				"reason", verdict.reason,
+				"expiresAt", verdict.expiresAt,
 			)
 			return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, verdict.reason)
 		}
+		slog.Debug("JWT Auth Policy: Token verdict cache miss, proceeding to full verification",
+			"cacheKey", cacheKey,
+		)
+	} else {
+		slog.Debug("JWT Auth Policy: Token verdict caching disabled, performing full verification")
 	}
 
 	slog.Debug("JWT Auth Policy: Starting to parse key managers configuration")
@@ -1636,6 +1654,10 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 			"error", err,
 		)
 		if tokenCaching {
+			slog.Debug("JWT Auth Policy: Caching negative verdict (malformed token)",
+				"cacheKey", cacheKey,
+				"negativeCacheTtl", negativeCacheTtl,
+			)
 			p.putVerdict(ctx, cacheKey, cachedVerdict{ok: false, reason: "invalid token format", expiresAt: time.Now().Add(negativeCacheTtl)})
 		}
 		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, "invalid token format")
@@ -1655,7 +1677,15 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		)
 		failureReason := fmt.Sprintf("token validation failed: %v", err)
 		if tokenCaching && errors.Is(err, errTokenExpired) {
+			slog.Debug("JWT Auth Policy: Caching negative verdict (token expired)",
+				"cacheKey", cacheKey,
+				"negativeCacheTtl", negativeCacheTtl,
+			)
 			p.putVerdict(ctx, cacheKey, cachedVerdict{ok: false, reason: failureReason, expiresAt: time.Now().Add(negativeCacheTtl)})
+		} else if tokenCaching {
+			slog.Debug("JWT Auth Policy: Token validation failure not cached (not a conservatively-cacheable reason)",
+				"cacheKey", cacheKey,
+			)
 		}
 		return p.handleAuthFailureHeaders(reqCtx.SharedContext, onFailureStatusCode, errorMessageFormat, errorMessage, failureReason)
 	}
@@ -1674,7 +1704,16 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 			}
 		}
 		if expiresAt.After(time.Now()) {
+			slog.Debug("JWT Auth Policy: Caching positive verdict",
+				"cacheKey", cacheKey,
+				"expiresAt", expiresAt,
+			)
 			p.putVerdict(ctx, cacheKey, cachedVerdict{ok: true, claims: claims, expiresAt: expiresAt})
+		} else {
+			slog.Debug("JWT Auth Policy: Skipping positive cache write, computed expiry is not in the future",
+				"cacheKey", cacheKey,
+				"expiresAt", expiresAt,
+			)
 		}
 	}
 
