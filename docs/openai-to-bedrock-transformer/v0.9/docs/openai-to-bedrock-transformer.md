@@ -9,8 +9,8 @@ The OpenAI to Bedrock Transformer policy lets OpenAI Chat Completions clients us
 
 The policy supports two modes:
 
-- **Single-provider mode** — attach the transformer directly to a proxy. When no provider is selected in request metadata, it always runs.
-- **Multi-provider mode** — attach the transformer to an additional Bedrock provider. It runs only when `SharedContext.Metadata["selected_provider"]` matches its provider `id`.
+- **Single-provider mode** — attach the transformer directly to a proxy that uses Bedrock as its upstream provider.
+- **Multi-provider mode** — attach the transformer to a Bedrock provider in a proxy with multiple providers. The transformer applies to requests routed to that provider.
 
 ## Features
 
@@ -26,7 +26,7 @@ The policy supports two modes:
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `model` | Yes | — | Bedrock model or inference-profile ID placed in the Converse request path. |
-| `id` | No | — | Target provider ID. It is also used as the upstream name and matched against the selected provider in multi-provider mode. |
+| `id` | No | — | Bedrock provider ID used in multi-provider configurations. |
 | `maxTokens` | No | `4096` | Fallback `inferenceConfig.maxTokens` when the OpenAI request omits both `max_completion_tokens` and `max_tokens`. |
 
 ## Example
