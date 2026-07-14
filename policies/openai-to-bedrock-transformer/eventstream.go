@@ -40,9 +40,10 @@ import "encoding/binary"
 //
 //	nameLen u8 | name (nameLen bytes) | valueType u8 | value...
 //
-// Bedrock only uses string headers (valueType 7): valueLen u16 | value bytes.
-// The headers we care about are ":event-type" (messageStart, contentBlockDelta,
-// …), ":message-type" ("event" or "exception"), and ":exception-type".
+// The headers we care about are string headers (valueType 7): ":event-type"
+// (messageStart, contentBlockDelta, …), ":message-type" ("event" or
+// "exception"), and ":exception-type". Other AWS event-stream header types
+// are skipped according to their defined widths.
 
 const (
 	preludeLen        = 8  // totalLen(4) + headersLen(4)
@@ -53,7 +54,16 @@ const (
 	// an absurd advertised length. Matches the kernel's stream accumulator cap.
 	maxFrameLen = 16 * 1024 * 1024
 
-	headerTypeString = 7
+	headerTypeTrue      = 0
+	headerTypeFalse     = 1
+	headerTypeByte      = 2
+	headerTypeShort     = 3
+	headerTypeInteger   = 4
+	headerTypeLong      = 5
+	headerTypeByteArray = 6
+	headerTypeString    = 7
+	headerTypeTimestamp = 8
+	headerTypeUUID      = 9
 )
 
 // eventStreamFrame is one decoded message: its wire headers plus the raw
@@ -150,8 +160,8 @@ func decodeOneFrame(data []byte) (eventStreamFrame, int, frameStatus) {
 }
 
 // parseHeaders decodes the packed header block into a name→value map, keeping
-// only string-typed (type 7) headers, which is all Bedrock emits. Malformed
-// trailing bytes stop parsing rather than panic.
+// only string-typed (type 7) headers. Malformed trailing bytes stop parsing
+// rather than panic.
 func parseHeaders(data []byte) map[string]string {
 	headers := make(map[string]string)
 	offset := 0
@@ -168,21 +178,36 @@ func parseHeaders(data []byte) map[string]string {
 		}
 		valueType := data[offset]
 		offset++
-		if valueType != headerTypeString {
-			// Non-string headers are unused by Bedrock's stream; without a length
-			// prefix we cannot safely skip them, so stop here.
-			break
+
+		var encodedLen int
+		switch valueType {
+		case headerTypeTrue, headerTypeFalse:
+			encodedLen = 0
+		case headerTypeByte:
+			encodedLen = 1
+		case headerTypeShort:
+			encodedLen = 2
+		case headerTypeInteger:
+			encodedLen = 4
+		case headerTypeLong, headerTypeTimestamp:
+			encodedLen = 8
+		case headerTypeUUID:
+			encodedLen = 16
+		case headerTypeByteArray, headerTypeString:
+			if offset+2 > len(data) {
+				return headers
+			}
+			encodedLen = 2 + int(binary.BigEndian.Uint16(data[offset:offset+2]))
+		default:
+			return headers
 		}
-		if offset+2 > len(data) {
-			break
+		if offset+encodedLen > len(data) {
+			return headers
 		}
-		valueLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
-		offset += 2
-		if offset+valueLen > len(data) {
-			break
+		if valueType == headerTypeString {
+			headers[name] = string(data[offset+2 : offset+encodedLen])
 		}
-		headers[name] = string(data[offset : offset+valueLen])
-		offset += valueLen
+		offset += encodedLen
 	}
 	return headers
 }

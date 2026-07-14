@@ -153,6 +153,46 @@ func encodeStringHeader(name, value string) []byte {
 	return out
 }
 
+func encodeTypedHeader(name string, valueType byte, encodedValue []byte) []byte {
+	out := []byte{byte(len(name))}
+	out = append(out, name...)
+	out = append(out, valueType)
+	out = append(out, encodedValue...)
+	return out
+}
+
+func TestParseHeaders_SkipsNonStringHeaders(t *testing.T) {
+	byteArrayValue := binary.BigEndian.AppendUint16(nil, 2)
+	byteArrayValue = append(byteArrayValue, 0xaa, 0xbb)
+
+	tests := []struct {
+		name         string
+		valueType    byte
+		encodedValue []byte
+	}{
+		{"true", headerTypeTrue, nil},
+		{"false", headerTypeFalse, nil},
+		{"byte", headerTypeByte, make([]byte, 1)},
+		{"short", headerTypeShort, make([]byte, 2)},
+		{"integer", headerTypeInteger, make([]byte, 4)},
+		{"long", headerTypeLong, make([]byte, 8)},
+		{"byte array", headerTypeByteArray, byteArrayValue},
+		{"timestamp", headerTypeTimestamp, make([]byte, 8)},
+		{"UUID", headerTypeUUID, make([]byte, 16)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headerBytes := encodeTypedHeader("ignored", tt.valueType, tt.encodedValue)
+			headerBytes = append(headerBytes, encodeStringHeader(":event-type", "messageStart")...)
+
+			if got := parseHeaders(headerBytes)[":event-type"]; got != "messageStart" {
+				t.Fatalf("event type after %s header = %q, want messageStart", tt.name, got)
+			}
+		})
+	}
+}
+
 func bedrockStream() []byte {
 	var stream []byte
 	stream = append(stream, encodeFrame("messageStart", `{"role":"assistant"}`)...)
@@ -181,6 +221,19 @@ func TestEventStreamToSSE_TextStream(t *testing.T) {
 	// Every non-terminal event must be framed as an SSE data line.
 	if !strings.HasPrefix(out, "data: ") {
 		t.Errorf("SSE output must start with a data line, got:\n%s", out)
+	}
+}
+
+func TestEventStreamToSSE_PreservesNonEventStreamData(t *testing.T) {
+	data := []byte(`{"message":"upstream error"}`)
+
+	if got := eventStreamToSSE(data, false, "id", "claude"); string(got) != string(data) {
+		t.Fatalf("non-event-stream data = %q, want %q", got, data)
+	}
+
+	wantAtEnd := append(append([]byte{}, data...), sseDonePayload...)
+	if got := eventStreamToSSE(data, true, "id", "claude"); string(got) != string(wantAtEnd) {
+		t.Fatalf("final non-event-stream data = %q, want %q", got, wantAtEnd)
 	}
 }
 

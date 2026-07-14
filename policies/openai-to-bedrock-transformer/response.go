@@ -175,6 +175,8 @@ func eventStreamToSSE(data []byte, endOfStream bool, id, model string) []byte {
 		for i := range frames {
 			out = append(out, streamFrameToSSE(&frames[i], id, model, created)...)
 		}
+	} else {
+		out = append(out, data...)
 	}
 
 	if endOfStream {
