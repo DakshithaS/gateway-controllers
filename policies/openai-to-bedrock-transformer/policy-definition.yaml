@@ -22,8 +22,9 @@ parameters:
       description: |
         Bedrock model or inference-profile id placed in the request path
         (for example anthropic.claude-3-5-sonnet-20241022-v2:0 or
-        us.anthropic.claude-sonnet-4-5-20250929-v1:0). Overrides the OpenAI
-        "model" field.
+        us.anthropic.claude-sonnet-4-5-20250929-v1:0). When configured, it
+        overrides the OpenAI "model" field; when omitted, the request's model
+        field is used.
       minLength: 1
     provider-id:
       type: string
@@ -47,9 +48,6 @@ parameters:
         requires this field for many models.
       default: 4096
       minimum: 1
-  required:
-    - model
-
 systemParameters:
   type: object
   properties: {}

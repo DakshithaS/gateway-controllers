@@ -38,6 +38,7 @@ const (
 	PolicyName                  = "openai-to-bedrock-transformer"
 	DefaultMaxTokens            = 4096
 	MetadataKeySelectedProvider = "selected_provider"
+	MetadataKeyEffectiveModel   = "openai_to_bedrock_effective_model"
 )
 
 // Compile-time proof that this policy participates in every phase it declares
@@ -103,14 +104,16 @@ func (p *TranslatorPolicy) OnRequestBody(
 		return errResponse(400, fmt.Sprintf("Invalid JSON in request body: %s", err.Error()))
 	}
 
-	if p.params.Model == "" {
-		return errResponse(400, "'model' policy parameter is required for Bedrock translation.")
+	model, err := p.resolveModel(payload)
+	if err != nil {
+		return errResponse(400, err.Error())
 	}
+	storeEffectiveModel(reqCtx.SharedContext, model)
 
 	streaming := boolValue(payload["stream"])
-	path := bedrockConversePath(p.params.Model, streaming)
+	path := bedrockConversePath(model, streaming)
 	slog.Debug(PolicyName+": translating request",
-		"provider-id", p.params.ProviderID, "model", p.params.Model, "streaming", streaming, "path", path)
+		"provider-id", p.params.ProviderID, "model", model, "streaming", streaming, "path", path)
 
 	mods := translateRequest(payload, p.params)
 	mods.Path = &path
@@ -171,9 +174,10 @@ func (p *TranslatorPolicy) OnResponseBody(
 
 	body := respCtx.ResponseBody.Content
 	contentType := headerValue(respCtx.ResponseHeaders, "content-type")
+	model := effectiveModel(respCtx.SharedContext, p.params.Model)
 
 	if isEventStreamContentType(contentType) || looksLikeEventStream(body) {
-		sse := eventStreamToSSE(body, true, p.completionID(requestID(respCtx.SharedContext)), p.params.Model)
+		sse := eventStreamToSSE(body, true, p.completionID(requestID(respCtx.SharedContext)), model)
 		return policy.DownstreamResponseModifications{
 			Body: sse,
 			HeadersToSet: map[string]string{
@@ -184,7 +188,7 @@ func (p *TranslatorPolicy) OnResponseBody(
 	}
 
 	slog.Debug(PolicyName+": translating buffered JSON response", "status", respCtx.ResponseStatus)
-	return translateConverseResponse(body, respCtx.ResponseStatus, p.params.Model,
+	return translateConverseResponse(body, respCtx.ResponseStatus, model,
 		p.completionID(requestID(respCtx.SharedContext)))
 }
 
@@ -221,8 +225,9 @@ func (p *TranslatorPolicy) OnResponseBodyChunk(
 		return policy.ForwardResponseChunk{}
 	}
 
+	model := effectiveModel(respCtx.SharedContext, p.params.Model)
 	sse := eventStreamToSSE(chunk.Chunk, chunk.EndOfStream,
-		p.completionID(requestID(respCtx.SharedContext)), p.params.Model)
+		p.completionID(requestID(respCtx.SharedContext)), model)
 	// Always return a non-nil body so the raw Amazon event-stream bytes are
 	// replaced (nil would pass them through untranslated). An empty slice emits
 	// nothing for this flush, which is correct when a frame carried no delta.
@@ -257,6 +262,45 @@ func selectedProvider(shared *policy.SharedContext) string {
 	return strings.TrimSpace(value)
 }
 
+func (p *TranslatorPolicy) resolveModel(payload map[string]interface{}) (string, error) {
+	if p.params.Model != "" {
+		return p.params.Model, nil
+	}
+
+	raw, ok := payload["model"]
+	if !ok || raw == nil {
+		return "", fmt.Errorf("a Bedrock model must be provided in either the policy configuration or request body")
+	}
+	model, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("request field 'model' must be a string")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", fmt.Errorf("a Bedrock model must be provided in either the policy configuration or request body")
+	}
+	return model, nil
+}
+
+func storeEffectiveModel(shared *policy.SharedContext, model string) {
+	if shared == nil {
+		return
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]interface{}{}
+	}
+	shared.Metadata[MetadataKeyEffectiveModel] = model
+}
+
+func effectiveModel(shared *policy.SharedContext, configured string) string {
+	if shared != nil && shared.Metadata != nil {
+		if model, ok := shared.Metadata[MetadataKeyEffectiveModel].(string); ok && model != "" {
+			return model
+		}
+	}
+	return configured
+}
+
 func requestID(shared *policy.SharedContext) string {
 	if shared == nil {
 		return ""
@@ -282,9 +326,6 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	model, err := optionalString(params, "model")
 	if err != nil {
 		return result, err
-	}
-	if model == "" {
-		return result, fmt.Errorf("'model' is required")
 	}
 	result.Model = model
 

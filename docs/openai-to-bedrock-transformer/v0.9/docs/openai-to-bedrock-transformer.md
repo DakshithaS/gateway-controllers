@@ -25,7 +25,7 @@ The policy supports two modes:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `model` | Yes | — | Bedrock model or inference-profile ID placed in the Converse request path. |
+| `model` | No | Request `model` | Optional Bedrock model or inference-profile ID override placed in the Converse request path. |
 | `provider-id` | No | — | Bedrock provider ID used in multi-provider configurations. |
 | `maxTokens` | No | `4096` | Fallback `inferenceConfig.maxTokens` when the OpenAI request omits both `max_completion_tokens` and `max_tokens`. |
 
@@ -64,5 +64,6 @@ policies:
 ## Notes
 
 - The policy translates payloads and paths only. Configure Bedrock authentication on the upstream provider.
+- When `model` is omitted from the policy configuration, the OpenAI request's `model` field must contain a valid Bedrock model or inference-profile ID.
 - Remote image URLs are not fetched; use base64 data URIs for image input.
 - Streaming translation expects Bedrock's `application/vnd.amazon.eventstream` framing.

@@ -29,8 +29,8 @@ import (
 )
 
 func TestGetPolicy_ValidatesParams(t *testing.T) {
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
-		t.Fatal("expected an error when model is missing")
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("model override should be optional: %v", err)
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"model":       "us.amazon.nova-lite-v1:0",
@@ -47,6 +47,64 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 	} {
 		if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
 			t.Errorf("expected invalid params to fail: %#v", params)
+		}
+	}
+}
+
+func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{MaxTokens: DefaultMaxTokens}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"us.amazon.nova-lite-v1:0","messages":[{"role":"user","content":"hello"}]}`)},
+	}
+
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.Path == nil || *mods.Path != "/model/us.amazon.nova-lite-v1:0/converse" {
+		t.Fatalf("unexpected fallback path: %v", mods.Path)
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "us.amazon.nova-lite-v1:0" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+
+	response := &policy.ResponseContext{
+		SharedContext:  shared,
+		ResponseStatus: 200,
+		ResponseBody: &policy.Body{Present: true, Content: []byte(
+			`{"output":{"message":{"role":"assistant","content":[{"text":"hello"}]}},"stopReason":"end_turn"}`)},
+	}
+	responseAction := p.OnResponseBody(context.Background(), response, nil)
+	responseMods, ok := responseAction.(policy.DownstreamResponseModifications)
+	if !ok {
+		t.Fatalf("expected DownstreamResponseModifications, got %T", responseAction)
+	}
+	var translated map[string]interface{}
+	if err := json.Unmarshal(responseMods.Body, &translated); err != nil {
+		t.Fatalf("translated response is not valid JSON: %v", err)
+	}
+	if translated["model"] != "us.amazon.nova-lite-v1:0" {
+		t.Fatalf("response did not use the effective request model: %v", translated["model"])
+	}
+}
+
+func TestOnRequestBody_RejectsMissingFallbackModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{MaxTokens: DefaultMaxTokens}}
+	for _, body := range []string{
+		`{"messages":[]}`,
+		`{"model":"","messages":[]}`,
+		`{"model":42,"messages":[]}`,
+	} {
+		action := p.OnRequestBody(context.Background(), &policy.RequestContext{
+			SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+			Body:          &policy.Body{Present: true, Content: []byte(body)},
+		}, nil)
+		if response, ok := action.(policy.ImmediateResponse); !ok || response.StatusCode != 400 {
+			t.Errorf("expected a 400 response for body %s, got %#v", body, action)
 		}
 	}
 }
