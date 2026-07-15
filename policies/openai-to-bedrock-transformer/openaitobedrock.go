@@ -51,9 +51,9 @@ var (
 )
 
 type PolicyParams struct {
-	Model     string
-	Id        string
-	MaxTokens int
+	Model      string
+	ProviderID string
+	MaxTokens  int
 }
 
 type TranslatorPolicy struct {
@@ -110,12 +110,12 @@ func (p *TranslatorPolicy) OnRequestBody(
 	streaming := boolValue(payload["stream"])
 	path := bedrockConversePath(p.params.Model, streaming)
 	slog.Debug(PolicyName+": translating request",
-		"id", p.params.Id, "model", p.params.Model, "streaming", streaming, "path", path)
+		"provider-id", p.params.ProviderID, "model", p.params.Model, "streaming", streaming, "path", path)
 
 	mods := translateRequest(payload, p.params)
 	mods.Path = &path
-	if p.params.Id != "" && mods.UpstreamName == nil {
-		upstream := p.params.Id
+	if p.params.ProviderID != "" && mods.UpstreamName == nil {
+		upstream := p.params.ProviderID
 		mods.UpstreamName = &upstream
 	}
 	return mods
@@ -239,7 +239,7 @@ func (p *TranslatorPolicy) shouldRun(selected string) bool {
 		// Single-provider mode: no router selected a provider, so run.
 		return true
 	}
-	return strings.EqualFold(selected, p.params.Id)
+	return strings.EqualFold(selected, p.params.ProviderID)
 }
 
 func selectedProvider(shared *policy.SharedContext) string {
@@ -288,10 +288,10 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if id, err := optionalString(params, "id"); err != nil {
+	if providerID, err := optionalString(params, "provider-id"); err != nil {
 		return result, err
 	} else {
-		result.Id = id
+		result.ProviderID = providerID
 	}
 
 	if maxTokens, ok := params["maxTokens"]; ok && maxTokens != nil {

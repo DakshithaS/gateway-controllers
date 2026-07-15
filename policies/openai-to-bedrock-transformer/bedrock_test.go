@@ -33,15 +33,15 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 		t.Fatal("expected an error when model is missing")
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"model":     "us.amazon.nova-lite-v1:0",
-		"id":        "bedrock-provider",
-		"maxTokens": float64(2048),
+		"model":       "us.amazon.nova-lite-v1:0",
+		"provider-id": "bedrock-provider",
+		"maxTokens":   float64(2048),
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
 	for _, params := range []map[string]interface{}{
 		{"model": 42},
-		{"model": "nova", "id": true},
+		{"model": "nova", "provider-id": true},
 		{"model": "nova", "maxTokens": 0},
 		{"model": "nova", "maxTokens": 1.5},
 	} {
@@ -53,9 +53,9 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 
 func TestOnRequestBody_RewritesAndRoutes(t *testing.T) {
 	p := &TranslatorPolicy{params: PolicyParams{
-		Model:     "us.amazon.nova-lite-v1:0",
-		Id:        "bedrock-provider",
-		MaxTokens: DefaultMaxTokens,
+		Model:      "us.amazon.nova-lite-v1:0",
+		ProviderID: "bedrock-provider",
+		MaxTokens:  DefaultMaxTokens,
 	}}
 	req := &policy.RequestContext{
 		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
