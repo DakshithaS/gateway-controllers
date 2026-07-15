@@ -11,7 +11,7 @@ The API Key Authentication policy validates API keys to secure APIs by verifying
 
 - Validates API keys from request headers
 - Configurable key extraction from headers (case-insensitive)
-- Optional value prefix stripping before validation (e.g., `Bearer `)
+- Optional prefix stripping from API key value before validation (e.g., `Bearer `)
 - Pre-generated key validation against gateway-managed key lists
 - Request context enrichment with authentication metadata
 - Issuer-based key validation via system configuration
@@ -25,11 +25,11 @@ The API Key Authentication policy uses a two-level configuration model. User par
 
 These parameters are configured per-API/route by the API developer:
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `key` | string | Yes | `API-Key` | The name of the header that contains the API key. Case-insensitive matching is used (e.g., "X-API-Key", "Authorization"). Length: 1-128 characters. |
-| `in` | string | Yes | `header` | Specifies where to look for the API key. Currently only "header" is supported. |
-| `value-prefix` | string | No | `""` | Advanced parameter. Optional prefix stripped from the header value before validation (e.g., `Bearer ` when the key is sent in an `Authorization` header). Matching and removal are case-insensitive. If the parameter is set but the header value does not start with the prefix, the request is rejected as malformed. Length: 1-64 characters. |
+| Parameter     | Type | Required | Default | Description                                                                                                                                                                                                                                                                                                                   |
+|---------------|------|----------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `key`         | string | Yes | `API-Key` | The name of the header that contains the API key. Case-insensitive matching is used (e.g., "X-API-Key", "Authorization"). Length: 1-128 characters.                                                                                                                                                                           |
+| `in`          | string | Yes | `header` | Specifies where to look for the API key. Currently only "header" is supported.                                                                                                                                                                                                                                                |
+| `valuePrefix` | string | No | `""` | Optional prefix stripped from the header value before validation (e.g., `Bearer ` when the key is sent in an `Authorization` header). Matching and removal are case-insensitive. If the parameter is set but the header value does not start with the prefix, the request is rejected as malformed. Length: 1-128 characters. |
 
 ### System Parameters (config.toml)
 
@@ -213,7 +213,7 @@ spec:
       params:
         key: Authorization
         in: header
-        value-prefix: "Bearer "
+        valuePrefix: "Bearer "
   operations:
     - method: GET
       path: /{country_code}/{city}
@@ -229,7 +229,7 @@ spec:
 
 - Based on `in`, it extracts the API key from a request header (case-insensitive header lookup).
 
-- If `value-prefix` is configured, the policy strips the prefix from the extracted value (case-insensitive) before validation. If the value does not start with the configured prefix, the resulting key is empty and the request is rejected as malformed.
+- If `valuePrefix` is configured, the policy strips the prefix from the extracted value (case-insensitive) before validation. If the value does not start with the configured prefix, the resulting key is empty and the request is rejected as malformed.
 
 - If the key is missing, empty, or the required API context values are unavailable, the policy short-circuits the request and returns `401 Unauthorized` with a JSON error response.
 
