@@ -33,17 +33,14 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 		t.Fatalf("model override should be optional: %v", err)
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"model":       "us.amazon.nova-lite-v1:0",
-		"provider-id": "bedrock-provider",
-		"maxTokens":   float64(2048),
+		"model":      "us.amazon.nova-lite-v1:0",
+		"providerId": "bedrock-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
 	}
 	for _, params := range []map[string]interface{}{
 		{"model": 42},
-		{"model": "nova", "provider-id": true},
-		{"model": "nova", "maxTokens": 0},
-		{"model": "nova", "maxTokens": 1.5},
+		{"model": "nova", "providerId": true},
 	} {
 		if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
 			t.Errorf("expected invalid params to fail: %#v", params)
@@ -52,7 +49,7 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 }
 
 func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{MaxTokens: DefaultMaxTokens}}
+	p := &TranslatorPolicy{params: PolicyParams{}}
 	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
 	req := &policy.RequestContext{
 		SharedContext: shared,
@@ -93,7 +90,7 @@ func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
 }
 
 func TestOnRequestBody_RejectsMissingFallbackModel(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{MaxTokens: DefaultMaxTokens}}
+	p := &TranslatorPolicy{params: PolicyParams{}}
 	for _, body := range []string{
 		`{"messages":[]}`,
 		`{"model":"","messages":[]}`,
@@ -113,7 +110,6 @@ func TestOnRequestBody_RewritesAndRoutes(t *testing.T) {
 	p := &TranslatorPolicy{params: PolicyParams{
 		Model:      "us.amazon.nova-lite-v1:0",
 		ProviderID: "bedrock-provider",
-		MaxTokens:  DefaultMaxTokens,
 	}}
 	req := &policy.RequestContext{
 		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
@@ -145,7 +141,7 @@ func TestOnRequestBody_RewritesAndRoutes(t *testing.T) {
 }
 
 func TestOnRequestBody_RejectsBadBodies(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{Model: "nova", MaxTokens: DefaultMaxTokens}}
+	p := &TranslatorPolicy{params: PolicyParams{Model: "nova"}}
 	for _, body := range []*policy.Body{
 		nil,
 		{Present: true},
@@ -163,7 +159,7 @@ func TestOnRequestBody_RejectsBadBodies(t *testing.T) {
 }
 
 func TestPolicyPhases_HandleNilSharedContext(t *testing.T) {
-	p := &TranslatorPolicy{params: PolicyParams{Model: "nova", MaxTokens: DefaultMaxTokens}}
+	p := &TranslatorPolicy{params: PolicyParams{Model: "nova"}}
 
 	requestAction := p.OnRequestBody(context.Background(), &policy.RequestContext{
 		Body: &policy.Body{Present: true, Content: []byte(`{"messages":[]}`)},
@@ -349,7 +345,7 @@ func TestTranslateRequest_ConverseShape(t *testing.T) {
 		"max_tokens":  100,
 		"temperature": 0.5,
 	}
-	mods := translateRequest(payload, PolicyParams{Model: "claude", MaxTokens: 4096})
+	mods := translateRequest(payload)
 
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
@@ -368,6 +364,23 @@ func TestTranslateRequest_ConverseShape(t *testing.T) {
 	}
 	if p := bedrockConversePath("claude", true); p != "/model/claude/converse-stream" {
 		t.Errorf("unexpected streaming path: %s", p)
+	}
+}
+
+func TestTranslateRequest_OmitsMaxTokensWhenNotSupplied(t *testing.T) {
+	payload := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	mods := translateRequest(payload)
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &body); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if _, ok := body["inferenceConfig"]; ok {
+		t.Fatalf("inferenceConfig must be omitted when the OpenAI payload has no inference settings: %v", body)
 	}
 }
 
@@ -397,7 +410,7 @@ func TestTranslateRequest_ToolsImagesAndResults(t *testing.T) {
 			"type": "function", "function": map[string]interface{}{"name": "weather"},
 		},
 	}
-	mods := translateRequest(payload, PolicyParams{Model: "nova", MaxTokens: DefaultMaxTokens})
+	mods := translateRequest(payload)
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
 		t.Fatalf("translated body is invalid: %v", err)
@@ -419,7 +432,7 @@ func TestTranslateRequest_ToolChoiceNoneDropsTools(t *testing.T) {
 		}},
 		"tool_choice": "none",
 	}
-	mods := translateRequest(payload, PolicyParams{MaxTokens: DefaultMaxTokens})
+	mods := translateRequest(payload)
 	var body map[string]interface{}
 	if err := json.Unmarshal(mods.Body, &body); err != nil {
 		t.Fatal(err)

@@ -26,7 +26,7 @@ parameters:
         overrides the OpenAI "model" field; when omitted, the request's model
         field is used.
       minLength: 1
-    provider-id:
+    providerId:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
@@ -39,15 +39,6 @@ parameters:
         matches this provider id. When omitted, routing is left to the route's
         default upstream.
       minLength: 1
-    maxTokens:
-      type: integer
-      x-wso2-policy-advanced-param: true
-      description: |
-        Fallback value for Bedrock inferenceConfig.maxTokens when the OpenAI
-        request supplies neither max_completion_tokens nor max_tokens. Bedrock
-        requires this field for many models.
-      default: 4096
-      minimum: 1
 systemParameters:
   type: object
   properties: {}

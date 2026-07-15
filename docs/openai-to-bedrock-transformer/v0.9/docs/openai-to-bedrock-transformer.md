@@ -26,12 +26,11 @@ The policy supports two modes:
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `model` | No | Request `model` | Optional Bedrock model or inference-profile ID override placed in the Converse request path. |
-| `provider-id` | No | — | Bedrock provider ID used in multi-provider configurations. |
-| `maxTokens` | No | `4096` | Fallback `inferenceConfig.maxTokens` when the OpenAI request omits both `max_completion_tokens` and `max_tokens`. |
+| `providerId` | No | — | Bedrock provider ID used in multi-provider configurations. |
 
 ## Example
 
-For a multi-provider LLM proxy, attach the transformer to the Bedrock provider. The provider `id` (or its `as` alias) is supplied by the gateway as `provider-id`, so it is not repeated in `params`:
+For a multi-provider LLM proxy, attach the transformer to the Bedrock provider. The provider `id` (or its `as` alias) is supplied by the gateway as `providerId`, so it is not repeated in `params`:
 
 ```yaml
 additionalProviders:
@@ -45,7 +44,6 @@ additionalProviders:
       version: v1
       params:
         model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
-        maxTokens: 4096
 ```
 
 For a single-provider proxy, attach the policy directly:

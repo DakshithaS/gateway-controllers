@@ -29,7 +29,7 @@ import (
 // translateRequest converts an OpenAI Chat Completions payload into a Bedrock
 // Converse request body. The model lives in the URL path, not the body, so it
 // is deliberately omitted here.
-func translateRequest(payload map[string]interface{}, params PolicyParams) policy.UpstreamRequestModifications {
+func translateRequest(payload map[string]interface{}) policy.UpstreamRequestModifications {
 	converse := map[string]interface{}{}
 
 	if messages, ok := payload["messages"].([]interface{}); ok {
@@ -42,7 +42,7 @@ func translateRequest(payload map[string]interface{}, params PolicyParams) polic
 		}
 	}
 
-	if inference := buildInferenceConfig(payload, params); len(inference) > 0 {
+	if inference := buildInferenceConfig(payload); len(inference) > 0 {
 		converse["inferenceConfig"] = inference
 	}
 
@@ -243,15 +243,13 @@ func convertImage(block map[string]interface{}) map[string]interface{} {
 	}
 }
 
-func buildInferenceConfig(payload map[string]interface{}, params PolicyParams) map[string]interface{} {
+func buildInferenceConfig(payload map[string]interface{}) map[string]interface{} {
 	inference := map[string]interface{}{}
 
 	if v, ok := payload["max_completion_tokens"]; ok {
 		inference["maxTokens"] = v
 	} else if v, ok := payload["max_tokens"]; ok {
 		inference["maxTokens"] = v
-	} else {
-		inference["maxTokens"] = params.MaxTokens
 	}
 
 	if v, ok := payload["temperature"]; ok {

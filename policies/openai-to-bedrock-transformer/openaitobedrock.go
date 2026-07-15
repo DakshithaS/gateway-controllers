@@ -36,7 +36,6 @@ import (
 
 const (
 	PolicyName                  = "openai-to-bedrock-transformer"
-	DefaultMaxTokens            = 4096
 	MetadataKeySelectedProvider = "selected_provider"
 	MetadataKeyEffectiveModel   = "openai_to_bedrock_effective_model"
 )
@@ -54,7 +53,6 @@ var (
 type PolicyParams struct {
 	Model      string
 	ProviderID string
-	MaxTokens  int
 }
 
 type TranslatorPolicy struct {
@@ -113,9 +111,9 @@ func (p *TranslatorPolicy) OnRequestBody(
 	streaming := boolValue(payload["stream"])
 	path := bedrockConversePath(model, streaming)
 	slog.Debug(PolicyName+": translating request",
-		"provider-id", p.params.ProviderID, "model", model, "streaming", streaming, "path", path)
+		"providerId", p.params.ProviderID, "model", model, "streaming", streaming, "path", path)
 
-	mods := translateRequest(payload, p.params)
+	mods := translateRequest(payload)
 	mods.Path = &path
 	if p.params.ProviderID != "" && mods.UpstreamName == nil {
 		upstream := p.params.ProviderID
@@ -321,7 +319,7 @@ func (p *TranslatorPolicy) completionID(requestID string) string {
 // ─── Param parsing ────────────────────────────────────────────────────────────
 
 func parseParams(params map[string]interface{}) (PolicyParams, error) {
-	result := PolicyParams{MaxTokens: DefaultMaxTokens}
+	result := PolicyParams{}
 
 	model, err := optionalString(params, "model")
 	if err != nil {
@@ -329,18 +327,10 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	}
 	result.Model = model
 
-	if providerID, err := optionalString(params, "provider-id"); err != nil {
+	if providerID, err := optionalString(params, "providerId"); err != nil {
 		return result, err
 	} else {
 		result.ProviderID = providerID
-	}
-
-	if maxTokens, ok := params["maxTokens"]; ok && maxTokens != nil {
-		if n, ok := toInt(maxTokens); ok && n > 0 {
-			result.MaxTokens = n
-		} else {
-			return result, fmt.Errorf("'maxTokens' must be a positive integer")
-		}
 	}
 
 	return result, nil
