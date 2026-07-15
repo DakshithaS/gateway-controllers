@@ -58,6 +58,7 @@ All available policies, sorted alphabetically.
 | [Model Weighted Round Robin](./model-weighted-round-robin/v1.0/docs/model-weighted-round-robin.md) | AI | Implements weighted round-robin load balancing for AI models. |
 | [NeMo Guard Content Safety](./nvidia-nemoguard-content-safety/v0.9/docs/nvidia-nemoguard-content-safety.md) | Guardrails, AI | Validates request and/or response content using NVIDIA NeMo Guard (llama-3.1-nemoguard-8b-content-safety). |
 | [Opaque Token Auth](./opaque-token-auth/v1.0/docs/opaque-token-authentication.md) | Security, AI | Validates opaque OAuth 2.0 access tokens via RFC 7662 token introspection. |
+| [OpenAI to Bedrock Transformer](./openai-to-bedrock-transformer/v0.9/docs/openai-to-bedrock-transformer.md) | AI | Translates OpenAI Chat Completions requests into AWS Bedrock Converse format and rewrites non-streaming and streaming Bedrock responses back into OpenAI-compatible JSON or Server-Sent Events. |
 | [PII Masking Regex](./pii-masking-regex/v1.0/docs/pii-masking-regex.md) | Guardrails, AI | Masks or redacts Personally Identifiable Information (PII) from request/response bodies using regex patterns. |
 | [Prompt Compressor](./prompt-compressor/v0.9/docs/prompt-compressor.md) | AI | Compresses selected prompt text in JSON request bodies before upstream LLM calls. |
 | [Prompt Decorator](./prompt-decorator/v1.0/docs/prompt-decorator.md) | AI | Dynamically modifies the prompt by applying custom decorations using a configured strategy. |
