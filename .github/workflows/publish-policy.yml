@@ -11,36 +11,52 @@ on:
         description: 'Minor version (e.g., 0.1, 0.2)'
         required: true
         type: string
-
-env:
-  # Predefined policy categories - Add new categories here
-  PREDEFINED_CATEGORIES: |
-    Security
-    Analytics & Monitoring
-    Transformation
-    Logging
-    AI
-    MCP
-    Guardrails
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: dev
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    
+    environment: ${{ github.event.inputs.environment }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
+    - name: Load predefined policy categories
+      # Add new categories in .github/policy-categories.txt
+      run: |
+        CATEGORIES_FILE=".github/policy-categories.txt"
+        if [[ ! -f "$CATEGORIES_FILE" ]]; then
+          echo "❌ Categories file not found: $CATEGORIES_FILE"
+          exit 1
+        fi
+
+        {
+          echo "PREDEFINED_CATEGORIES<<EOF"
+          cat "$CATEGORIES_FILE"
+          echo "EOF"
+        } >> "$GITHUB_ENV"
+
     - name: Validate API configuration
       id: api-config
       run: |
+        echo "🌍 Target environment: ${{ github.event.inputs.environment }}"
+
         if [[ -z "${{ secrets.POLICY_API_URL }}" ]]; then
           echo "❌ Missing POLICY_API_URL secret"
-          echo "Please configure POLICY_API_URL in repository secrets"
-          echo "Go to: Settings → Secrets and variables → Actions → Repository secrets"
+          echo "Please configure POLICY_API_URL for the '${{ github.event.inputs.environment }}' environment"
+          echo "Go to: Settings → Environments → ${{ github.event.inputs.environment }} → Environment secrets"
           exit 1
         fi
-        
+
         echo "✅ API configuration validated"
         echo "API_URL=${{ secrets.POLICY_API_URL }}" >> $GITHUB_ENV
       
@@ -314,5 +330,6 @@ jobs:
         echo "=========================="
         echo "Policy Name: $METADATA_NAME"
         echo "Version: $METADATA_VERSION"
+        echo "Environment: ${{ github.event.inputs.environment }}"
         echo "Status: ✅ Successfully Published"
         echo "API Endpoint: $API_URL/api/v1/internal/policies/$METADATA_NAME/versions/$METADATA_VERSION"
