@@ -1,88 +1,12 @@
-name: Publish Policy
+name: Publish Policy (from Issue)
 
 on:
-  workflow_dispatch:
-    inputs:
-      # BEGIN AUTO-GENERATED INPUTS (from docs/ - run .github/scripts/generate_policy_inputs.py to refresh, do not edit by hand)
-      policy_name:
-        description: 'Name of the policy to publish. Pick "Other" to type one manually.'
-        required: true
-        type: choice
-        options:
-          - advanced-ratelimit
-          - analytics-header-filter
-          - api-key-auth
-          - aws-authentication
-          - aws-bedrock-guardrail
-          - azure-content-safety-content-moderation
-          - backend-jwt
-          - basic-auth
-          - basic-ratelimit
-          - content-length-guardrail
-          - cors
-          - dynamic-endpoint
-          - granite-guardian-prompt-injection
-          - host-rewrite
-          - interceptor-service
-          - json-schema-guardrail
-          - json-xml-mediator
-          - jwt-auth
-          - llm-cost
-          - llm-cost-based-ratelimit
-          - log-message
-          - mcp-acl-list
-          - mcp-auth
-          - mcp-authz
-          - mcp-ratelimit
-          - mcp-rewrite
-          - model-round-robin
-          - model-weighted-round-robin
-          - nvidia-nemoguard-content-safety
-          - opaque-token-auth
-          - openai-to-bedrock-transformer
-          - pii-masking-regex
-          - prompt-compressor
-          - prompt-decorator
-          - prompt-template
-          - redirect
-          - regex-guardrail
-          - remove-headers
-          - request-rewrite
-          - respond
-          - semantic-cache
-          - semantic-prompt-guard
-          - semantic-tool-filtering
-          - sentence-count-guardrail
-          - set-headers
-          - subscription-validation
-          - token-based-ratelimit
-          - url-guardrail
-          - websub-hmac-auth
-          - word-count-guardrail
-          - Other
-      policy_name_other:
-        description: 'Custom policy name (used only when "Other" is selected above)'
-        required: false
-        type: string
-      minor_version:
-        description: 'Minor version (e.g., 0.1, 0.2). Pick "Other" to type one manually.'
-        required: true
-        type: choice
-        options:
-          - "0.1"
-          - "0.2"
-          - "0.3"
-          - "0.8"
-          - "0.9"
-          - "1.0"
-          - "1.1"
-          - "1.2"
-          - Other
-      minor_version_other:
-        description: 'Custom minor version (used only when "Other" is selected above)'
-        required: false
-        type: string
-      # END AUTO-GENERATED INPUTS
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
 
 env:
   # Predefined policy categories - Add new categories here
@@ -97,23 +21,45 @@ env:
 
 jobs:
   publish:
+    if: contains(github.event.issue.labels.*.name, 'publish-policy')
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
+    - name: Require write access
+      run: |
+        case "${{ github.event.issue.author_association }}" in
+          OWNER|MEMBER|COLLABORATOR) ;;
+          *)
+            echo "❌ @${{ github.event.issue.user.login }} does not have write access to this repository; refusing to publish."
+            exit 1
+            ;;
+        esac
+
+    - name: Parse issue form
+      env:
+        ISSUE_BODY: ${{ github.event.issue.body }}
+      run: |
+        python3 .github/scripts/parse_issue_form.py \
+          'ISSUE_POLICY_NAME=Policy name' \
+          'ISSUE_POLICY_NAME_OTHER=Custom policy name (used only when "Other" is selected above)' \
+          'ISSUE_MINOR_VERSION=Minor version' \
+          'ISSUE_MINOR_VERSION_OTHER=Custom minor version (used only when "Other" is selected above)' \
+          >> "$GITHUB_ENV"
+
     - name: Validate inputs and policy existence
       run: |
-        POLICY_NAME="${{ github.event.inputs.policy_name }}"
-        MINOR_VERSION="${{ github.event.inputs.minor_version }}"
+        POLICY_NAME="$ISSUE_POLICY_NAME"
+        MINOR_VERSION="$ISSUE_MINOR_VERSION"
 
-        # Fall back to the free-text inputs when "Other" was picked from the dropdown
+        # Fall back to the free-text fields when "Other" was picked from the dropdown
         if [[ "$POLICY_NAME" == "Other" ]]; then
-          POLICY_NAME="${{ github.event.inputs.policy_name_other }}"
+          POLICY_NAME="$ISSUE_POLICY_NAME_OTHER"
         fi
         if [[ "$MINOR_VERSION" == "Other" ]]; then
-          MINOR_VERSION="${{ github.event.inputs.minor_version_other }}"
+          MINOR_VERSION="$ISSUE_MINOR_VERSION_OTHER"
         fi
 
         # Trim whitespace
@@ -125,18 +71,18 @@ jobs:
           echo "❌ Policy name is required"
           exit 1
         fi
-        
+
         if [[ ! "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
           echo "❌ Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters)"
           exit 1
         fi
-        
+
         # Validate minor version format
         if [[ ! "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
           echo "❌ Minor version must be in format X.Y (e.g., 0.1, 1.2)"
           exit 1
         fi
-        
+
         # Check if policy directory exists in docs/
         DOCS_POLICY_DIR="docs/$POLICY_NAME"
         if [[ ! -d "$DOCS_POLICY_DIR" ]]; then
@@ -145,7 +91,7 @@ jobs:
           ls -1 docs/
           exit 1
         fi
-        
+
         # Check if version directory exists
         VERSION_DIR="$DOCS_POLICY_DIR/v$MINOR_VERSION"
         if [[ ! -d "$VERSION_DIR" ]]; then
@@ -154,28 +100,28 @@ jobs:
           ls -1 "$DOCS_POLICY_DIR/" 2>/dev/null || echo "No versions found"
           exit 1
         fi
-        
+
         # Check if policies directory exists
         POLICIES_DIR="policies/$POLICY_NAME"
         if [[ ! -d "$POLICIES_DIR" ]]; then
           echo "❌ Policy directory not found in policies/: $POLICIES_DIR"
           exit 1
         fi
-        
+
         echo "✅ Policy validation passed"
         echo "POLICY_NAME=$POLICY_NAME" >> $GITHUB_ENV
         echo "MINOR_VERSION=$MINOR_VERSION" >> $GITHUB_ENV
         echo "VERSION_DIR=$VERSION_DIR" >> $GITHUB_ENV
         echo "POLICIES_DIR=$POLICIES_DIR" >> $GITHUB_ENV
-      
+
     - name: Setup Node.js for JSON validation
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-        
+
     - name: Install jq for JSON processing
       run: sudo apt-get update && sudo apt-get install -y jq
-      
+
     - name: Validate API configuration
       id: api-config
       env:
@@ -187,28 +133,28 @@ jobs:
           echo "Go to: Settings → Environments → [environment] → Environment variables"
           exit 1
         fi
-        
+
         echo "✅ API configuration validated"
         echo "API_URL=$POLICY_HUB_URL" >> $GITHUB_ENV
-        
+
     - name: Parse and validate metadata.json
       run: |
         set -euo pipefail
         METADATA_FILE="$VERSION_DIR/metadata.json"
-        
+
         # Check if metadata.json exists
         if [[ ! -f "$METADATA_FILE" ]]; then
           echo "❌ metadata.json not found: $METADATA_FILE"
           exit 1
         fi
-        
+
         # Validate JSON syntax
         if ! jq empty "$METADATA_FILE" 2>/dev/null; then
           echo "❌ Invalid JSON in metadata.json"
           cat "$METADATA_FILE"
           exit 1
         fi
-        
+
         # Extract and validate required fields
         name=$(jq -r '.name // empty' "$METADATA_FILE")
         version=$(jq -r '.version // empty' "$METADATA_FILE")
@@ -216,61 +162,61 @@ jobs:
         provider=$(jq -r '.provider // empty' "$METADATA_FILE")
         categories=$(jq -r '.categories // empty' "$METADATA_FILE")
         description=$(jq -r '.description // empty' "$METADATA_FILE")
-        
+
         # Check required fields
         if [[ -z "$name" ]]; then
           echo "❌ Missing 'name' field in metadata.json"
           exit 1
         fi
-        
+
         if [[ -z "$version" ]]; then
           echo "❌ Missing 'version' field in metadata.json"
           exit 1
         fi
-        
+
         if [[ -z "$displayName" ]]; then
           echo "❌ Missing 'displayName' field in metadata.json"
           exit 1
         fi
-        
+
         if [[ -z "$provider" ]]; then
           echo "❌ Missing 'provider' field in metadata.json"
           exit 1
         fi
-        
+
         if [[ -z "$categories" || "$categories" == "null" ]]; then
           echo "❌ Missing 'categories' field in metadata.json"
           exit 1
         fi
-        
+
         if [[ -z "$description" ]]; then
           echo "❌ Missing 'description' field in metadata.json"
           exit 1
         fi
-        
+
         # Validate that .categories is a non-empty array
         if ! jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null; then
           echo "❌ 'categories' must be a non-empty array in metadata.json"
           exit 1
         fi
-        
+
         # Validate that name matches input
         if [[ "$name" != "$POLICY_NAME" ]]; then
           echo "❌ Policy name mismatch: metadata.json has '$name', but input is '$POLICY_NAME'"
           exit 1
         fi
-        
+
         # Validate that version matches input (remove 'v' prefix if present)
         metadata_version=${version#v}
         if [[ "$metadata_version" != "$MINOR_VERSION" ]]; then
           echo "❌ Version mismatch: metadata.json has '$version', but input is '$MINOR_VERSION'"
           exit 1
         fi
-        
+
         # Validate categories against predefined list
         # Convert multi-line categories to array
         readarray -t PREDEFINED_CATS <<< "$PREDEFINED_CATEGORIES"
-        
+
         # Remove empty lines and trim whitespace
         declare -a CLEAN_CATS
         for cat in "${PREDEFINED_CATS[@]}"; do
@@ -279,11 +225,11 @@ jobs:
             CLEAN_CATS+=("$cat")
           fi
         done
-        
+
         # Check each category in metadata
         while IFS= read -r category; do
           category=$(echo "$category" | tr -d '"' | xargs) # Remove quotes and whitespace
-          
+
           # Check if category is in predefined list
           category_found=false
           for predefined_cat in "${CLEAN_CATS[@]}"; do
@@ -292,7 +238,7 @@ jobs:
               break
             fi
           done
-          
+
           if [[ "$category_found" == false ]]; then
             echo "❌ Invalid category '$category' in metadata.json"
             echo "Valid categories are:"
@@ -300,18 +246,18 @@ jobs:
             exit 1
           fi
         done < <(jq -r '.categories[]' "$METADATA_FILE")
-        
+
         echo "✅ Metadata validation passed"
         echo "METADATA_NAME=$name" >> $GITHUB_ENV
         echo "METADATA_VERSION=$metadata_version" >> $GITHUB_ENV
-        
+
     - name: Create policy package
       run: |
         # Create temporary directory for packaging
         TEMP_DIR=$(mktemp -d)
         PACKAGE_DIR="$TEMP_DIR/package"
         mkdir -p "$PACKAGE_DIR"
-        
+
         # Copy docs folder if it exists
         DOCS_SOURCE="$VERSION_DIR/docs"
         if [[ -d "$DOCS_SOURCE" ]]; then
@@ -321,7 +267,7 @@ jobs:
           echo "❌ docs folder not found: $DOCS_SOURCE"
           exit 1
         fi
-        
+
         # Copy assets folder if it exists
         ASSETS_SOURCE="$VERSION_DIR/assets"
         if [[ -d "$ASSETS_SOURCE" ]]; then
@@ -330,46 +276,46 @@ jobs:
         else
           echo "ℹ️  No assets folder found (optional)"
         fi
-        
+
         # Create zip file
         ZIP_NAME="${METADATA_NAME}-${METADATA_VERSION}.zip"
         ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
-        
+
         cd "$PACKAGE_DIR"
         zip -r "$ZIP_PATH" . -x "*.DS_Store"
         cd "$GITHUB_WORKSPACE"
-        
+
         # Verify zip was created
         if [[ ! -f "$ZIP_PATH" ]]; then
           echo "❌ Failed to create zip file: $ZIP_PATH"
           exit 1
         fi
-        
+
         echo "✅ Created policy package: $ZIP_PATH"
         echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
         echo "TEMP_DIR=$TEMP_DIR" >> $GITHUB_ENV
-        
+
     - name: Publish policy
       env:
         POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
       run: |
         # Build curl args array safely
         curl_args=("-s" "-w" "%{http_code}" "-o" "response.txt" "-X" "POST" "--max-time" "30" "--connect-timeout" "10" "$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION")
-        
+
         # Add authentication header if token is provided
         if [[ -n "${POLICY_HUB_TOKEN:-}" ]]; then
           curl_args+=("-H" "api-key: $POLICY_HUB_TOKEN")
         fi
-        
+
         # Add form fields
         curl_args+=("-F" "metadata=@$VERSION_DIR/metadata.json;type=application/json")
         curl_args+=("-F" "docs=@$GITHUB_WORKSPACE/$ZIP_NAME")
-        
+
         # Execute the curl command safely
         HTTP_STATUS=$(curl "${curl_args[@]}")
-        
+
         echo "HTTP Status: $HTTP_STATUS"
-        
+
         # Show response
         echo "📨 API Response:"
         if [[ -f response.txt ]]; then
@@ -378,7 +324,7 @@ jobs:
           echo "No response file found"
         fi
         echo
-        
+
         # Check if request was successful
         if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
           echo "✅ Policy published successfully!"
@@ -386,7 +332,7 @@ jobs:
           echo "❌ Policy publishing failed with HTTP status: $HTTP_STATUS"
           exit 1
         fi
-        
+
     - name: Cleanup
       if: always()
       run: |
@@ -401,13 +347,33 @@ jobs:
           rm -f response.txt
         fi
         echo "🧹 Cleanup completed"
-        
-    - name: Summary
+
+    - name: Comment success and close issue
       if: success()
-      run: |
-        echo "🎉 Policy Publishing Summary"
-        echo "=========================="
-        echo "Policy Name: $METADATA_NAME"
-        echo "Version: $METADATA_VERSION"
-        echo "Status: ✅ Successfully Published"
-        echo "API Endpoint: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `✅ Published **${process.env.METADATA_NAME}** v${process.env.METADATA_VERSION} to the Policy Hub.\n\n[View workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+          });
+          await github.rest.issues.update({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            state: 'closed'
+          });
+
+    - name: Comment failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `❌ Publish failed. See the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`
+          });
