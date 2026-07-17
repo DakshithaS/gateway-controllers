@@ -70,10 +70,6 @@ jobs:
           echo "**Error:** Policy directory not found" >> $GITHUB_STEP_SUMMARY
           echo "**Missing:** \`$DOCS_POLICY_DIR\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Available policies:**" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          ls -1 docs/ >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
