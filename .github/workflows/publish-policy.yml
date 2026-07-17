@@ -27,7 +27,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       
     - name: Validate inputs and policy existence
       run: |
@@ -40,17 +40,25 @@ jobs:
         # Validate policy name: only letters, numbers, hyphen, underscore; no slashes or traversal
         if [[ -z "$POLICY_NAME" ]]; then
           echo "❌ Policy name is required"
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Policy name is required" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
         if [[ ! "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
           echo "❌ Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters)"
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Policy name must contain only letters, numbers, hyphens, and underscores" >> $GITHUB_STEP_SUMMARY
+          echo "**Invalid name:** \`$POLICY_NAME\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
         # Validate minor version format
         if [[ ! "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
           echo "❌ Minor version must be in format X.Y (e.g., 0.1, 1.2)"
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Minor version must be in format X.Y (e.g., 0.1, 1.2)" >> $GITHUB_STEP_SUMMARY
+          echo "**Invalid version:** \`$MINOR_VERSION\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -58,8 +66,14 @@ jobs:
         DOCS_POLICY_DIR="docs/$POLICY_NAME"
         if [[ ! -d "$DOCS_POLICY_DIR" ]]; then
           echo "❌ Policy directory not found in docs/: $DOCS_POLICY_DIR"
-          echo "Available policies:"
-          ls -1 docs/
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Policy directory not found" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing:** \`$DOCS_POLICY_DIR\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Available policies:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -1 docs/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -67,8 +81,14 @@ jobs:
         VERSION_DIR="$DOCS_POLICY_DIR/v$MINOR_VERSION"
         if [[ ! -d "$VERSION_DIR" ]]; then
           echo "❌ Version directory not found: $VERSION_DIR"
-          echo "Available versions for $POLICY_NAME:"
-          ls -1 "$DOCS_POLICY_DIR/" 2>/dev/null || echo "No versions found"
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Version directory not found" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing:** \`$VERSION_DIR\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Available versions for $POLICY_NAME:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -1 "$DOCS_POLICY_DIR/" 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "No versions found" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -76,6 +96,9 @@ jobs:
         POLICIES_DIR="policies/$POLICY_NAME"
         if [[ ! -d "$POLICIES_DIR" ]]; then
           echo "❌ Policy directory not found in policies/: $POLICIES_DIR"
+          echo "## ❌ Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Policy directory not found in policies/" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing:** \`$POLICIES_DIR\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -86,9 +109,9 @@ jobs:
         echo "POLICIES_DIR=$POLICIES_DIR" >> $GITHUB_ENV
       
     - name: Setup Node.js for JSON validation
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '20'
+        node-version: '24'
         
     - name: Install jq for JSON processing
       run: sudo apt-get update && sudo apt-get install -y jq
@@ -100,8 +123,13 @@ jobs:
       run: |
         if [[ -z "${POLICY_HUB_URL:-}" ]]; then
           echo "❌ Missing POLICY_HUB_URL environment variable"
-          echo "Please configure POLICY_HUB_URL in repository environment variables"
-          echo "Go to: Settings → Environments → [environment] → Environment variables"
+          echo "## ❌ Configuration Error" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Missing POLICY_HUB_URL environment variable" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**To fix this:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to repository Settings → Environments" >> $GITHUB_STEP_SUMMARY
+          echo "2. Select the \`${{ github.event.inputs.environment }}\` environment" >> $GITHUB_STEP_SUMMARY
+          echo "3. Add a variable named \`POLICY_HUB_URL\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -135,45 +163,43 @@ jobs:
         description=$(jq -r '.description // empty' "$METADATA_FILE")
         
         # Check required fields
-        if [[ -z "$name" ]]; then
-          echo "❌ Missing 'name' field in metadata.json"
-          exit 1
-        fi
+        MISSING_FIELDS=()
+        [[ -z "$name" ]] && MISSING_FIELDS+=("name")
+        [[ -z "$version" ]] && MISSING_FIELDS+=("version")
+        [[ -z "$displayName" ]] && MISSING_FIELDS+=("displayName")
+        [[ -z "$provider" ]] && MISSING_FIELDS+=("provider")
+        [[ -z "$categories" || "$categories" == "null" ]] && MISSING_FIELDS+=("categories")
+        [[ -z "$description" ]] && MISSING_FIELDS+=("description")
         
-        if [[ -z "$version" ]]; then
-          echo "❌ Missing 'version' field in metadata.json"
-          exit 1
-        fi
-        
-        if [[ -z "$displayName" ]]; then
-          echo "❌ Missing 'displayName' field in metadata.json"
-          exit 1
-        fi
-        
-        if [[ -z "$provider" ]]; then
-          echo "❌ Missing 'provider' field in metadata.json"
-          exit 1
-        fi
-        
-        if [[ -z "$categories" || "$categories" == "null" ]]; then
-          echo "❌ Missing 'categories' field in metadata.json"
-          exit 1
-        fi
-        
-        if [[ -z "$description" ]]; then
-          echo "❌ Missing 'description' field in metadata.json"
+        if [[ ${#MISSING_FIELDS[@]} -gt 0 ]]; then
+          echo "❌ Missing required fields in metadata.json"
+          echo "## ❌ Metadata Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Missing required fields in metadata.json" >> $GITHUB_STEP_SUMMARY
+          echo "**File:** \`$METADATA_FILE\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Missing fields:**" >> $GITHUB_STEP_SUMMARY
+          for field in "${MISSING_FIELDS[@]}"; do
+            echo "- \`$field\`" >> $GITHUB_STEP_SUMMARY
+          done
           exit 1
         fi
         
         # Validate that .categories is a non-empty array
         if ! jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null; then
           echo "❌ 'categories' must be a non-empty array in metadata.json"
+          echo "## ❌ Metadata Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** 'categories' must be a non-empty array" >> $GITHUB_STEP_SUMMARY
+          echo "**File:** \`$METADATA_FILE\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
         # Validate that name matches input
         if [[ "$name" != "$POLICY_NAME" ]]; then
           echo "❌ Policy name mismatch: metadata.json has '$name', but input is '$POLICY_NAME'"
+          echo "## ❌ Metadata Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Policy name mismatch" >> $GITHUB_STEP_SUMMARY
+          echo "- **In metadata.json:** \`$name\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **In workflow input:** \`$POLICY_NAME\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -181,6 +207,10 @@ jobs:
         metadata_version=${version#v}
         if [[ "$metadata_version" != "$MINOR_VERSION" ]]; then
           echo "❌ Version mismatch: metadata.json has '$version', but input is '$MINOR_VERSION'"
+          echo "## ❌ Metadata Validation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** Version mismatch" >> $GITHUB_STEP_SUMMARY
+          echo "- **In metadata.json:** \`$version\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **In workflow input:** \`$MINOR_VERSION\`" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -256,20 +286,36 @@ jobs:
         
         echo "HTTP Status: $HTTP_STATUS"
         
-        # Show response
-        echo "📨 API Response:"
+        # Read response
         if [[ -f response.txt ]]; then
-          cat response.txt
+          RESPONSE_BODY=$(cat response.txt)
         else
-          echo "No response file found"
+          RESPONSE_BODY="No response file found"
         fi
+        
+        # Show response in logs
+        echo "📨 API Response:"
+        echo "$RESPONSE_BODY"
         echo
+        
+        # Add to summary
+        echo "## 📡 API Response" >> $GITHUB_STEP_SUMMARY
+        echo "**Endpoint:** \`POST $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION\`" >> $GITHUB_STEP_SUMMARY
+        echo "**HTTP Status:** \`$HTTP_STATUS\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Response Body:**" >> $GITHUB_STEP_SUMMARY
+        echo '```json' >> $GITHUB_STEP_SUMMARY
+        echo "$RESPONSE_BODY" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         
         # Check if request was successful
         if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
           echo "✅ Policy published successfully!"
+          echo "### ✅ Success" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ Policy publishing failed with HTTP status: $HTTP_STATUS"
+          echo "### ❌ Failed" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -297,3 +343,13 @@ jobs:
         echo "Version: $METADATA_VERSION"
         echo "Status: ✅ Successfully Published"
         echo "API Endpoint: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
+        
+        # Add final summary
+        echo "## 🎉 Policy Published Successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| **Policy Name** | \`$METADATA_NAME\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Version** | \`$METADATA_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Environment** | \`${{ github.event.inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **API Endpoint** | \`$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION\` |" >> $GITHUB_STEP_SUMMARY
