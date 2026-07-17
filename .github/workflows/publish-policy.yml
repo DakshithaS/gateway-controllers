@@ -3,6 +3,14 @@ name: Publish Policy
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Environment to publish to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
       policy_name:
         description: 'Name of the policy to publish'
         required: true
@@ -12,20 +20,10 @@ on:
         required: true
         type: string
 
-env:
-  # Predefined policy categories - Add new categories here
-  PREDEFINED_CATEGORIES: |
-    Security
-    Analytics & Monitoring
-    Transformation
-    Logging
-    AI
-    MCP
-    Guardrails
-
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
     
     steps:
     - name: Checkout code
@@ -186,40 +184,6 @@ jobs:
           exit 1
         fi
         
-        # Validate categories against predefined list
-        # Convert multi-line categories to array
-        readarray -t PREDEFINED_CATS <<< "$PREDEFINED_CATEGORIES"
-        
-        # Remove empty lines and trim whitespace
-        declare -a CLEAN_CATS
-        for cat in "${PREDEFINED_CATS[@]}"; do
-          cat=$(echo "$cat" | xargs)
-          if [[ -n "$cat" ]]; then
-            CLEAN_CATS+=("$cat")
-          fi
-        done
-        
-        # Check each category in metadata
-        while IFS= read -r category; do
-          category=$(echo "$category" | tr -d '"' | xargs) # Remove quotes and whitespace
-          
-          # Check if category is in predefined list
-          category_found=false
-          for predefined_cat in "${CLEAN_CATS[@]}"; do
-            if [[ "$category" == "$predefined_cat" ]]; then
-              category_found=true
-              break
-            fi
-          done
-          
-          if [[ "$category_found" == false ]]; then
-            echo "❌ Invalid category '$category' in metadata.json"
-            echo "Valid categories are:"
-            printf '  - %s\n' "${CLEAN_CATS[@]}"
-            exit 1
-          fi
-        done < <(jq -r '.categories[]' "$METADATA_FILE")
-        
         echo "✅ Metadata validation passed"
         echo "METADATA_NAME=$name" >> $GITHUB_ENV
         echo "METADATA_VERSION=$metadata_version" >> $GITHUB_ENV
@@ -272,6 +236,9 @@ jobs:
       env:
         POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
       run: |
+        # Read metadata.json content
+        METADATA_CONTENT=$(cat "$VERSION_DIR/metadata.json")
+        
         # Build curl args array safely
         curl_args=("-s" "-w" "%{http_code}" "-o" "response.txt" "-X" "POST" "--max-time" "30" "--connect-timeout" "10" "$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION")
         
@@ -281,7 +248,7 @@ jobs:
         fi
         
         # Add form fields
-        curl_args+=("-F" "metadata=@$VERSION_DIR/metadata.json;type=application/json")
+        curl_args+=("--form-string" "metadata=$METADATA_CONTENT")
         curl_args+=("-F" "docs=@$GITHUB_WORKSPACE/$ZIP_NAME")
         
         # Execute the curl command safely
