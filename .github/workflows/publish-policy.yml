@@ -298,24 +298,24 @@ jobs:
         echo "$RESPONSE_BODY"
         echo
         
-        # Add to summary
-        echo "## 📡 API Response" >> $GITHUB_STEP_SUMMARY
-        echo "**Endpoint:** \`POST $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION\`" >> $GITHUB_STEP_SUMMARY
-        echo "**HTTP Status:** \`$HTTP_STATUS\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Response Body:**" >> $GITHUB_STEP_SUMMARY
-        echo '```json' >> $GITHUB_STEP_SUMMARY
-        echo "$RESPONSE_BODY" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
         # Check if request was successful
         if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
           echo "✅ Policy published successfully!"
-          echo "### ✅ Success" >> $GITHUB_STEP_SUMMARY
+          
+          # Extract status from response
+          PUBLISH_STATUS=$(echo "$RESPONSE_BODY" | jq -r '.data.status // "published"' 2>/dev/null || echo "published")
+          echo "PUBLISH_STATUS=$PUBLISH_STATUS" >> $GITHUB_ENV
         else
           echo "❌ Policy publishing failed with HTTP status: $HTTP_STATUS"
-          echo "### ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          
+          # Add error details to summary
+          echo "## ❌ Publishing Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**HTTP Status:** \`$HTTP_STATUS\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Error Response:**" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "$RESPONSE_BODY" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
@@ -342,7 +342,6 @@ jobs:
         echo "Policy Name: $METADATA_NAME"
         echo "Version: $METADATA_VERSION"
         echo "Status: ✅ Successfully Published"
-        echo "API Endpoint: $API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
         
         # Add final summary
         echo "## 🎉 Policy Published Successfully" >> $GITHUB_STEP_SUMMARY
@@ -352,4 +351,4 @@ jobs:
         echo "| **Policy Name** | \`$METADATA_NAME\` |" >> $GITHUB_STEP_SUMMARY
         echo "| **Version** | \`$METADATA_VERSION\` |" >> $GITHUB_STEP_SUMMARY
         echo "| **Environment** | \`${{ github.event.inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| **API Endpoint** | \`$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Status** | \`$PUBLISH_STATUS\` |" >> $GITHUB_STEP_SUMMARY
