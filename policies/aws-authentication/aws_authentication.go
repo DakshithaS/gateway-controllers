@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -44,11 +45,22 @@ const (
 	AuthTypeSTSAssumeRole = "sts-assume-role"
 	// AuthTypeIAMUserAccessKey selects static, long-lived IAM user credentials.
 	AuthTypeIAMUserAccessKey = "iam-user-access-key"
+	// AuthTypeIRSA selects temporary credentials obtained via AWS STS
+	// AssumeRoleWithWebIdentity, using a Kubernetes projected service account
+	// token — the mechanism behind EKS IAM Roles for Service Accounts (IRSA).
+	AuthTypeIRSA = "irsa"
 
 	// AuthType is the AuthContext.AuthType value recorded by this policy.
 	AuthType = "aws-sigv4"
 
 	defaultRoleSessionName = "aws-authentication-session"
+
+	// envRoleARN and envWebIdentityTokenFile are the environment variables the
+	// EKS Pod Identity Webhook injects into a pod whose ServiceAccount is
+	// annotated with "eks.amazonaws.com/role-arn". They provide IRSA defaults
+	// when the corresponding policy params are not set.
+	envRoleARN              = "AWS_ROLE_ARN"
+	envWebIdentityTokenFile = "AWS_WEB_IDENTITY_TOKEN_FILE"
 
 	// emptyPayloadHash is the well-known SigV4 payload hash of an empty body.
 	emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -195,8 +207,8 @@ func validateAndExtractCredentialParams(params map[string]interface{}) (authType
 	if err != nil {
 		return "", credentialFields{}, err
 	}
-	if authType != AuthTypeSTSAssumeRole && authType != AuthTypeIAMUserAccessKey {
-		return "", credentialFields{}, fmt.Errorf("'authenticationType' must be one of %q, %q", AuthTypeSTSAssumeRole, AuthTypeIAMUserAccessKey)
+	if authType != AuthTypeSTSAssumeRole && authType != AuthTypeIAMUserAccessKey && authType != AuthTypeIRSA {
+		return "", credentialFields{}, fmt.Errorf("'authenticationType' must be one of %q, %q, %q", AuthTypeSTSAssumeRole, AuthTypeIAMUserAccessKey, AuthTypeIRSA)
 	}
 
 	creds = credentialFields{
@@ -229,6 +241,16 @@ func validateAndExtractCredentialParams(params map[string]interface{}) (authType
 		if creds.secretAccessKey != "" && creds.accessKeyID == "" {
 			return "", credentialFields{}, fmt.Errorf("'awsAccessKeyID' is required when 'awsSecretAccessKey' is set")
 		}
+	case AuthTypeIRSA:
+		// awsRoleARN is intentionally not required here: on EKS, the Pod
+		// Identity Webhook injects AWS_ROLE_ARN into the pod automatically once
+		// its ServiceAccount carries the "eks.amazonaws.com/role-arn"
+		// annotation, so the param is commonly left unset.
+		// buildWebIdentityCredentialsProvider falls back to that environment
+		// variable and fails there if neither source supplies a value. The
+		// web identity token file path is never taken from a param — it is
+		// always read from AWS_WEB_IDENTITY_TOKEN_FILE, which the same webhook
+		// injects alongside AWS_ROLE_ARN.
 	}
 	return authType, creds, nil
 }
@@ -244,6 +266,8 @@ func buildCredentialsProvider(ctx context.Context, authType string, creds creden
 		return credentials.NewStaticCredentialsProvider(creds.accessKeyID, creds.secretAccessKey, creds.sessionToken), nil
 	case AuthTypeSTSAssumeRole:
 		return buildAssumeRoleCredentialsProvider(ctx, creds, region)
+	case AuthTypeIRSA:
+		return buildWebIdentityCredentialsProvider(creds, region)
 	default:
 		return nil, fmt.Errorf("unsupported authenticationType %q", authType)
 	}
@@ -282,6 +306,54 @@ func buildAssumeRoleCredentialsProvider(ctx context.Context, creds credentialFie
 	slog.Debug("AWSAuthentication: STS AssumeRole credentials provider ready", "roleARN", creds.roleARN)
 
 	return aws.NewCredentialsCache(assumeRoleProvider), nil
+}
+
+// buildWebIdentityCredentialsProvider builds a credentials provider that
+// calls AWS STS AssumeRoleWithWebIdentity using a Kubernetes projected
+// service account token — the mechanism EKS calls IAM Roles for Service
+// Accounts (IRSA) — and caches the resulting temporary credentials until
+// they are close to expiry, refreshing automatically thereafter.
+//
+// The awsRoleARN param takes precedence when set; if empty, this falls back
+// to the AWS_ROLE_ARN environment variable that the EKS Pod Identity Webhook
+// injects automatically for a ServiceAccount annotated with
+// "eks.amazonaws.com/role-arn". The web identity token file path is never
+// taken from a policy param — since the gateway always runs as a Kubernetes
+// workload for this mode, it is always read from the AWS_WEB_IDENTITY_TOKEN_FILE
+// environment variable the same webhook injects alongside AWS_ROLE_ARN. If
+// either environment variable is missing, IRSA is not available in the
+// current environment (e.g. the gateway is not running on a cluster with
+// that trust configured) and this returns an error rather than silently
+// falling back to some other credential source.
+//
+// AssumeRoleWithWebIdentity does not itself require caller credentials to
+// invoke, so the STS client here is built from a bare region-only config
+// rather than the full default credential chain used for sts-assume-role.
+func buildWebIdentityCredentialsProvider(creds credentialFields, region string) (aws.CredentialsProvider, error) {
+	roleARN := creds.roleARN
+	if roleARN == "" {
+		roleARN = strings.TrimSpace(os.Getenv(envRoleARN))
+	}
+	if roleARN == "" {
+		return nil, fmt.Errorf("'awsRoleARN' is required when authenticationType is %q and the %s environment variable is not set", AuthTypeIRSA, envRoleARN)
+	}
+
+	tokenFile := strings.TrimSpace(os.Getenv(envWebIdentityTokenFile))
+	if tokenFile == "" {
+		return nil, fmt.Errorf("authenticationType %q requires the %s environment variable, which is normally injected by the EKS Pod Identity Webhook", AuthTypeIRSA, envWebIdentityTokenFile)
+	}
+
+	slog.Debug("AWSAuthentication: building STS AssumeRoleWithWebIdentity (IRSA) credentials provider",
+		"roleARN", roleARN, "roleSessionName", creds.roleSessionName, "webIdentityTokenFile", tokenFile, "region", region)
+
+	stsClient := sts.NewFromConfig(aws.Config{Region: region})
+	webIdentityProvider := stscreds.NewWebIdentityRoleProvider(stsClient, roleARN, stscreds.IdentityTokenFile(tokenFile), func(o *stscreds.WebIdentityRoleOptions) {
+		o.RoleSessionName = creds.roleSessionName
+	})
+
+	slog.Debug("AWSAuthentication: STS AssumeRoleWithWebIdentity (IRSA) credentials provider ready", "roleARN", roleARN)
+
+	return aws.NewCredentialsCache(webIdentityProvider), nil
 }
 
 // OnRequestBody signs the outbound request with AWS SigV4 before it is

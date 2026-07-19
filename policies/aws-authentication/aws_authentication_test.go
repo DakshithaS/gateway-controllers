@@ -52,6 +52,15 @@ func validAssumeRoleParams() map[string]interface{} {
 	}
 }
 
+func validIRSAParams() map[string]interface{} {
+	return map[string]interface{}{
+		"service":            "execute-api",
+		"region":             "us-east-1",
+		"authenticationType": AuthTypeIRSA,
+		"awsRoleARN":         "arn:aws:iam::123456789012:role/example-irsa-role",
+	}
+}
+
 func newRequestBodyCtx(headers map[string][]string, body []byte) *policy.RequestContext {
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{},
@@ -167,6 +176,69 @@ func TestGetPolicy_MissingRegion(t *testing.T) {
 	delete(params, "region")
 	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
 		t.Fatal("expected error for missing region")
+	}
+}
+
+// ─── GetPolicy validation: IRSA ─────────────────────────────────────────────
+
+func TestGetPolicy_ValidIRSA(t *testing.T) {
+	t.Setenv(envWebIdentityTokenFile, "/tmp/does-not-need-to-exist-yet")
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, validIRSAParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ap := p.(*AWSAuthenticationPolicy)
+	if ap.credsProvider == nil {
+		t.Error("expected credsProvider to be set")
+	}
+}
+
+func TestGetPolicy_IRSA_MissingRoleARN_NoEnvFallback(t *testing.T) {
+	t.Setenv(envRoleARN, "")
+	t.Setenv(envWebIdentityTokenFile, "/tmp/token")
+	params := validIRSAParams()
+	delete(params, "awsRoleARN")
+	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
+		t.Fatal("expected error when awsRoleARN is missing and AWS_ROLE_ARN is unset")
+	}
+}
+
+func TestGetPolicy_IRSA_MissingRoleARN_FallsBackToEnvVar(t *testing.T) {
+	t.Setenv(envRoleARN, "arn:aws:iam::123456789012:role/env-role")
+	t.Setenv(envWebIdentityTokenFile, "/tmp/token")
+	params := validIRSAParams()
+	delete(params, "awsRoleARN")
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.(*AWSAuthenticationPolicy).credsProvider == nil {
+		t.Error("expected credsProvider to be set")
+	}
+}
+
+func TestGetPolicy_IRSA_MissingWebIdentityTokenFileEnvVar(t *testing.T) {
+	t.Setenv(envWebIdentityTokenFile, "")
+	if _, err := GetPolicy(policy.PolicyMetadata{}, validIRSAParams()); err == nil {
+		t.Fatal("expected error when AWS_WEB_IDENTITY_TOKEN_FILE is unset")
+	}
+}
+
+func TestBuildWebIdentityCredentialsProvider_RoleARNParamTakesPrecedenceOverEnv(t *testing.T) {
+	t.Setenv(envRoleARN, "arn:aws:iam::123456789012:role/env-role")
+	t.Setenv(envWebIdentityTokenFile, "/tmp/token-from-env")
+
+	creds := credentialFields{
+		roleARN:         "arn:aws:iam::123456789012:role/param-role",
+		roleSessionName: defaultRoleSessionName,
+	}
+	provider, err := buildWebIdentityCredentialsProvider(creds, "us-east-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider == nil {
+		t.Error("expected a non-nil credentials provider")
 	}
 }
 
