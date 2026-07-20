@@ -489,6 +489,10 @@ func TestJWTAuthPolicy_Edge_JWKSCacheExpiry_Refetches(t *testing.T) {
 
 	params := newRemoteParams(jwksServer.URL + "/jwks.json")
 	params["jwksCacheTtl"] = "15ms"
+	// Disable the token verdict cache so the second identical request re-verifies the
+	// signature (and therefore re-fetches JWKS) instead of being served from cache — this
+	// test is specifically exercising JWKS-level cache expiry, not token-verdict caching.
+	params["tokenCaching"] = false
 
 	token := createTestToken(t, privateKey, map[string]interface{}{
 		"sub": "user-123",
@@ -908,12 +912,14 @@ func resetJWTAuthSingletonCache(t *testing.T) {
 	ins.cacheStore = make(map[string]*CachedJWKS)
 	ins.cacheTTLs = make(map[string]time.Time)
 	ins.cacheMutex.Unlock()
+	_ = ins.currentTokenCache().Clear(context.Background())
 
 	t.Cleanup(func() {
 		ins.cacheMutex.Lock()
 		ins.cacheStore = make(map[string]*CachedJWKS)
 		ins.cacheTTLs = make(map[string]time.Time)
 		ins.cacheMutex.Unlock()
+		_ = ins.currentTokenCache().Clear(context.Background())
 	})
 }
 
