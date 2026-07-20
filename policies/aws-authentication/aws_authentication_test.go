@@ -61,6 +61,14 @@ func validIRSAParams() map[string]interface{} {
 	}
 }
 
+func validDefaultCredentialChainParams() map[string]interface{} {
+	return map[string]interface{}{
+		"service":            "execute-api",
+		"region":             "us-east-1",
+		"authenticationType": AuthTypeDefaultCredentialChain,
+	}
+}
+
 func newRequestBodyCtx(headers map[string][]string, body []byte) *policy.RequestContext {
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{},
@@ -239,6 +247,28 @@ func TestBuildWebIdentityCredentialsProvider_RoleARNParamTakesPrecedenceOverEnv(
 	}
 	if provider == nil {
 		t.Error("expected a non-nil credentials provider")
+	}
+}
+
+// ─── GetPolicy validation: default credential chain ────────────────────────
+
+func TestGetPolicy_ValidDefaultCredentialChain(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, validDefaultCredentialChainParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ap := p.(*AWSAuthenticationPolicy)
+	if ap.credsProvider == nil {
+		t.Error("expected credsProvider to be set")
+	}
+}
+
+func TestGetPolicy_DefaultCredentialChain_NoCredentialFieldsRequired(t *testing.T) {
+	params := validDefaultCredentialChainParams()
+	// Deliberately no awsRoleARN, awsAccessKeyID, awsSecretAccessKey, etc. set —
+	// this mode must not require any of them.
+	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -2,11 +2,15 @@ name: aws-authentication
 version: v0.10.0
 description: |
   Signs outbound requests to AWS-hosted backends using AWS Signature Version 4
-  (SigV4) before they are forwarded upstream. Supports three credential-acquisition
+  (SigV4) before they are forwarded upstream. Supports four credential-acquisition
   modes: assuming an IAM role via AWS STS (sts-assume-role), using a static IAM
-  user access key/secret pair (iam-user-access-key), or IAM Roles for Service
+  user access key/secret pair (iam-user-access-key), IAM Roles for Service
   Accounts (irsa) on Kubernetes clusters with AWS OIDC federation configured
-  (e.g. EKS).
+  (e.g. EKS), or resolving credentials directly from the AWS SDK's default
+  credential provider chain with no AssumeRole call and no static keys
+  (default-credential-chain), for compute that already runs under the target
+  IAM role (EC2 instance profile, ECS task role, Lambda execution role, or an
+  EKS Pod Identity association).
 
 parameters:
   type: object
@@ -38,11 +42,18 @@ parameters:
         "irsa" calls AWS STS AssumeRoleWithWebIdentity using a Kubernetes
         projected service account token (IAM Roles for Service Accounts);
         only usable when the gateway runs on a Kubernetes cluster federated
-        with AWS IAM via OIDC, such as EKS.
+        with AWS IAM via OIDC, such as EKS. "default-credential-chain" signs
+        directly with credentials resolved from the AWS SDK's default
+        credential provider chain (environment variables, shared config
+        files, EC2 instance profile, ECS task role, Lambda execution role, or
+        an EKS Pod Identity association) — no AssumeRole call and no static
+        keys configured on the API at all; use this when the gateway's own
+        compute environment already runs under the exact IAM role needed.
       enum:
         - sts-assume-role
         - iam-user-access-key
         - irsa
+        - default-credential-chain
     awsAccessKeyID:
       type: string
       x-wso2-policy-advanced-param: true
@@ -75,7 +86,8 @@ parameters:
         "sts-assume-role". For "irsa", this is optional: if omitted, it falls
         back to the AWS_ROLE_ARN environment variable that the EKS Pod
         Identity Webhook injects automatically for a ServiceAccount annotated
-        with "eks.amazonaws.com/role-arn".
+        with "eks.amazonaws.com/role-arn". Not applicable to
+        "default-credential-chain", which never assumes a role.
     awsRoleExternalID:
       type: string
       x-wso2-policy-advanced-param: true
@@ -93,7 +105,8 @@ parameters:
       description: |
         Optional session name used when assuming the role. Defaults to
         "aws-authentication-session". Applicable for "sts-assume-role" and
-        "irsa".
+        "irsa". Not applicable to "default-credential-chain", which never
+        assumes a role.
   required:
     - service
     - region

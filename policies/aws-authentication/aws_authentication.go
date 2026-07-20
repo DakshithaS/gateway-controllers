@@ -49,6 +49,18 @@ const (
 	// AssumeRoleWithWebIdentity, using a Kubernetes projected service account
 	// token — the mechanism behind EKS IAM Roles for Service Accounts (IRSA).
 	AuthTypeIRSA = "irsa"
+	// AuthTypeDefaultCredentialChain selects credentials resolved directly
+	// from the AWS SDK's default credential provider chain (environment
+	// variables, shared config/credentials files, EC2 instance profile, ECS
+	// task role, Lambda execution role, or an EKS Pod Identity association) —
+	// no AssumeRole call and no static keys configured anywhere in policy
+	// params. Use this when the gateway itself already runs under the exact
+	// IAM role/permissions needed to sign requests to the target AWS
+	// service, unlike sts-assume-role (which always performs an extra
+	// AssumeRole hop onto a different role) or irsa (the older
+	// AssumeRoleWithWebIdentity + OIDC federation mechanism specific to
+	// ServiceAccount-scoped EKS workloads).
+	AuthTypeDefaultCredentialChain = "default-credential-chain"
 
 	// AuthType is the AuthContext.AuthType value recorded by this policy.
 	AuthType = "aws-sigv4"
@@ -207,8 +219,8 @@ func validateAndExtractCredentialParams(params map[string]interface{}) (authType
 	if err != nil {
 		return "", credentialFields{}, err
 	}
-	if authType != AuthTypeSTSAssumeRole && authType != AuthTypeIAMUserAccessKey && authType != AuthTypeIRSA {
-		return "", credentialFields{}, fmt.Errorf("'authenticationType' must be one of %q, %q, %q", AuthTypeSTSAssumeRole, AuthTypeIAMUserAccessKey, AuthTypeIRSA)
+	if authType != AuthTypeSTSAssumeRole && authType != AuthTypeIAMUserAccessKey && authType != AuthTypeIRSA && authType != AuthTypeDefaultCredentialChain {
+		return "", credentialFields{}, fmt.Errorf("'authenticationType' must be one of %q, %q, %q, %q", AuthTypeSTSAssumeRole, AuthTypeIAMUserAccessKey, AuthTypeIRSA, AuthTypeDefaultCredentialChain)
 	}
 
 	creds = credentialFields{
@@ -251,6 +263,10 @@ func validateAndExtractCredentialParams(params map[string]interface{}) (authType
 		// web identity token file path is never taken from a param — it is
 		// always read from AWS_WEB_IDENTITY_TOKEN_FILE, which the same webhook
 		// injects alongside AWS_ROLE_ARN.
+	case AuthTypeDefaultCredentialChain:
+		// No credential fields apply: resolution is delegated entirely to
+		// the AWS SDK's default credential provider chain at signing time,
+		// there is no role to assume and no key/secret pair to validate.
 	}
 	return authType, creds, nil
 }
@@ -268,6 +284,8 @@ func buildCredentialsProvider(ctx context.Context, authType string, creds creden
 		return buildAssumeRoleCredentialsProvider(ctx, creds, region)
 	case AuthTypeIRSA:
 		return buildWebIdentityCredentialsProvider(creds, region)
+	case AuthTypeDefaultCredentialChain:
+		return buildDefaultCredentialChainProvider(ctx, region)
 	default:
 		return nil, fmt.Errorf("unsupported authenticationType %q", authType)
 	}
@@ -354,6 +372,29 @@ func buildWebIdentityCredentialsProvider(creds credentialFields, region string) 
 	slog.Debug("AWSAuthentication: STS AssumeRoleWithWebIdentity (IRSA) credentials provider ready", "roleARN", roleARN)
 
 	return aws.NewCredentialsCache(webIdentityProvider), nil
+}
+
+// buildDefaultCredentialChainProvider builds a credentials provider that
+// resolves credentials directly from the AWS SDK's default credential
+// provider chain — no AssumeRole/AssumeRoleWithWebIdentity call, and no
+// static keys configured anywhere in policy params. This is appropriate when
+// the gateway's own compute environment (EC2 instance profile, ECS task
+// role, Lambda execution role, or an EKS Pod Identity association) already
+// carries the exact IAM role needed to sign requests to the target service.
+//
+// config.LoadDefaultConfig already wraps whichever provider it resolves in
+// an aws.CredentialsCache internally, so the returned provider needs no
+// additional caching layer here.
+func buildDefaultCredentialChainProvider(ctx context.Context, region string) (aws.CredentialsProvider, error) {
+	slog.Debug("AWSAuthentication: building default AWS credential chain provider", "region", region)
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load default AWS config: %w", err)
+	}
+
+	slog.Debug("AWSAuthentication: default AWS credential chain provider ready")
+	return cfg.Credentials, nil
 }
 
 // OnRequestBody signs the outbound request with AWS SigV4 before it is
