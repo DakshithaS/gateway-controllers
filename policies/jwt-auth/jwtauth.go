@@ -161,8 +161,8 @@ type RemoteJWKS struct {
 
 // LocalCert holds local certificate configuration
 type LocalCert struct {
-	Inline          string         // Inline PEM-encoded certificate
-	CertificatePath string         // Path to certificate file
+	Inline          string           // Inline PEM-encoded certificate
+	CertificatePath string           // Path to certificate file
 	PublicKey       crypto.PublicKey // Parsed public key (RSA or ECDSA)
 }
 
@@ -1873,13 +1873,29 @@ func (p *JwtAuthPolicy) handleAuthSuccessHeaders(shared *policy.SharedContext, c
 		}
 	}
 
-	for claimName, headerName := range claimMappings {
-		if claimValue, ok := claims[claimName]; ok {
-			if forwardToken && http.CanonicalHeaderKey(headerName) == canonicalOut {
-				continue
-			}
-			modifications.HeadersToSet[headerName] = claimValueToString(claimValue)
+	type mappedHeader struct {
+		name  string
+		value string
+	}
+	mappedHeaders := make(map[string]mappedHeader, len(claimMappings))
+	for claimName, configuredHeaderName := range claimMappings {
+		canonicalHeaderName := http.CanonicalHeaderKey(configuredHeaderName)
+		if forwardToken && canonicalHeaderName == canonicalOut {
+			continue
 		}
+
+		header, initialized := mappedHeaders[canonicalHeaderName]
+		if !initialized {
+			header.name = configuredHeaderName
+		}
+		if claimValue, ok := claims[claimName]; ok {
+			header.value = claimValueToString(claimValue)
+		}
+		mappedHeaders[canonicalHeaderName] = header
+	}
+
+	for _, header := range mappedHeaders {
+		modifications.HeadersToSet[header.name] = header.value
 	}
 
 	return modifications
