@@ -352,7 +352,7 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 	// Check for GET /.well-known/oauth-protected-resource
 	if reqCtx.Method == "GET" && isWellKnownEndpointRequest(reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Handling well-known protected resource metadata request")
-		sessionIds := reqCtx.Headers.Get(McpSessionHeader)
+		sessionIds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(McpSessionHeader)
 		sessionId := ""
 		if len(sessionIds) > 0 {
 			sessionId = sessionIds[0]
@@ -487,7 +487,7 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
 	}
 
-	sessionIds := reqCtx.Headers.Get(McpSessionHeader)
+	sessionIds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(McpSessionHeader)
 	sessionId := ""
 	if len(sessionIds) > 0 {
 		sessionId = sessionIds[0]
@@ -515,6 +515,10 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		Authority:     reqCtx.Authority,
 		Scheme:        reqCtx.Scheme,
 		Vhost:         reqCtx.Vhost,
+		// Propagate the downstream snapshot so the delegated JWT auth
+		// policy validates the Authorization header the client actually sent,
+		// not one a peer policy rewrote during the header phase.
+		Downstream: reqCtx.Downstream,
 	}
 	headerAction := hrp.OnRequestHeaders(ctx, headerCtx, jwtParams)
 	if ir, ok := headerAction.(policy.ImmediateResponse); ok {
