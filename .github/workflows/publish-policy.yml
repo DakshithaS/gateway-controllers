@@ -33,9 +33,14 @@ jobs:
       run: |
         POLICY_NAME="${{ github.event.inputs.policy_name }}"
         MINOR_VERSION="${{ github.event.inputs.minor_version }}"
-        
+
         # Trim whitespace from policy name
         POLICY_NAME=$(echo "$POLICY_NAME" | xargs)
+
+        # Trim whitespace and strip an optional leading 'v'/'V' from minor version (e.g., "v1.0" -> "1.0")
+        MINOR_VERSION=$(echo "$MINOR_VERSION" | xargs)
+        MINOR_VERSION="${MINOR_VERSION#v}"
+        MINOR_VERSION="${MINOR_VERSION#V}"
         
         # Validate policy name: only letters, numbers, hyphen, underscore; no slashes or traversal
         if [[ -z "$POLICY_NAME" ]]; then
