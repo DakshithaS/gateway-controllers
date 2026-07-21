@@ -361,9 +361,11 @@ func TestOnRequestBody_Delegation_Failure(t *testing.T) {
 }
 
 // jsonRPCErrorResponse mirrors the JSON-RPC 2.0 error envelope for assertions.
+// ID is captured as RawMessage so a missing "id" field (nil) can be distinguished
+// from an explicit "id": null (the literal bytes "null").
 type jsonRPCErrorResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      *int   `json:"id"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
 	Error   struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -406,8 +408,10 @@ func assertJSONRPCError(t *testing.T, resp policy.ImmediateResponse, wantCode in
 	if parsed.JSONRPC != "2.0" {
 		t.Errorf("Expected jsonrpc \"2.0\", got %q", parsed.JSONRPC)
 	}
-	if parsed.ID != nil {
-		t.Errorf("Expected id null, got %v", *parsed.ID)
+	if parsed.ID == nil {
+		t.Errorf("Expected id field to be present")
+	} else if string(parsed.ID) != "null" {
+		t.Errorf("Expected id to be null, got %s", parsed.ID)
 	}
 	if parsed.Error.Code != wantCode {
 		t.Errorf("Expected error code %d, got %d", wantCode, parsed.Error.Code)

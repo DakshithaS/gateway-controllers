@@ -133,6 +133,9 @@ func TestOnRequest_NoAuthContext(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("Expected 401, got %d", resp.StatusCode)
 	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_token"`) {
+		t.Errorf("Expected error=\"invalid_token\" in WWW-Authenticate header, got: %s", wwwAuth)
+	}
 }
 
 func TestOnRequest_NotAuthenticated(t *testing.T) {
@@ -146,6 +149,9 @@ func TestOnRequest_NotAuthenticated(t *testing.T) {
 	}
 	if resp.StatusCode != 401 {
 		t.Errorf("Expected 401, got %d", resp.StatusCode)
+	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_token"`) {
+		t.Errorf("Expected error=\"invalid_token\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
@@ -162,6 +168,9 @@ func TestOnRequest_InvalidMCPBody(t *testing.T) {
 	}
 	if resp.StatusCode != 400 {
 		t.Errorf("Expected 400, got %d", resp.StatusCode)
+	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_request"`) {
+		t.Errorf("Expected error=\"invalid_request\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
