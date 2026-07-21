@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,12 @@ const (
 	MetadataMcpCapabilityName = "mcp.name"
 	McpOAuthAuthType          = "mcp/oauth"
 	McpOAuthzAuthType         = "mcp/oauth+authz"
+
+	// Bearer error codes per RFC 6750 §3.1: invalid_token pairs with 401,
+	// insufficient_scope with 403, invalid_request with 400.
+	ErrorInvalidRequest    = "invalid_request"
+	ErrorInvalidToken      = "invalid_token"
+	ErrorInsufficientScope = "insufficient_scope"
 )
 
 // MCPRequest represents the JSON-RPC MCP request structure
@@ -95,7 +102,6 @@ func GetPolicy(
 
 	return p, nil
 }
-
 
 // parseRules extracts and validates rules from the 4 top-level arrays: tools, resources, prompts, methods
 func parseRules(params map[string]any) ([]Rule, error) {
@@ -238,14 +244,14 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	authCtx := reqCtx.SharedContext.AuthContext
 	if authCtx == nil || !authCtx.Authenticated {
 		slog.Debug("MCP Authorization Policy: No authenticated context found")
-		return p.handleAuthFailure(reqCtx, "Unauthorized: scope/claim validation failed", nil)
+		return p.handleAuthFailure(reqCtx, http.StatusUnauthorized, ErrorInvalidToken, "Unauthorized: scope/claim validation failed", nil)
 	}
 
 	// Parse MCP request to extract method and name
 	var mcpReq MCPRequest
 	if err := json.Unmarshal(reqCtx.Body.Content, &mcpReq); err != nil {
 		slog.Debug("MCP Authorization Policy: Failed to parse MCP request", "error", err)
-		return p.handleAuthFailure(reqCtx, "Invalid MCP request format", nil)
+		return p.handleAuthFailure(reqCtx, http.StatusBadRequest, ErrorInvalidRequest, "Invalid MCP request format", nil)
 	}
 
 	slog.Debug("MCP Authorization Policy: Extracted MCP attributes",
@@ -277,7 +283,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 		slog.Debug("MCP Authorization Policy: Authorization check failed",
 			"attributeName", mcpReq.Params.Name,
 			"method", mcpReq.Method)
-		return p.handleAuthFailure(reqCtx, "Forbidden: insufficient permissions to access this MCP resource", missingScopes)
+		return p.handleAuthFailure(reqCtx, http.StatusForbidden, ErrorInsufficientScope, "Forbidden: insufficient permissions to access this MCP resource", missingScopes)
 	}
 
 	slog.Debug("MCP Authorization Policy: Authorization check passed")
@@ -288,7 +294,7 @@ func (p *McpAuthzPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reque
 	return nil
 }
 
-func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, errorMessage string, scopeMap map[string]struct{}) policy.RequestAction {
+func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, statusCode int, errorCode, errorMessage string, scopeMap map[string]struct{}) policy.RequestAction {
 	slog.Debug("MCP Authorization Policy: handleAuthFailure called",
 		"errorMessage", errorMessage,
 	)
@@ -298,7 +304,7 @@ func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, errorM
 		missingScopes = append(missingScopes, s)
 	}
 
-	wwwAuthHeader := generateWwwAuthenticateHeader(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorMessage)
+	wwwAuthHeader := generateWwwAuthenticateHeader(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, reqCtx.Metadata, missingScopes, errorCode, errorMessage)
 
 	headers := map[string]string{
 		"content-type":        "application/json",
@@ -306,13 +312,13 @@ func (p *McpAuthzPolicy) handleAuthFailure(reqCtx *policy.RequestContext, errorM
 	}
 
 	errResponse := map[string]interface{}{
-		"error":   "Forbidden",
+		"error":   http.StatusText(statusCode),
 		"message": errorMessage,
 	}
 	bodyBytes, _ := json.Marshal(errResponse)
 
 	return policy.ImmediateResponse{
-		StatusCode: 403,
+		StatusCode: statusCode,
 		Headers:    headers,
 		Body:       bodyBytes,
 	}
@@ -574,7 +580,7 @@ func generateResourcePath(scheme, authority, vhost, apiContext, gatewayHost, res
 }
 
 // generateWwwAuthenticateHeader generates the WWW-Authenticate header value
-func generateWwwAuthenticateHeader(scheme, authority, vhost, apiContext string, metadata map[string]any, scopes []string, errorDesc string) string {
+func generateWwwAuthenticateHeader(scheme, authority, vhost, apiContext string, metadata map[string]any, scopes []string, errorCode, errorDesc string) string {
 	slog.Debug("MCP Authorization Policy: Generating WWW-Authenticate header")
 	gatewayHostString, _ := metadata["gatewayHost"].(string)
 	headerValue := AuthMethodBearer + "\"" + generateResourcePath(scheme, authority, vhost, apiContext, gatewayHostString, WellKnownPath) + "\""
@@ -582,9 +588,12 @@ func generateWwwAuthenticateHeader(scheme, authority, vhost, apiContext string, 
 		slog.Debug("MCP Authorization Policy: Adding scopes to WWW-Authenticate header")
 		headerValue += ", scope=\"" + strings.Join(scopes, " ") + "\""
 	}
-	if errorDesc != "" {
-		slog.Debug("MCP Authorization Policy: Adding error description to WWW-Authenticate header")
-		headerValue += ", error=\"invalid_token\", error_description=\"" + errorDesc + "\""
+	if errorCode != "" {
+		slog.Debug("MCP Authorization Policy: Adding error code to WWW-Authenticate header", "error", errorCode)
+		headerValue += ", error=\"" + errorCode + "\""
+		if errorDesc != "" {
+			headerValue += ", error_description=\"" + errorDesc + "\""
+		}
 	}
 	return headerValue
 }
