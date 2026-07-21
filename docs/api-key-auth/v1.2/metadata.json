@@ -7,7 +7,7 @@
     "Security",
     "AI",
     "WebSub",
-    "WebBroker"
+    "WebBroker2"
   ],
   "description": "Implements API Key Authentication to protect APIs with pre-shared API keys.\nValidates API keys from request headers against a configured\nlist of valid keys and sets authentication metadata in the request context."
 }
