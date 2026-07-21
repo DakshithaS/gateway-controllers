@@ -289,29 +289,33 @@ jobs:
           RESPONSE_BODY="No response file found"
         fi
         
-        # Show response in logs
-        echo "📨 API Response:"
-        echo "$RESPONSE_BODY"
-        echo
-        
         # Check if request was successful
         if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
           echo "✅ Policy published successfully!"
-          
+
+          # Show response in logs
+          echo "📨 API Response:"
+          echo "$RESPONSE_BODY"
+          echo
+
           # Extract status from response
           PUBLISH_STATUS=$(echo "$RESPONSE_BODY" | jq -r '.data.status // "published"' 2>/dev/null || echo "published")
           echo "PUBLISH_STATUS=$PUBLISH_STATUS" >> $GITHUB_ENV
         else
+          # Extract just the message field if present, otherwise fall back to the raw body
+          ERROR_MESSAGE=$(echo "$RESPONSE_BODY" | jq -r '.message // empty' 2>/dev/null)
+          if [[ -z "$ERROR_MESSAGE" ]]; then
+            ERROR_MESSAGE="$RESPONSE_BODY"
+          fi
+
           echo "❌ Policy publishing failed with HTTP status: $HTTP_STATUS"
-          
+          echo "❌ $ERROR_MESSAGE"
+
           # Add error details to summary
           echo "## ❌ Publishing Failed" >> $GITHUB_STEP_SUMMARY
           echo "**HTTP Status:** \`$HTTP_STATUS\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Error Response:**" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo "$RESPONSE_BODY" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "**Error:** $ERROR_MESSAGE" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
         
