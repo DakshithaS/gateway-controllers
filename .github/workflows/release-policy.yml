@@ -339,9 +339,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG_STATUS="✅ Tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed"
+          TAG_STATUS="✅ Policy version released (tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed)"
           if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ Tag \`${{ steps.meta.outputs.tag_name }}\` already existed — reused its content, no new tag created"
+            TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
           fi
 
           {
