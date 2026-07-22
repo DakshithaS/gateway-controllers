@@ -407,8 +407,26 @@ jobs:
           VERSION_INPUT: ${{ inputs.version }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           TAG_EXISTED: ${{ needs.prepare.outputs.tag_existed }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
         run: |
           set -euo pipefail
+
+          # If preparation itself failed (bad input, structure/version mismatch, or a
+          # failing test), no environment was ever attempted — report that plainly
+          # instead of the misleading "environments failed to release".
+          if [[ "$PREPARE_RESULT" != "success" ]]; then
+            echo "::error::Release preparation failed — no environment releases were attempted."
+            {
+              echo "## ❌ Release Failed During Preparation"
+              echo ""
+              echo "Input validation, policy-structure checks, version-consistency checks, or"
+              echo "tests failed before any environment release was attempted."
+              echo "See the **Validate, Test & Prepare Release** job logs above for the exact error."
+              echo ""
+              echo "**Tag:** ❌ Not created"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           ANY_SUCCESS=false
           ANY_FAILURE=false
@@ -436,7 +454,7 @@ jobs:
           done
 
           if [[ -z "$TABLE_ROWS" ]]; then
-            TABLE_ROWS="| - | ❌ No results | The release job did not report any results |"$'\n'
+            TABLE_ROWS="| - | ❌ No results | Preparation succeeded but no environment reported a result. Check the release job logs. |"$'\n'
             ANY_FAILURE=true
           fi
 
