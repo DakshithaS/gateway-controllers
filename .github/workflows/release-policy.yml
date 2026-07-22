@@ -27,17 +27,17 @@ on:
         description: "Release to dev"
         required: false
         type: boolean
-        default: false
+        default: true
       release_staging:
         description: "Release to staging"
         required: false
         type: boolean
-        default: false
+        default: true
       release_production:
         description: "Release to production"
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ jobs:
       target_dir: ${{ steps.meta.outputs.target_dir }}
       module_path: ${{ steps.meta.outputs.module_path }}
       tag_name: ${{ steps.meta.outputs.tag_name }}
-      pip_package: ${{ steps.meta.outputs.pip_package }}
+      pip_package: ${{ steps.structure.outputs.pip_package }}
       environments: ${{ steps.envs.outputs.environments }}
       tag_existed: ${{ steps.tag-check.outputs.tag_existed }}
 
@@ -142,17 +142,9 @@ jobs:
 
           TAG_NAME="policies/$POLICY/v$VERSION"
 
-          # For Python policies, construct the shortened URL (same pattern as Go MODULE_PATH
-          # but with @vMAJOR suffix instead of /vMAJOR path segment).
-          PIP_PACKAGE=""
-          if [[ -f "$TARGET_DIR/pyproject.toml" ]]; then
-            PIP_PACKAGE="github.com/$CANONICAL_REPOSITORY/policies/$POLICY@v$MAJOR"
-          fi
-
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
           echo "module_path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "pip_package=$PIP_PACKAGE" >> "$GITHUB_OUTPUT"
 
       - name: Check for existing release tag
         id: tag-check
@@ -174,7 +166,12 @@ jobs:
           fi
 
       - name: Validate policy structure
+        id: structure
         shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
         run: |
           set -euo pipefail
 
@@ -185,9 +182,15 @@ jobs:
           }
 
           DIR="${{ steps.meta.outputs.target_dir }}"
+          MAJOR="${VERSION_INPUT%%.*}"
 
           [[ -d "$DIR" ]] || fail "Missing directory: $DIR"
           [[ -f "$DIR/policy-definition.yaml" ]] || fail "Missing policy-definition.yaml in $DIR"
+
+          # PIP_PACKAGE is derived here (post tag-checkout) rather than in "Resolve
+          # module metadata", since that step runs before the tag-reuse checkout and
+          # would otherwise reflect HEAD's file layout instead of the released commit's.
+          PIP_PACKAGE=""
 
           if [[ -f "$DIR/go.mod" ]]; then
             echo "RUNTIME=go" >> "$GITHUB_ENV"
@@ -214,9 +217,15 @@ jobs:
             [[ -d "$DIR/tests" ]] || fail "Missing tests/ directory in $DIR"
 
             echo "✅ Python Policy structure valid (src layout)"
+
+            # For Python policies, construct the shortened URL (same pattern as Go
+            # MODULE_PATH but with @vMAJOR suffix instead of /vMAJOR path segment).
+            PIP_PACKAGE="github.com/$CANONICAL_REPOSITORY/policies/$POLICY_INPUT@v$MAJOR"
           else
             fail "Current implementation requires either go.mod or pyproject.toml"
           fi
+
+          echo "pip_package=$PIP_PACKAGE" >> "$GITHUB_OUTPUT"
 
       - name: Validate version consistency
         shell: bash
