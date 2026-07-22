@@ -362,6 +362,7 @@ jobs:
   register:
     name: Register to ${{ matrix.environment }}
     needs: release
+    if: needs.release.outputs.environments != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ matrix.environment }}
@@ -389,13 +390,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p results
-          RESULT_FILE="results/release-result-${ENV_NAME}.json"
+          summarize() {
+            {
+              echo "### Registration: $ENV_NAME"
+              echo ""
+              echo "| Field | Value |"
+              echo "|-------|-------|"
+              echo "| Policy | \`$POLICY_INPUT\` |"
+              echo "| Version | \`$VERSION_INPUT\` |"
+              echo "| Status | $1 |"
+              echo "| Message | $2 |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
 
           if [[ -z "${POLICY_HUB_URL:-}" || -z "${POLICY_HUB_TOKEN:-}" ]]; then
             echo "::warning::Missing POLICY_HUB_URL or POLICY_HUB_TOKEN for environment '$ENV_NAME' — skipping registration"
-            jq -n --arg env "$ENV_NAME" --arg status "skipped" --arg message "Missing POLICY_HUB_URL or POLICY_HUB_TOKEN" \
-              '{environment: $env, status: $status, message: $message}' > "$RESULT_FILE"
+            summarize "⚠️ Skipped" "Missing POLICY_HUB_URL or POLICY_HUB_TOKEN"
             exit 0
           fi
 
@@ -408,110 +418,17 @@ jobs:
           BODY=$(echo "$RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
 
           if [[ "$STATUS" =~ ^(200|201)$ ]]; then
-            RESULT_STATUS="success"
-            MESSAGE="Policy registered successfully"
             echo "✅ Released to $ENV_NAME"
+            summarize "✅ Released" "Policy registered successfully"
           elif [[ "$STATUS" == "409" ]]; then
-            RESULT_STATUS="already_released"
             MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
             [[ -z "$MESSAGE" ]] && MESSAGE="Version already released to this environment"
             echo "ℹ️  Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
+            summarize "ℹ️ Already released" "$MESSAGE"
           else
-            RESULT_STATUS="failed"
             MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
             [[ -z "$MESSAGE" ]] && MESSAGE="${BODY:-No response body} (HTTP $STATUS)"
             echo "::error::Registration failed for $ENV_NAME: $MESSAGE"
-          fi
-
-          jq -n --arg env "$ENV_NAME" --arg status "$RESULT_STATUS" --arg message "$MESSAGE" --arg http "$STATUS" \
-            '{environment: $env, status: $status, message: $message, http_status: $http}' > "$RESULT_FILE"
-
-          if [[ "$RESULT_STATUS" == "failed" ]]; then
+            summarize "❌ Failed" "$MESSAGE"
             exit 1
           fi
-
-      - name: Upload release result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-result-${{ matrix.environment }}
-          path: results/release-result-${{ matrix.environment }}.json
-          retention-days: 1
-
-  # ------------------------------------------------------------
-  # Aggregate every environment's registration result into one summary.
-  # Only runs if the release job itself succeeded — tagging is already
-  # decided, so this is purely reporting on registration outcomes.
-  # ------------------------------------------------------------
-  registration-summary:
-    name: Registration Summary
-    needs: [release, register]
-    if: always() && needs.release.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Download all release results
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-result-*
-          path: results
-          merge-multiple: true
-
-      - name: Aggregate registration results
-        shell: bash
-        env:
-          POLICY_INPUT: ${{ inputs.policy }}
-          VERSION_INPUT: ${{ inputs.version }}
-          ENVIRONMENTS_JSON: ${{ needs.release.outputs.environments }}
-        run: |
-          set -euo pipefail
-
-          ANY_FAILURE=false
-          TABLE_ROWS=""
-          ENV_COUNT=$(echo "$ENVIRONMENTS_JSON" | jq 'length')
-
-          if [[ "$ENV_COUNT" -eq 0 ]]; then
-            TABLE_ROWS="| - | ℹ️ Not applicable | No environment was selected — tag-only release |"$'\n'
-          else
-            shopt -s nullglob
-            for f in results/*.json; do
-              ENV_NAME=$(jq -r '.environment' "$f")
-              STATUS=$(jq -r '.status' "$f")
-              MESSAGE=$(jq -r '.message' "$f")
-
-              case "$STATUS" in
-                success) ICON="✅ Released" ;;
-                already_released) ICON="ℹ️ Already released" ;;
-                skipped) ICON="⚠️ Skipped" ;;
-                *) ICON="❌ Failed" ;;
-              esac
-
-              TABLE_ROWS+="| $ENV_NAME | $ICON | $MESSAGE |"$'\n'
-
-              case "$STATUS" in
-                success|already_released|skipped) ;;
-                *) ANY_FAILURE=true ;;
-              esac
-            done
-
-            if [[ -z "$TABLE_ROWS" ]]; then
-              TABLE_ROWS="| - | ❌ No results | No environment reported a result. Check the register job logs. |"$'\n'
-              ANY_FAILURE=true
-            fi
-          fi
-
-          {
-            echo "## Registration Summary: $POLICY_INPUT v$VERSION_INPUT"
-            echo ""
-            echo "| Environment | Status | Message |"
-            echo "|-------------|--------|---------|"
-            echo -n "$TABLE_ROWS"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [[ "$ANY_FAILURE" == "true" ]]; then
-            echo "::error::One or more environments failed to register. See the job summary for details."
-            exit 1
-          fi
-
-          echo "✅ Registration summary completed"
