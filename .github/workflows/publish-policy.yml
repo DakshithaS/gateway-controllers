@@ -1,3 +1,10 @@
+# Publish Policy
+#
+# Packages a single policy version's docs/assets and publishes them to
+# Policy Hub for one selected environment. This is distinct from Release
+# Policy: this publishes documentation/metadata for an already-released
+# policy version — it does not tag or register the policy module itself.
+
 name: Publish Policy
 
 on:
@@ -44,6 +51,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           # Trim whitespace from policy name
           POLICY_NAME=$(echo "$POLICY_NAME_INPUT" | xargs)
 
@@ -53,56 +66,25 @@ jobs:
           MINOR_VERSION="${MINOR_VERSION#V}"
 
           # Validate policy name: only letters, numbers, hyphen, underscore; no slashes or traversal
-          if [[ -z "$POLICY_NAME" ]]; then
-            echo "::error::Policy name is required"
-            {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Policy name is required"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          if [[ ! "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            echo "::error::Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters)"
-            {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Policy name must contain only letters, numbers, hyphens, and underscores"
-              echo "**Invalid name:** \`$POLICY_NAME\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ -n "$POLICY_NAME" ]] || fail "Policy name is required"
+          [[ "$POLICY_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || fail "Policy name must contain only letters, numbers, hyphens, and underscores (no spaces, slashes, or special characters). Got: '$POLICY_NAME'"
 
           # Validate minor version format
-          if [[ ! "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Minor version must be in format X.Y (e.g., 0.1, 1.2)"
-            {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Minor version must be in format X.Y (e.g., 0.1, 1.2)"
-              echo "**Invalid version:** \`$RAW_MINOR_VERSION\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ "$MINOR_VERSION" =~ ^[0-9]+\.[0-9]+$ ]] || fail "Minor version must be in format X.Y (e.g., 0.1, 1.2). Got: '$RAW_MINOR_VERSION'"
 
           # Check if policy directory exists in docs/
           DOCS_POLICY_DIR="docs/$POLICY_NAME"
-          if [[ ! -d "$DOCS_POLICY_DIR" ]]; then
-            echo "::error::Policy directory not found in docs/: $DOCS_POLICY_DIR"
-            {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Policy directory not found"
-              echo "**Missing:** \`$DOCS_POLICY_DIR\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ -d "$DOCS_POLICY_DIR" ]] || fail "Policy directory not found in docs/: $DOCS_POLICY_DIR"
 
-          # Check if version directory exists
+          # Check if version directory exists — this one gets a richer summary
+          # (available versions) since a bare mismatch message isn't actionable here.
           VERSION_DIR="$DOCS_POLICY_DIR/v$MINOR_VERSION"
           if [[ ! -d "$VERSION_DIR" ]]; then
             echo "::error::Version directory not found: $VERSION_DIR"
             {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Version directory not found"
-              echo "**Missing:** \`$VERSION_DIR\`"
+              echo "## ❌ Failed"
+              echo ""
+              echo "**Error:** Version directory not found: \`$VERSION_DIR\`"
               echo ""
               echo "**Available versions for $POLICY_NAME:**"
               echo '```'
@@ -114,15 +96,7 @@ jobs:
 
           # Check if policies directory exists
           POLICIES_DIR="policies/$POLICY_NAME"
-          if [[ ! -d "$POLICIES_DIR" ]]; then
-            echo "::error::Policy directory not found in policies/: $POLICIES_DIR"
-            {
-              echo "## ❌ Validation Failed"
-              echo "**Error:** Policy directory not found in policies/"
-              echo "**Missing:** \`$POLICIES_DIR\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ -d "$POLICIES_DIR" ]] || fail "Policy directory not found in policies/: $POLICIES_DIR"
 
           echo "✅ Policy validation passed"
           {
@@ -159,18 +133,29 @@ jobs:
       - name: Parse and validate metadata.json
         run: |
           set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           METADATA_FILE="$VERSION_DIR/metadata.json"
 
           # Check if metadata.json exists
-          if [[ ! -f "$METADATA_FILE" ]]; then
-            echo "::error::metadata.json not found: $METADATA_FILE"
-            exit 1
-          fi
+          [[ -f "$METADATA_FILE" ]] || fail "metadata.json not found: $METADATA_FILE"
 
           # Validate JSON syntax
           if ! jq empty "$METADATA_FILE" 2>/dev/null; then
             echo "::error::Invalid JSON in metadata.json"
-            cat "$METADATA_FILE"
+            {
+              echo "## ❌ Failed"
+              echo ""
+              echo "**Error:** Invalid JSON in metadata.json"
+              echo '```'
+              cat "$METADATA_FILE"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -192,55 +177,21 @@ jobs:
           [[ -z "$description" ]] && MISSING_FIELDS+=("description")
 
           if [[ ${#MISSING_FIELDS[@]} -gt 0 ]]; then
-            echo "::error::Missing required fields in metadata.json"
-            {
-              echo "## ❌ Metadata Validation Failed"
-              echo "**Error:** Missing required fields in metadata.json"
-              echo "**File:** \`$METADATA_FILE\`"
-              echo ""
-              echo "**Missing fields:**"
-            } >> "$GITHUB_STEP_SUMMARY"
-            for field in "${MISSING_FIELDS[@]}"; do
-              echo "- \`$field\`" >> "$GITHUB_STEP_SUMMARY"
-            done
-            exit 1
+            fail "Missing required fields in metadata.json ($METADATA_FILE): ${MISSING_FIELDS[*]}"
           fi
 
           # Validate that .categories is a non-empty array
-          if ! jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null; then
-            echo "::error::'categories' must be a non-empty array in metadata.json"
-            {
-              echo "## ❌ Metadata Validation Failed"
-              echo "**Error:** 'categories' must be a non-empty array"
-              echo "**File:** \`$METADATA_FILE\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          jq -e '.categories | type=="array" and length>0' "$METADATA_FILE" >/dev/null \
+            || fail "'categories' must be a non-empty array in metadata.json ($METADATA_FILE)"
 
           # Validate that name matches input
-          if [[ "$name" != "$POLICY_NAME" ]]; then
-            echo "::error::Policy name mismatch: metadata.json has '$name', but input is '$POLICY_NAME'"
-            {
-              echo "## ❌ Metadata Validation Failed"
-              echo "**Error:** Policy name mismatch"
-              echo "- **In metadata.json:** \`$name\`"
-              echo "- **In workflow input:** \`$POLICY_NAME\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ "$name" == "$POLICY_NAME" ]] \
+            || fail "Policy name mismatch: metadata.json has '$name', but workflow input is '$POLICY_NAME'"
 
           # Validate that version matches input (remove 'v' prefix if present)
           metadata_version=${version#v}
-          if [[ "$metadata_version" != "$MINOR_VERSION" ]]; then
-            echo "::error::Version mismatch: metadata.json has '$version', but input is '$MINOR_VERSION'"
-            {
-              echo "## ❌ Metadata Validation Failed"
-              echo "**Error:** Version mismatch"
-              echo "- **In metadata.json:** \`$version\`"
-              echo "- **In workflow input:** \`$MINOR_VERSION\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ "$metadata_version" == "$MINOR_VERSION" ]] \
+            || fail "Version mismatch: metadata.json has '$version', but workflow input is '$MINOR_VERSION'"
 
           echo "✅ Metadata validation passed"
           {
@@ -251,6 +202,12 @@ jobs:
       - name: Create policy package
         run: |
           set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
           # Create temporary directory for packaging
           TEMP_DIR=$(mktemp -d)
@@ -263,8 +220,7 @@ jobs:
             cp -r "$DOCS_SOURCE" "$PACKAGE_DIR/"
             echo "✅ Copied docs folder"
           else
-            echo "::error::docs folder not found: $DOCS_SOURCE"
-            exit 1
+            fail "docs folder not found: $DOCS_SOURCE"
           fi
 
           # Copy assets folder if it exists
@@ -283,10 +239,7 @@ jobs:
           (cd "$PACKAGE_DIR" && zip -r "$ZIP_PATH" . -x "*.DS_Store")
 
           # Verify zip was created
-          if [[ ! -f "$ZIP_PATH" ]]; then
-            echo "::error::Failed to create zip file: $ZIP_PATH"
-            exit 1
-          fi
+          [[ -f "$ZIP_PATH" ]] || fail "Failed to create zip file: $ZIP_PATH"
 
           echo "✅ Created policy package: $ZIP_NAME"
           {

@@ -1,3 +1,15 @@
+# Release Policy
+#
+# Validates, tests, and tags a policy version (job: release), then registers
+# it with Policy Hub for each selected environment (job: register).
+#
+# Tagging never depends on registration succeeding: a git tag only asserts
+# "this version passed validation and tests". Policy Hub registration is a
+# separate, independently retryable concern per environment — selecting zero
+# environments produces a tag-only release (no Policy Hub calls at all), and
+# releasing an already-tagged version to a new environment reuses that tag's
+# exact content rather than re-validating against whatever HEAD is now.
+
 name: Release Policy
 
 on:
@@ -112,6 +124,7 @@ jobs:
         env:
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
+          CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
         run: |
           set -euo pipefail
 
@@ -121,10 +134,10 @@ jobs:
 
           if [[ "$MAJOR" == "0" || "$MAJOR" == "1" ]]; then
             TARGET_DIR="policies/$POLICY"
-            MODULE_PATH="github.com/${{ github.repository }}/policies/$POLICY"
+            MODULE_PATH="github.com/$CANONICAL_REPOSITORY/policies/$POLICY"
           else
             TARGET_DIR="policies/$POLICY/v$MAJOR"
-            MODULE_PATH="github.com/${{ github.repository }}/policies/$POLICY/v$MAJOR"
+            MODULE_PATH="github.com/$CANONICAL_REPOSITORY/policies/$POLICY/v$MAJOR"
           fi
 
           TAG_NAME="policies/$POLICY/v$VERSION"
@@ -133,7 +146,7 @@ jobs:
           # but with @vMAJOR suffix instead of /vMAJOR path segment).
           PIP_PACKAGE=""
           if [[ -f "$TARGET_DIR/pyproject.toml" ]]; then
-            PIP_PACKAGE="github.com/${{ github.repository }}/policies/$POLICY@v$MAJOR"
+            PIP_PACKAGE="github.com/$CANONICAL_REPOSITORY/policies/$POLICY@v$MAJOR"
           fi
 
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_OUTPUT"
@@ -181,10 +194,7 @@ jobs:
             EXPECTED="${{ steps.meta.outputs.module_path }}"
             ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
-            # TEMPORARILY DISABLED FOR TESTING: fails when run from a fork (e.g.
-            # github.com/DakshithaS/gateway-controllers) since go.mod always declares
-            # the canonical github.com/wso2/gateway-controllers module path.
-            # [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
+            [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
             echo "✅ Go Policy structure valid"
           elif [[ -f "$DIR/pyproject.toml" ]]; then
             echo "RUNTIME=python" >> "$GITHUB_ENV"
@@ -361,6 +371,7 @@ jobs:
   # ------------------------------------------------------------
   # Register the policy in Policy Hub, once per selected environment.
   # fail-fast: false so one environment's failure doesn't cancel the others.
+  # Skipped entirely when no environment was selected (tag-only release).
   # ------------------------------------------------------------
   register:
     name: Register to ${{ matrix.environment }}
@@ -393,6 +404,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Writes one "### Registration: <env>" block to the job summary per
+          # invocation — every matrix leg's outcome shows up on the run's
+          # Summary page without needing a separate aggregator job.
           summarize() {
             {
               echo "### Registration: $ENV_NAME"
