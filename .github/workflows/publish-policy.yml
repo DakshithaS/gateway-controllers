@@ -43,6 +43,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Validate inputs and policy existence
         env:
@@ -109,6 +111,7 @@ jobs:
       - name: Validate API configuration
         env:
           POLICY_HUB_URL: ${{ vars.POLICY_HUB_URL }}
+          POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
           ENVIRONMENT_INPUT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
@@ -118,11 +121,15 @@ jobs:
             {
               echo "## ❌ Configuration Error"
               echo "**Error:** Missing POLICY_HUB_URL environment variable"
-              echo ""
-              echo "**To fix this:**"
-              echo "1. Go to repository Settings → Environments"
-              echo "2. Select the \`$ENVIRONMENT_INPUT\` environment"
-              echo "3. Add a variable named \`POLICY_HUB_URL\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [[ -z "${POLICY_HUB_TOKEN:-}" ]]; then
+            echo "::error::Missing POLICY_HUB_TOKEN secret"
+            {
+              echo "## ❌ Configuration Error"
+              echo "**Error:** Missing POLICY_HUB_TOKEN secret"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -188,8 +195,9 @@ jobs:
           [[ "$name" == "$POLICY_NAME" ]] \
             || fail "Policy name mismatch: metadata.json has '$name', but workflow input is '$POLICY_NAME'"
 
-          # Validate that version matches input (remove 'v' prefix if present)
+          # Validate that version matches input (remove 'v'/'V' prefix if present)
           metadata_version=${version#v}
+          metadata_version=${metadata_version#V}
           [[ "$metadata_version" == "$MINOR_VERSION" ]] \
             || fail "Version mismatch: metadata.json has '$version', but workflow input is '$MINOR_VERSION'"
 
@@ -267,10 +275,7 @@ jobs:
             "$API_URL/policies/$METADATA_NAME/versions/$METADATA_VERSION"
           )
 
-          # Add authentication header if token is provided
-          if [[ -n "${POLICY_HUB_TOKEN:-}" ]]; then
-            curl_args+=("-H" "api-key: $POLICY_HUB_TOKEN")
-          fi
+          curl_args+=("-H" "api-key: $POLICY_HUB_TOKEN")
 
           # Add form fields
           curl_args+=("--form-string" "metadata=$METADATA_CONTENT")
