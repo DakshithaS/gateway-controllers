@@ -428,6 +428,13 @@ jobs:
             [[ -z "$MESSAGE" ]] && MESSAGE="Version already released to this environment"
             echo "ℹ️  Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
             summarize "ℹ️ Already released" "$MESSAGE"
+          elif [[ "$STATUS" == "401" ]]; then
+            # Never echo the response body for 401s: some APIs reflect request
+            # headers/credentials back in auth-error bodies, and $GITHUB_STEP_SUMMARY
+            # is not secret-masked the way console log output is.
+            echo "::error::Registration failed for $ENV_NAME: Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN for this environment"
+            summarize "❌ Failed" "Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN for this environment"
+            exit 1
           else
             MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
             [[ -z "$MESSAGE" ]] && MESSAGE="${BODY:-No response body} (HTTP $STATUS)"

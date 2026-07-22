@@ -349,6 +349,18 @@ jobs:
             # Extract status from response
             PUBLISH_STATUS=$(echo "$RESPONSE_BODY" | jq -r '.data.status // "published"' 2>/dev/null || echo "published")
             echo "PUBLISH_STATUS=$PUBLISH_STATUS" >> "$GITHUB_ENV"
+          elif [[ "$HTTP_STATUS" == "401" ]]; then
+            # Never echo the response body for 401s: some APIs reflect request
+            # headers/credentials back in auth-error bodies, and $GITHUB_STEP_SUMMARY
+            # is not secret-masked the way console log output is.
+            echo "::error::Policy publishing failed: Unauthorized (HTTP 401) — check POLICY_HUB_TOKEN"
+            {
+              echo "## ❌ Publishing Failed"
+              echo "**HTTP Status:** \`401\`"
+              echo ""
+              echo "**Error:** Unauthorized — check POLICY_HUB_TOKEN"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           else
             # Extract just the message field if present, otherwise fall back to the raw body
             ERROR_MESSAGE=$(echo "$RESPONSE_BODY" | jq -r '.message // empty' 2>/dev/null || true)
