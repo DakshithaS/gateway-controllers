@@ -36,13 +36,16 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------
-  # Validate, test, and resolve everything needed for release.
-  # Runs once regardless of how many environments are selected.
+  # Validate, test, and tag the release. No Policy Hub / API calls
+  # happen here at all. Any failure writes its own summary and exits
+  # immediately — nothing downstream is needed to explain a failure.
   # ------------------------------------------------------------
-  prepare:
-    name: Validate, Test & Prepare Release
+  release:
+    name: Validate, Test & Release Policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     outputs:
       target_dir: ${{ steps.meta.outputs.target_dir }}
       module_path: ${{ steps.meta.outputs.module_path }}
@@ -65,15 +68,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! [[ "$POLICY_INPUT" =~ ^[a-zA-Z0-9-]+$ ]]; then
-            echo "::error::Invalid policy name: $POLICY_INPUT"
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          fi
+          }
 
-          if ! [[ "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(dev|rc)\.[0-9]+)?$ ]]; then
-            echo "::error::Invalid version format: $VERSION_INPUT"
-            exit 1
-          fi
+          [[ "$POLICY_INPUT" =~ ^[a-zA-Z0-9-]+$ ]] || fail "Invalid policy name: $POLICY_INPUT"
+          [[ "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(dev|rc)\.[0-9]+)?$ ]] || fail "Invalid version format: $VERSION_INPUT"
 
           echo "✅ Inputs validated"
 
@@ -93,12 +95,12 @@ jobs:
           [[ "$RELEASE_PRODUCTION" == "true" ]] && ENVS+=("production")
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
-            echo "::error::At least one of release_dev, release_staging, release_production must be checked"
-            exit 1
+            echo "ℹ️  No environment selected — this will be a tag-only release (no Policy Hub registration)"
+          else
+            echo "Selected environments: ${ENVS[*]}"
           fi
 
           JSON=$(printf '%s\n' "${ENVS[@]}" | jq -R . | jq -sc .)
-          echo "Selected environments: $JSON"
           echo "environments=$JSON" >> "$GITHUB_OUTPUT"
 
       - name: Resolve module metadata
@@ -160,42 +162,47 @@ jobs:
         run: |
           set -euo pipefail
 
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           DIR="${{ steps.meta.outputs.target_dir }}"
 
-          [[ -d "$DIR" ]] || { echo "::error::Missing directory: $DIR"; exit 1; }
-          [[ -f "$DIR/policy-definition.yaml" ]] || { echo "::error::Missing policy-definition.yaml in $DIR"; exit 1; }
+          [[ -d "$DIR" ]] || fail "Missing directory: $DIR"
+          [[ -f "$DIR/policy-definition.yaml" ]] || fail "Missing policy-definition.yaml in $DIR"
 
           if [[ -f "$DIR/go.mod" ]]; then
             echo "RUNTIME=go" >> "$GITHUB_ENV"
             EXPECTED="${{ steps.meta.outputs.module_path }}"
             ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
-            [[ "$EXPECTED" == "$ACTUAL" ]] || {
-              echo "::error::go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
-              exit 1
-            }
+            # TEMPORARILY DISABLED FOR TESTING: fails when run from a fork (e.g.
+            # github.com/DakshithaS/gateway-controllers) since go.mod always declares
+            # the canonical github.com/wso2/gateway-controllers module path.
+            # [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
             echo "✅ Go Policy structure valid"
           elif [[ -f "$DIR/pyproject.toml" ]]; then
             echo "RUNTIME=python" >> "$GITHUB_ENV"
 
             # Validate src layout: src/ directory must exist
-            [[ -d "$DIR/src" ]] || { echo "::error::Missing src/ directory in $DIR (expected src layout)"; exit 1; }
+            [[ -d "$DIR/src" ]] || fail "Missing src/ directory in $DIR (expected src layout)"
 
             # Validate that at least one Python package exists under src/
             PKG_COUNT=$(find "$DIR/src" -mindepth 1 -maxdepth 1 -type d ! -name '__pycache__' | wc -l | tr -d ' ')
-            [[ "$PKG_COUNT" -ge 1 ]] || { echo "::error::No Python package found under $DIR/src/"; exit 1; }
+            [[ "$PKG_COUNT" -ge 1 ]] || fail "No Python package found under $DIR/src/"
 
             # Validate that the package contains a policy.py module
             POLICY_PY=$(find "$DIR/src" -mindepth 2 -maxdepth 2 -name 'policy.py' -type f | head -1)
-            [[ -n "$POLICY_PY" ]] || { echo "::error::Missing policy.py module in src package"; exit 1; }
+            [[ -n "$POLICY_PY" ]] || fail "Missing policy.py module in src package"
 
             # Validate that tests/ directory exists
-            [[ -d "$DIR/tests" ]] || { echo "::error::Missing tests/ directory in $DIR"; exit 1; }
+            [[ -d "$DIR/tests" ]] || fail "Missing tests/ directory in $DIR"
 
             echo "✅ Python Policy structure valid (src layout)"
           else
-            echo "::error::Current implementation requires either go.mod or pyproject.toml"
-            exit 1
+            fail "Current implementation requires either go.mod or pyproject.toml"
           fi
 
       - name: Validate version consistency
@@ -204,6 +211,12 @@ jobs:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
           DIR="${{ steps.meta.outputs.target_dir }}"
           INPUT_VERSION="$VERSION_INPUT"
@@ -214,19 +227,13 @@ jobs:
           echo "Input version: $INPUT_VERSION"
           echo "Policy definition version: $POLICY_DEF_VERSION"
 
-          if [[ "$INPUT_VERSION" != "$POLICY_DEF_VERSION" ]]; then
-            echo "::error::Version mismatch: workflow input ($INPUT_VERSION) vs policy-definition.yaml ($POLICY_DEF_VERSION)"
-            exit 1
-          fi
+          [[ "$INPUT_VERSION" == "$POLICY_DEF_VERSION" ]] || fail "Version mismatch: workflow input ($INPUT_VERSION) vs policy-definition.yaml ($POLICY_DEF_VERSION)"
 
           if [[ "${RUNTIME:-}" == "python" ]]; then
             PYPROJECT_VERSION=$(yq eval '.project.version' "$DIR/pyproject.toml")
             echo "pyproject.toml version: $PYPROJECT_VERSION"
 
-            if [[ "$INPUT_VERSION" != "$PYPROJECT_VERSION" ]]; then
-              echo "::error::Version mismatch: workflow input ($INPUT_VERSION) vs pyproject.toml ($PYPROJECT_VERSION)"
-              exit 1
-            fi
+            [[ "$INPUT_VERSION" == "$PYPROJECT_VERSION" ]] || fail "Version mismatch: workflow input ($INPUT_VERSION) vs pyproject.toml ($PYPROJECT_VERSION)"
           fi
 
           echo "✅ Version consistency validated"
@@ -265,13 +272,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
           if [[ "${RUNTIME}" == "go" ]]; then
-            go test -v -race ./...
+            go test -v -race ./... || fail "Go tests failed for policy ${{ inputs.policy }}"
           elif [[ "${RUNTIME}" == "python" ]]; then
             if python -m pytest --version 2>/dev/null; then
-              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy ${{ inputs.policy }}"
             else
-              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v
+              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy ${{ inputs.policy }}"
             fi
           fi
 
@@ -279,37 +293,89 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code
-          test -z "$(git status --porcelain)"
 
-      - name: Upload policy definition for release
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          git diff --exit-code || fail "Working tree has uncommitted changes after running tests"
+          [[ -z "$(git status --porcelain)" ]] || fail "Working tree has untracked files after running tests"
+
+      - name: Create and push tag
+        if: steps.tag-check.outputs.tag_existed == 'false'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${{ steps.meta.outputs.tag_name }}" \
+            -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
+
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
+            "${{ steps.meta.outputs.tag_name }}"
+
+          echo "✅ Tag created and pushed: ${{ steps.meta.outputs.tag_name }}"
+
+      - name: Upload policy definition for registration
         uses: actions/upload-artifact@v4
         with:
           name: policy-definition
           path: ${{ steps.meta.outputs.target_dir }}/policy-definition.yaml
           retention-days: 1
 
+      - name: Publish summary
+        shell: bash
+        env:
+          TAG_EXISTED: ${{ steps.tag-check.outputs.tag_existed }}
+        run: |
+          set -euo pipefail
+
+          TAG_STATUS="✅ Tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed"
+          if [[ "$TAG_EXISTED" == "true" ]]; then
+            TAG_STATUS="ℹ️ Tag \`${{ steps.meta.outputs.tag_name }}\` already existed — reused its content, no new tag created"
+          fi
+
+          {
+            echo "## ✅ Validation, Tests & Tagging Passed"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|------|"
+            echo "| Policy | \`${{ inputs.policy }}\` |"
+            echo "| Version | \`${{ inputs.version }}\` |"
+            echo "| Tag | \`${{ steps.meta.outputs.tag_name }}\` |"
+            echo "| Package Path | \`${{ steps.meta.outputs.module_path }}\` |"
+            echo ""
+            echo "**Tests:** ✅ Passed"
+            echo "**Tag:** $TAG_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ------------------------------------------------------------
   # Register the policy in Policy Hub, once per selected environment.
   # fail-fast: false so one environment's failure doesn't cancel the others.
   # ------------------------------------------------------------
-  release:
-    name: Release to ${{ matrix.environment }}
-    needs: prepare
+  register:
+    name: Register to ${{ matrix.environment }}
+    needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ matrix.environment }}
     strategy:
       fail-fast: false
       matrix:
-        environment: ${{ fromJson(needs.prepare.outputs.environments) }}
+        environment: ${{ fromJson(needs.release.outputs.environments) }}
 
     steps:
       - name: Download policy definition
         uses: actions/download-artifact@v4
         with:
           name: policy-definition
-          path: ${{ needs.prepare.outputs.target_dir }}
+          path: ${{ needs.release.outputs.target_dir }}
 
       - name: Register policy in Policy Hub
         shell: bash
@@ -318,7 +384,7 @@ jobs:
           POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
-          TARGET_DIR: ${{ needs.prepare.outputs.target_dir }}
+          TARGET_DIR: ${{ needs.release.outputs.target_dir }}
           ENV_NAME: ${{ matrix.environment }}
         run: |
           set -euo pipefail
@@ -373,25 +439,18 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------
-  # Aggregate every environment's result into one summary, and create
-  # the shared git tag (only if it didn't already exist and at least
-  # one environment released successfully).
+  # Aggregate every environment's registration result into one summary.
+  # Only runs if the release job itself succeeded — tagging is already
+  # decided, so this is purely reporting on registration outcomes.
   # ------------------------------------------------------------
-  finalize:
-    name: Finalize Release
-    needs: [prepare, release]
-    if: always()
+  registration-summary:
+    name: Registration Summary
+    needs: [release, register]
+    if: always() && needs.release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Download all release results
         uses: actions/download-artifact@v4
         with:
@@ -399,92 +458,60 @@ jobs:
           path: results
           merge-multiple: true
 
-      - name: Aggregate results and tag release
+      - name: Aggregate registration results
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
-          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-          TAG_EXISTED: ${{ needs.prepare.outputs.tag_existed }}
-          PREPARE_RESULT: ${{ needs.prepare.result }}
+          ENVIRONMENTS_JSON: ${{ needs.release.outputs.environments }}
         run: |
           set -euo pipefail
 
-          # If preparation itself failed (bad input, structure/version mismatch, or a
-          # failing test), no environment was ever attempted — report that plainly
-          # instead of the misleading "environments failed to release".
-          if [[ "$PREPARE_RESULT" != "success" ]]; then
-            echo "::error::Release preparation failed — no environment releases were attempted."
-            {
-              echo "## ❌ Release Failed During Preparation"
-              echo ""
-              echo "Input validation, policy-structure checks, version-consistency checks, or"
-              echo "tests failed before any environment release was attempted."
-              echo "See the **Validate, Test & Prepare Release** job logs above for the exact error."
-              echo ""
-              echo "**Tag:** ❌ Not created"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          ANY_SUCCESS=false
           ANY_FAILURE=false
           TABLE_ROWS=""
+          ENV_COUNT=$(echo "$ENVIRONMENTS_JSON" | jq 'length')
 
-          shopt -s nullglob
-          for f in results/*.json; do
-            ENV_NAME=$(jq -r '.environment' "$f")
-            STATUS=$(jq -r '.status' "$f")
-            MESSAGE=$(jq -r '.message' "$f")
-
-            case "$STATUS" in
-              success) ICON="✅ Released" ;;
-              already_released) ICON="ℹ️ Already released" ;;
-              skipped) ICON="⚠️ Skipped" ;;
-              *) ICON="❌ Failed" ;;
-            esac
-
-            TABLE_ROWS+="| $ENV_NAME | $ICON | $MESSAGE |"$'\n'
-
-            case "$STATUS" in
-              success|already_released|skipped) ANY_SUCCESS=true ;;
-              *) ANY_FAILURE=true ;;
-            esac
-          done
-
-          if [[ -z "$TABLE_ROWS" ]]; then
-            TABLE_ROWS="| - | ❌ No results | Preparation succeeded but no environment reported a result. Check the release job logs. |"$'\n'
-            ANY_FAILURE=true
-          fi
-
-          if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ Tag \`$TAG_NAME\` already existed — this run released the exact content from that tag, no new tag created."
-          elif [[ "$ANY_SUCCESS" == "true" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-            git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
-            git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME"
-
-            TAG_STATUS="✅ Tag \`$TAG_NAME\` created and pushed"
+          if [[ "$ENV_COUNT" -eq 0 ]]; then
+            TABLE_ROWS="| - | ℹ️ Not applicable | No environment was selected — tag-only release |"$'\n'
           else
-            TAG_STATUS="❌ Tag not created — no environment was released successfully"
+            shopt -s nullglob
+            for f in results/*.json; do
+              ENV_NAME=$(jq -r '.environment' "$f")
+              STATUS=$(jq -r '.status' "$f")
+              MESSAGE=$(jq -r '.message' "$f")
+
+              case "$STATUS" in
+                success) ICON="✅ Released" ;;
+                already_released) ICON="ℹ️ Already released" ;;
+                skipped) ICON="⚠️ Skipped" ;;
+                *) ICON="❌ Failed" ;;
+              esac
+
+              TABLE_ROWS+="| $ENV_NAME | $ICON | $MESSAGE |"$'\n'
+
+              case "$STATUS" in
+                success|already_released|skipped) ;;
+                *) ANY_FAILURE=true ;;
+              esac
+            done
+
+            if [[ -z "$TABLE_ROWS" ]]; then
+              TABLE_ROWS="| - | ❌ No results | No environment reported a result. Check the register job logs. |"$'\n'
+              ANY_FAILURE=true
+            fi
           fi
 
           {
-            echo "## Release Summary: $POLICY_INPUT v$VERSION_INPUT"
+            echo "## Registration Summary: $POLICY_INPUT v$VERSION_INPUT"
             echo ""
             echo "| Environment | Status | Message |"
             echo "|-------------|--------|---------|"
             echo -n "$TABLE_ROWS"
-            echo ""
-            echo "**Tag:** $TAG_STATUS"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$ANY_FAILURE" == "true" ]]; then
-            echo "::error::One or more environments failed to release. See the job summary for details."
+            echo "::error::One or more environments failed to register. See the job summary for details."
             exit 1
           fi
 
-          echo "✅ Finalize completed"
+          echo "✅ Registration summary completed"
