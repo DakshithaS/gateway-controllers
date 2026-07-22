@@ -96,11 +96,14 @@ jobs:
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
             echo "ℹ️  No environment selected — this will be a tag-only release (no Policy Hub registration)"
+            JSON="[]"
           else
             echo "Selected environments: ${ENVS[*]}"
+            # printf still runs its format once even with zero args, so build the
+            # JSON array only in this branch where ENVS is guaranteed non-empty.
+            JSON=$(printf '%s\n' "${ENVS[@]}" | jq -R . | jq -sc .)
           fi
 
-          JSON=$(printf '%s\n' "${ENVS[@]}" | jq -R . | jq -sc .)
           echo "environments=$JSON" >> "$GITHUB_OUTPUT"
 
       - name: Resolve module metadata
