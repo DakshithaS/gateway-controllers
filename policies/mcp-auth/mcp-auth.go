@@ -21,6 +21,7 @@ package mcpauthn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -40,6 +41,13 @@ const (
 	AuthType               = "mcp/oauth"
 	MetadataKeyAuthSuccess = "auth.success"
 	MetadataKeyAuthMethod  = "auth.method"
+
+	// JSON-RPC 2.0 constants. MCP is JSON-RPC 2.0, so protocol-level errors
+	// (as opposed to HTTP/OAuth auth failures) must be surfaced as JSON-RPC
+	// error objects. See https://www.jsonrpc.org/specification#error_object.
+	JSONRPCVersion        = "2.0"
+	JSONRPCParseError     = -32700 // invalid JSON was received
+	JSONRPCInvalidRequest = -32600 // valid JSON that is not a valid request object
 )
 
 type McpAuthPolicy struct {
@@ -426,7 +434,7 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 		var mcpReq MCPRequest
 		if err := json.Unmarshal(reqCtx.Body.Content, &mcpReq); err != nil {
 			slog.Debug("MCP Auth Policy: Failed to parse MCP request", "error", err)
-			return p.handleAuthFailure(reqCtx.SharedContext, p.OnFailureStatusCode, p.ErrorMessageFormat, "Invalid MCP request format")
+			return p.handleBadRequest(err)
 		}
 
 		slog.Debug("MCP Auth Policy: Extracted MCP attributes",
@@ -478,6 +486,37 @@ func (p *McpAuthPolicy) handleAuthFailure(shared *policy.SharedContext, statusCo
 		StatusCode: statusCode,
 		Headers:    headers,
 		Body:       []byte(body),
+	}
+}
+
+// handleBadRequest constructs an HTTP 400 response carrying a JSON-RPC 2.0 error
+// object, as MCP requires for protocol-level errors (unlike authentication
+// failures, which are signalled at the HTTP/OAuth layer with WWW-Authenticate).
+// A body with invalid JSON syntax is reported as -32700 (Parse error); a body
+// that is valid JSON but not a valid request object as -32600 (Invalid Request).
+// The id is null because it cannot be recovered from an unparseable request. This
+// response is not subject to errorMessageFormat, which governs auth failures only.
+func (p *McpAuthPolicy) handleBadRequest(parseErr error) policy.ImmediateResponse {
+	code, message := JSONRPCInvalidRequest, "Invalid Request"
+	var syntaxErr *json.SyntaxError
+	if errors.As(parseErr, &syntaxErr) {
+		code, message = JSONRPCParseError, "Parse error"
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": JSONRPCVersion,
+		"id":      nil,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+			"data":    "Invalid MCP request format",
+		},
+	})
+
+	return policy.ImmediateResponse{
+		StatusCode: 400,
+		Headers:    map[string]string{"content-type": "application/json"},
+		Body:       body,
 	}
 }
 

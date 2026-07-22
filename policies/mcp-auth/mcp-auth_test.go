@@ -360,6 +360,83 @@ func TestOnRequestBody_Delegation_Failure(t *testing.T) {
 	}
 }
 
+// jsonRPCErrorResponse mirrors the JSON-RPC 2.0 error envelope for assertions.
+// ID is captured as RawMessage so a missing "id" field (nil) can be distinguished
+// from an explicit "id": null (the literal bytes "null").
+type jsonRPCErrorResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	} `json:"error"`
+}
+
+// mcpBadRequest issues an OnRequestBody call for a POST /mcp with the given body
+// and returns the resulting ImmediateResponse.
+func mcpBadRequest(t *testing.T, body []byte) policy.ImmediateResponse {
+	t.Helper()
+	p := createTestPolicy()
+	ctx := createMockRequestBodyContext(nil)
+	ctx.Method = "POST"
+	ctx.Path = "/mcp"
+	ctx.OperationPath = "/mcp"
+	ctx.Body = &policy.Body{Content: body, Present: true}
+
+	action := p.OnRequestBody(context.Background(), ctx, map[string]any{})
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("Expected ImmediateResponse, got %T", action)
+	}
+	return resp
+}
+
+// assertJSONRPCError decodes the response body and validates the JSON-RPC error envelope.
+func assertJSONRPCError(t *testing.T, resp policy.ImmediateResponse, wantCode int, wantMessage string) {
+	t.Helper()
+	if resp.StatusCode != 400 {
+		t.Errorf("Expected status 400, got %d", resp.StatusCode)
+	}
+	if ct := resp.Headers["content-type"]; ct != "application/json" {
+		t.Errorf("Expected content-type application/json, got %q", ct)
+	}
+	var parsed jsonRPCErrorResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("Response body is not valid JSON: %v (body: %s)", err, resp.Body)
+	}
+	if parsed.JSONRPC != "2.0" {
+		t.Errorf("Expected jsonrpc \"2.0\", got %q", parsed.JSONRPC)
+	}
+	if parsed.ID == nil {
+		t.Errorf("Expected id field to be present")
+	} else if string(parsed.ID) != "null" {
+		t.Errorf("Expected id to be null, got %s", parsed.ID)
+	}
+	if parsed.Error.Code != wantCode {
+		t.Errorf("Expected error code %d, got %d", wantCode, parsed.Error.Code)
+	}
+	if parsed.Error.Message != wantMessage {
+		t.Errorf("Expected error message %q, got %q", wantMessage, parsed.Error.Message)
+	}
+}
+
+// TestOnRequestBody_InvalidJSON_ReturnsParseError verifies that a body with invalid
+// JSON syntax is reported as HTTP 400 with a JSON-RPC -32700 (Parse error) object,
+// rather than an authentication failure. Regression test for wso2/api-platform#2751.
+func TestOnRequestBody_InvalidJSON_ReturnsParseError(t *testing.T) {
+	resp := mcpBadRequest(t, []byte("not-json"))
+	assertJSONRPCError(t, resp, JSONRPCParseError, "Parse error")
+}
+
+// TestOnRequestBody_InvalidStructure_ReturnsInvalidRequest verifies that a body that
+// is valid JSON but not a valid MCP request object is reported as HTTP 400 with a
+// JSON-RPC -32600 (Invalid Request) object.
+func TestOnRequestBody_InvalidStructure_ReturnsInvalidRequest(t *testing.T) {
+	resp := mcpBadRequest(t, []byte("[]"))
+	assertJSONRPCError(t, resp, JSONRPCInvalidRequest, "Invalid Request")
+}
+
 func TestOnRequestBody_InvalidOnFailureStatusCode(t *testing.T) {
 	p := &McpAuthPolicy{}
 	ctx := createMockRequestBodyContext(nil)

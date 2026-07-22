@@ -130,8 +130,11 @@ func TestOnRequest_NoAuthContext(t *testing.T) {
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
-	if resp.StatusCode != 403 {
-		t.Errorf("Expected 403, got %d", resp.StatusCode)
+	if resp.StatusCode != 401 {
+		t.Errorf("Expected 401, got %d", resp.StatusCode)
+	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_token"`) {
+		t.Errorf("Expected error=\"invalid_token\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
@@ -144,8 +147,11 @@ func TestOnRequest_NotAuthenticated(t *testing.T) {
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
-	if resp.StatusCode != 403 {
-		t.Errorf("Expected 403, got %d", resp.StatusCode)
+	if resp.StatusCode != 401 {
+		t.Errorf("Expected 401, got %d", resp.StatusCode)
+	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_token"`) {
+		t.Errorf("Expected error=\"invalid_token\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
@@ -160,8 +166,11 @@ func TestOnRequest_InvalidMCPBody(t *testing.T) {
 	if !ok {
 		t.Fatalf("Expected ImmediateResponse, got %T", action)
 	}
-	if resp.StatusCode != 403 {
-		t.Errorf("Expected 403, got %d", resp.StatusCode)
+	if resp.StatusCode != 400 {
+		t.Errorf("Expected 400, got %d", resp.StatusCode)
+	}
+	if wwwAuth := resp.Headers[WWWAuthenticateHeader]; !strings.Contains(wwwAuth, `error="invalid_request"`) {
+		t.Errorf("Expected error=\"invalid_request\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
@@ -218,6 +227,9 @@ func TestOnRequest_ScopeCheckFails(t *testing.T) {
 	wwwAuth := resp.Headers[WWWAuthenticateHeader]
 	if !strings.Contains(wwwAuth, "mcp:tools:write") {
 		t.Errorf("Expected missing scope in WWW-Authenticate header, got: %s", wwwAuth)
+	}
+	if !strings.Contains(wwwAuth, "error=\"insufficient_scope\"") {
+		t.Errorf("Expected error=\"insufficient_scope\" in WWW-Authenticate header, got: %s", wwwAuth)
 	}
 }
 
