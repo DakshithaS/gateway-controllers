@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -243,14 +243,14 @@ jobs:
 
       - name: Setup Go
         if: env.RUNTIME == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: ${{ steps.meta.outputs.target_dir }}/go.mod
           cache: false
 
       - name: Setup Python
         if: env.RUNTIME == 'python'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
 
@@ -326,7 +326,7 @@ jobs:
           echo "✅ Tag created and pushed: ${{ steps.meta.outputs.tag_name }}"
 
       - name: Upload policy definition for registration
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: policy-definition
           path: ${{ steps.meta.outputs.target_dir }}/policy-definition.yaml
@@ -376,7 +376,7 @@ jobs:
 
     steps:
       - name: Download policy definition
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: policy-definition
           path: ${{ needs.release.outputs.target_dir }}
