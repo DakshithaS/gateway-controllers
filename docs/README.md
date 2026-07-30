@@ -46,12 +46,12 @@ All available policies, sorted alphabetically.
 | [JSON Schema Guardrail](./json-schema-guardrail/v1.0/docs/json-schema.md) | Guardrails, AI | Validates request or response body content against a JSON Schema. |
 | [JSON/XML Mediator](./json-xml-mediator/v1.0/docs/json-xml-mediator.md) | Transformation | Mediates request and response payloads between downstream and upstream JSON/XML formats. |
 | [JWT Auth](./jwt-auth/v1.3/docs/jwt-authentication.md) | Security, AI, WebSub, WebBroker | Validates JWT access tokens included in API requests. |
-| [LLM Cost](./llm-cost/v1.0/docs/llm-cost.md) | AI | Calculates the monetary cost of LLM API calls at response time and stores the result in SharedContext for use by downstream policies. |
+| [LLM Cost](./llm-cost/v1.1/docs/llm-cost.md) | AI | Calculates the monetary cost of LLM API calls at response time and stores the result in SharedContext for use by downstream policies. |
 | [LLM Cost Based Ratelimit](./llm-cost-based-ratelimit/v1.0/docs/llm-cost-based-ratelimit.md) | AI | A specialized rate limiting policy that enforces monetary budget limits on LLM API usage. |
 | [LLM Header Router](./llm-header-router/v0.9/docs/llm-header-router.md) | AI | Selects an LLM provider for OpenAI Chat Completions requests using a configurable request header. |
 | [Log Message](./log-message/v1.0/docs/log-message.md) | Logging, Analytics & Monitoring, MCP, WebSub, WebBroker | This policy provides the capability to log the payload and headers of a request/response. |
 | [MCP Access Control](./mcp-acl-list/v1.0/docs/mcp-acl-list.md) | MCP, AI | MCP ACL List policy controls access to tools, resources, and prompts using mode and exceptions. |
-| [MCP Authentication](./mcp-auth/v1.0/docs/mcp-authentication.md) | MCP, AI, Security | This policy is used to secure traffic to Model Context Protocol server as defined in the specification (https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization). |
+| [MCP Authentication](./mcp-auth/v1.2/docs/mcp-authentication.md) | MCP, AI, Security | This policy is used to secure traffic to Model Context Protocol server as defined in the specification (https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization). |
 | [MCP Authorization](./mcp-authz/v1.1/docs/mcp-authorization.md) | MCP, AI, Security | MCP Authorization policy validates access to MCP resources (tools, resources, prompts) and methods based on JWT claims or OAuth scopes provided by the mcp-auth policy. |
 | [MCP Rate Limit](./mcp-ratelimit/v1.0/docs/mcp-ratelimit.md) | MCP, AI, Security | Applies rate limits to MCP traffic per tool, resource, prompt, or JSON-RPC method. |
 | [MCP Rewrite](./mcp-rewrite/v1.0/docs/mcp-rewrite.md) | MCP, AI | MCP Rewrite policy defines user-facing tools, resources, and prompts and maps them to backend capability names using optional "target" fields. |
@@ -75,7 +75,7 @@ All available policies, sorted alphabetically.
 | [Remove Headers](./remove-headers/v1.0/docs/remove-headers.md) | Transformation, MCP, WebSub, WebBroker | This policy provides the capability to remove headers from either the request or the response. |
 | [Request Rewrite](./request-rewrite/v1.0/docs/request-rewrite.md) | Transformation | Rewrites incoming requests by updating path, query parameters, and/or HTTP method before forwarding to upstream services. |
 | [Respond](./respond/v1.0/docs/respond.md) | AI | Returns an immediate response to the client without forwarding the request to the upstream backend. |
-| [Semantic Cache](./semantic-cache/v1.0/docs/semantic-caching.md) | AI | Implements semantic caching for LLM responses using vector similarity search. |
+| [Semantic Cache](./semantic-cache/v1.1/docs/semantic-caching.md) | AI | Implements semantic caching for LLM responses using vector similarity search. |
 | [Semantic Prompt Guard](./semantic-prompt-guard/v1.0/docs/semantic-prompt-guard.md) | Guardrails, AI | Blocks or allows prompts based on semantic similarity to configured allow/deny phrase embeddings. |
 | [Semantic Tool Filtering](./semantic-tool-filtering/v1.0/docs/semantic-tool-filtering.md) | Guardrails, AI | Dynamically filters the tools provided within an API request based on their semantic relevance to the user query. |
 | [Sentence Count Guardrail](./sentence-count-guardrail/v1.0/docs/sentence-count.md) | Guardrails, AI | Validates the sentence count of request or response body content. |

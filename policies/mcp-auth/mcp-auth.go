@@ -37,6 +37,7 @@ const (
 	AuthMethodBearer       = "Bearer resource_metadata="
 	WellKnownPath          = ".well-known/oauth-protected-resource"
 	WellKnownEndpointPath  = "/" + WellKnownPath
+	McpPathSegment         = "mcp"
 	McpSessionHeader       = "mcp-session-id"
 	AuthType               = "mcp/oauth"
 	MetadataKeyAuthSuccess = "auth.success"
@@ -62,7 +63,7 @@ type McpAuthPolicy struct {
 type ProtectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
 	AuthorizationServers []string `json:"authorization_servers"`
-	ScopesSupported      []string `json:"scopes_supported"`
+	ScopesSupported      []string `json:"scopes_supported,omitempty"`
 }
 
 // SecurityConfig represents the configuration for tools, resources, prompts, or methods
@@ -138,6 +139,15 @@ func getStringParam(params map[string]interface{}, key, defaultValue string) str
 	if v, ok := params[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
+		}
+	}
+	return defaultValue
+}
+
+func getBoolParam(params map[string]interface{}, key string, defaultValue bool) bool {
+	if v, ok := params[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
 		}
 	}
 	return defaultValue
@@ -307,6 +317,45 @@ func isWellKnownEndpointRequest(path string) bool {
 	return path == WellKnownEndpointPath || strings.HasSuffix(path, WellKnownEndpointPath)
 }
 
+// isMcpEndpointRequest reports whether the request targets the MCP endpoint (/mcp).
+func isMcpEndpointRequest(operationPath string) bool {
+	return strings.Contains(operationPath, McpPathSegment)
+}
+
+// isMcpPostRequest reports whether the request is the JSON-RPC POST to the MCP
+// endpoint, the only MCP request carrying a body the exception lists can key off.
+func isMcpPostRequest(method, operationPath string) bool {
+	return strings.EqualFold(method, "POST") && isMcpEndpointRequest(operationPath)
+}
+
+// requiresTransportAuth reports whether a non-POST request to the MCP endpoint must
+// be authenticated in the header phase. GET /mcp (SSE stream) and DELETE /mcp
+// (session termination) carry no JSON-RPC payload, so the body phase cannot gate
+// them. CORS preflights and the protected resource metadata endpoint stay public.
+func (p *McpAuthPolicy) requiresTransportAuth(method, operationPath string) bool {
+	if !isMcpEndpointRequest(operationPath) || isWellKnownEndpointRequest(operationPath) {
+		return false
+	}
+	if isMcpPostRequest(method, operationPath) || strings.EqualFold(method, "OPTIONS") {
+		return false
+	}
+	// No JSON-RPC name to match against the exception lists, so authenticate unless
+	// the whole MCP server is unprotected.
+	return !p.AuthConfig.isFullyUnprotected()
+}
+
+// isFullyUnprotected reports whether every capability group is disabled with no
+// exceptions. An exception under a disabled group inverts to "requires auth", so a
+// disabled group with exceptions still counts as protected.
+func (c McpAuthConfig) isFullyUnprotected() bool {
+	for _, config := range []SecurityConfig{c.Tools, c.Resources, c.Prompts, c.Methods} {
+		if config.Enabled || len(config.Exceptions) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func validateAuthFailureConfig(statusCode int, format string) error {
 	if statusCode != 401 && statusCode != 403 {
 		return fmt.Errorf("invalid policy configuration: onFailureStatusCode must be 401 or 403")
@@ -357,10 +406,11 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		v1r := buildInvalidConfigResponse(err.Error()).(policy.ImmediateResponse)
 		return policy.ImmediateResponse{StatusCode: v1r.StatusCode, Headers: v1r.Headers, Body: v1r.Body}
 	}
+	ds := reqCtx.DownstreamRequest()
 	// Check for GET /.well-known/oauth-protected-resource
-	if reqCtx.Method == "GET" && isWellKnownEndpointRequest(reqCtx.OperationPath) {
+	if ds.Method == "GET" && isWellKnownEndpointRequest(reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Handling well-known protected resource metadata request")
-		sessionIds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(McpSessionHeader)
+		sessionIds := reqCtx.DownstreamHeaders().Get(McpSessionHeader)
 		sessionId := ""
 		if len(sessionIds) > 0 {
 			sessionId = sessionIds[0]
@@ -398,7 +448,7 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 		}
 
 		prm := ProtectedResourceMetadata{
-			Resource:             generateResourcePathFromFields(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, params, "mcp"),
+			Resource:             generateResourcePathFromFields(ds.Scheme, ds.Authority, reqCtx.Vhost, reqCtx.APIContext, params, "mcp"),
 			AuthorizationServers: issuers,
 			ScopesSupported:      p.RequiredScopes,
 		}
@@ -412,6 +462,15 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 			Body: jsonOut,
 		}
 	}
+
+	// GET /mcp and DELETE /mcp carry no body, so gate them here instead of the body phase.
+	if p.requiresTransportAuth(ds.Method, reqCtx.OperationPath) {
+		slog.Debug("MCP Auth Policy: Authenticating MCP transport request",
+			"method", ds.Method,
+			"operationPath", reqCtx.OperationPath)
+		return p.authenticate(ctx, reqCtx, params, p.RequiredScopes)
+	}
+
 	return policy.UpstreamRequestHeaderModifications{}
 }
 
@@ -427,7 +486,8 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 		reqCtx.Metadata["gatewayHost"] = p.GatewayHost
 	}
 
-	if reqCtx.Method == "POST" && strings.Contains(reqCtx.OperationPath, "mcp") {
+	ds := reqCtx.DownstreamRequest()
+	if isMcpPostRequest(ds.Method, reqCtx.OperationPath) {
 		if reqCtx.Body == nil || !reqCtx.Body.Present {
 			return p.handleAuth(ctx, reqCtx, params, p.RequiredScopes)
 		}
@@ -520,52 +580,62 @@ func (p *McpAuthPolicy) handleBadRequest(parseErr error) policy.ImmediateRespons
 	}
 }
 
-// handleAuth performs MCP authentication in the request body phase.
-func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any, scopes []string) policy.RequestAction {
+// authenticate delegates token validation to the JWT Auth policy's header phase and
+// adapts the outcome to MCP semantics: failures gain the WWW-Authenticate challenge
+// and the session header, successes are re-stamped as mcp/oauth. Shared by both the
+// header and body phases.
+func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.RequestHeaderContext, params map[string]any, scopes []string) policy.RequestHeaderAction {
 	type requestHeaderPolicer interface {
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]interface{}) policy.RequestHeaderAction
 	}
 
-	sessionIds := getDownstreamHeaders(reqCtx.Downstream, reqCtx.Headers).Get(McpSessionHeader)
+	ds := headerCtx.DownstreamRequest()
+	sessionIds := headerCtx.DownstreamHeaders().Get(McpSessionHeader)
 	sessionId := ""
 	if len(sessionIds) > 0 {
 		sessionId = sessionIds[0]
 	}
 
-	// requiredScopes are not to be enforced
+	// Params are forwarded to the delegated policy verbatim, so any parameter it
+	// already understands needs no mapping here — only an entry in this policy's
+	// definition to make it configurable, since `parameters` sets
+	// additionalProperties: false. forwardToken, forwardedTokenHeader,
+	// forwardTokenStripScheme and userIdClaim reach jwt-auth this way and keep its
+	// names, types and defaults deliberately: a divergence in either name or type
+	// would be read as absent and silently fall back to jwt-auth's default.
+	//
+	// requiredScopes is the one parameter that must not be forwarded. mcp-auth
+	// advertises it through protected resource metadata without enforcing it,
+	// whereas jwt-auth would reject tokens that lack the listed scopes.
 	jwtParams := maps.Clone(params)
 	delete(jwtParams, "requiredScopes")
+
+	// forwardToken is the one parameter whose default differs from jwt-auth's.
+	// MCP servers are frequently third parties, so this policy defaults to not
+	// releasing the client credential upstream. Resolving it here rather than
+	// leaving the key absent is what makes that default authoritative: an absent
+	// key would fall through to jwt-auth's own default of true, whatever the
+	// control plane does or does not materialise from the policy definition.
+	forwardToken := getBoolParam(params, "forwardToken", false)
+	jwtParams["forwardToken"] = forwardToken
 
 	slog.Debug("MCP Auth Policy: Delegating authentication to JWT Auth Policy")
 	jwtPolicy, err := jwtauth.GetPolicy(policy.PolicyMetadata{}, jwtParams)
 	if err != nil {
-		return p.handleAuthFailure(reqCtx.SharedContext, 500, "json", fmt.Sprintf("jwtauth.GetPolicy unavailable: %s", err))
+		return p.handleAuthFailure(headerCtx.SharedContext, 500, "json", fmt.Sprintf("jwtauth.GetPolicy unavailable: %s", err))
 	}
 	hrp, ok := jwtPolicy.(requestHeaderPolicer)
 	if !ok {
-		return p.handleAuthFailure(reqCtx.SharedContext, 500, "json", "jwtPolicy does not implement OnRequestHeaders")
+		return p.handleAuthFailure(headerCtx.SharedContext, 500, "json", "jwtPolicy does not implement OnRequestHeaders")
 	}
 
-	headerCtx := &policy.RequestHeaderContext{
-		SharedContext: reqCtx.SharedContext,
-		Headers:       reqCtx.Headers,
-		Path:          reqCtx.Path,
-		Method:        reqCtx.Method,
-		Authority:     reqCtx.Authority,
-		Scheme:        reqCtx.Scheme,
-		Vhost:         reqCtx.Vhost,
-		// Propagate the downstream snapshot so the delegated JWT auth
-		// policy validates the Authorization header the client actually sent,
-		// not one a peer policy rewrote during the header phase.
-		Downstream: reqCtx.Downstream,
-	}
 	headerAction := hrp.OnRequestHeaders(ctx, headerCtx, jwtParams)
 	if ir, ok := headerAction.(policy.ImmediateResponse); ok {
 		slog.Debug("MCP Auth Policy: Authentication failed in JWT Auth Policy, handling failure")
-		reqCtx.SharedContext.AuthContext = &policy.AuthContext{
+		headerCtx.SharedContext.AuthContext = &policy.AuthContext{
 			Authenticated: false,
 			AuthType:      AuthType,
-			Previous:      reqCtx.SharedContext.AuthContext,
+			Previous:      headerCtx.SharedContext.AuthContext,
 		}
 		headers := ir.Headers
 		escapedDesc := ""
@@ -577,7 +647,7 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 				}
 			}
 		}
-		wwwAuthHeader := generateWwwAuthenticateHeaderFromFields(reqCtx.Scheme, reqCtx.Authority, reqCtx.Vhost, reqCtx.APIContext, params, scopes, escapedDesc)
+		wwwAuthHeader := generateWwwAuthenticateHeaderFromFields(ds.Scheme, ds.Authority, headerCtx.Vhost, headerCtx.APIContext, params, scopes, escapedDesc)
 		headers[WWWAuthenticateHeader] = wwwAuthHeader
 		headers[McpSessionHeader] = sessionId
 		return policy.ImmediateResponse{
@@ -587,10 +657,51 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		}
 	}
 	// Override AuthType to mcp/oauth: mcp-auth is the effective policy that ran
-	if reqCtx.SharedContext.AuthContext != nil {
-		reqCtx.SharedContext.AuthContext.AuthType = AuthType
+	if headerCtx.SharedContext.AuthContext != nil {
+		headerCtx.SharedContext.AuthContext.AuthType = AuthType
 	}
-	if a, ok := headerAction.(policy.UpstreamRequestHeaderModifications); ok {
+	return headerAction
+}
+
+// handleAuth performs MCP authentication in the request body phase, translating the
+// shared delegation's header-phase action into a body-phase one.
+func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any, scopes []string) policy.RequestAction {
+	ds := reqCtx.DownstreamRequest()
+	headerCtx := &policy.RequestHeaderContext{
+		SharedContext: reqCtx.SharedContext,
+		Headers:       reqCtx.Headers,
+		Path:          ds.Path,
+		Method:        ds.Method,
+		Authority:     ds.Authority,
+		Scheme:        ds.Scheme,
+		Vhost:         reqCtx.Vhost,
+		// Propagate the downstream snapshot so the delegated JWT auth
+		// policy validates the Authorization header the client actually sent,
+		// not one a peer policy rewrote during the header phase.
+		Downstream: reqCtx.Downstream,
+	}
+
+	forwardToken := getBoolParam(params, "forwardToken", false)
+
+	switch a := p.authenticate(ctx, headerCtx, params, scopes).(type) {
+	case policy.ImmediateResponse:
+		return a
+	case policy.UpstreamRequestHeaderModifications:
+		tokenHeader := getStringParam(params, "headerName", "Authorization")
+		if isTokenHeaderClaimed(reqCtx.Downstream, reqCtx.Headers, tokenHeader) {
+			slog.Debug("MCP Auth Policy: Inbound token header claimed by a peer policy, preserving it",
+				"headerName", tokenHeader)
+
+			forwardedTokenHeader := getStringParam(params, "forwardedTokenHeader", "x-forwarded-authorization")
+			if forwardToken && strings.EqualFold(forwardedTokenHeader, tokenHeader) {
+				slog.Warn("MCP Auth Policy: forwardedTokenHeader is claimed by another policy, so the validated token is not forwarded upstream; "+
+					"set forwardedTokenHeader to a header no other policy writes",
+					"forwardedTokenHeader", forwardedTokenHeader,
+					"headerName", tokenHeader)
+			}
+
+			a = preserveTokenHeader(a, tokenHeader)
+		}
 		return policy.UpstreamRequestModifications{
 			HeadersToSet:            a.HeadersToSet,
 			HeadersToRemove:         a.HeadersToRemove,
