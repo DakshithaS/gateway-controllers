@@ -38,7 +38,7 @@ Configured by the administrator in `config.toml` under `policy_configurations.mc
 | `errormessageformat` | string | No | `"json"` | jwtauth_v0 | Format of the error response. Allowed values: `"json"`, `"plain"`, `"minimal"`. |
 | `errormessage` | string | No | - | jwtauth_v0 | Custom error message to include in the response body on authentication failure. |
 | `validateissuer` | boolean | No | - | jwtauth_v0 | Whether to validate the token's issuer claim against configured key managers. |
-| `gatewayhost` | string | No | `"localhost"` | mcpauth_v0 | The outward facing gateway host name used when deriving the protected resource metadata URL and response. Falls back to this if no vhosts are defined in the MCP proxy configuration. |
+| `gatewayhost` | string | No | `"localhost"` | mcpauth_v0 | The outward-facing gateway host name used when deriving the protected resource metadata URL and response. Falls back to this if no vhosts are defined in the MCP proxy configuration. |
 
 #### KeyManager Configuration
 
