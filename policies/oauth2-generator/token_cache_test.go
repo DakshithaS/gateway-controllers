@@ -540,6 +540,178 @@ func TestRedisCachingTokenSource_InnerError_IsPropagated(t *testing.T) {
 	}
 }
 
+// ─── tokenFreshEnough / expiryBuffer ─────────────────────────────────────────
+
+func TestTokenFreshEnough_Nil_IsNotFresh(t *testing.T) {
+	if tokenFreshEnough(nil, time.Minute) {
+		t.Error("expected a nil token to never be fresh enough")
+	}
+}
+
+func TestTokenFreshEnough_EmptyAccessToken_IsNotFresh(t *testing.T) {
+	tok := &xoauth2.Token{Expiry: time.Now().Add(time.Hour)}
+	if tokenFreshEnough(tok, time.Minute) {
+		t.Error("expected a token with no AccessToken to never be fresh enough")
+	}
+}
+
+func TestTokenFreshEnough_ZeroExpiry_IsFresh(t *testing.T) {
+	tok := &xoauth2.Token{AccessToken: "tok"} // Expiry left zero - "never expires", mirrors Token.Valid()
+	if !tokenFreshEnough(tok, time.Minute) {
+		t.Error("expected a zero-Expiry token to be treated as fresh, same as Token.Valid()")
+	}
+}
+
+func TestTokenFreshEnough_WithinBuffer_IsNotFresh(t *testing.T) {
+	// Expires in 15s; a 30s buffer means this is "not fresh enough" even
+	// though the token itself, per Token.Valid()'s own hardcoded 10s margin,
+	// would still be considered valid.
+	tok := &xoauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(15 * time.Second)}
+	if tokenFreshEnough(tok, 30*time.Second) {
+		t.Error("expected a token expiring within the buffer window to not be fresh enough")
+	}
+	if !tok.Valid() {
+		t.Fatal("test setup invariant broken: expected the raw token to still satisfy Token.Valid() at this margin")
+	}
+}
+
+func TestTokenFreshEnough_OutsideBuffer_IsFresh(t *testing.T) {
+	tok := &xoauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}
+	if !tokenFreshEnough(tok, 30*time.Second) {
+		t.Error("expected a token expiring well outside the buffer window to be fresh enough")
+	}
+}
+
+// TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch
+// locks in that the in-process tier re-fetches once a cached token enters
+// its configured expiryBuffer window, rather than serving it until its
+// literal expiry - the whole point of the feature (avoid handing the
+// backend a credential that's about to expire mid-flight).
+func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
+	mr := miniredis.RunT(t)
+	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}}
+
+	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.AccessToken != "soon-to-expire" {
+		t.Fatalf("unexpected access token on first call: %q", tok.AccessToken)
+	}
+
+	// The just-fetched token's 5s remaining TTL is inside the 30s
+	// expiryBuffer, so the next call must not be served from the local
+	// cache - it should fall through to a second inner fetch.
+	inner.token = &xoauth2.Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
+	tok, err = src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error on second call: %v", err)
+	}
+	if tok.AccessToken != "freshly-refetched" {
+		t.Errorf("expected the near-expiry token to trigger a refetch, got access token %q", tok.AccessToken)
+	}
+	if inner.calls != 2 {
+		t.Errorf("expected exactly 2 inner fetches (initial + buffer-triggered refetch), got %d", inner.calls)
+	}
+}
+
+// TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch is
+// the Redis-tier equivalent: an entry written by another replica that's now
+// within this replica's expiryBuffer window must not be served as-is.
+func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
+	mr := miniredis.RunT(t)
+	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
+
+	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(params))
+	cached, _ := json.Marshal(cachedToken{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)})
+	if err := mr.Set(key, string(cached)); err != nil {
+		t.Fatalf("failed to seed miniredis: %v", err)
+	}
+
+	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.AccessToken != "freshly-refetched" {
+		t.Errorf("expected the near-expiry redis entry to be rejected and trigger a refetch, got access token %q", tok.AccessToken)
+	}
+	if inner.calls != 1 {
+		t.Errorf("expected exactly 1 inner fetch after rejecting the stale redis entry, got %d", inner.calls)
+	}
+}
+
+// TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch is
+// the end-to-end regression test for the actual bug this feature fixes:
+// without wrapping the token-endpoint source in
+// xoauth2.ReuseTokenSourceWithExpiry(expiryBuffer), the library's own
+// ReuseTokenSource (hardcoded to a 10s margin) would keep silently handing
+// back the same soon-to-expire token whenever the outer cache's larger
+// expiryBuffer decided to fall through and re-fetch - defeating the whole
+// feature the moment expiryBuffer exceeds 10s. This uses the real
+// buildTokenSource path (not stubTokenSource) against an httptest server so
+// that library-internal caching is actually exercised.
+func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	var idpCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idpCalls++
+		accessToken, expiresIn := "token-1", 5 // expires in 5s - inside the 10s expiryBuffer below
+		if idpCalls > 1 {
+			accessToken, expiresIn = "token-2", 300
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": accessToken,
+			"token_type":   "Bearer",
+			"expires_in":   expiresIn,
+		})
+	}))
+	defer server.Close()
+
+	params := testParams(func(p *oauth2Params) {
+		p.tokenEndpoint = server.URL
+		p.expiryBuffer = 10 * time.Second
+	})
+	inner, err := buildTokenSource(params)
+	if err != nil {
+		t.Fatalf("unexpected error building token source: %v", err)
+	}
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error priming the cache: %v", err)
+	}
+	if tok.AccessToken != "token-1" {
+		t.Fatalf("unexpected primed access token: %q", tok.AccessToken)
+	}
+	if idpCalls != 1 {
+		t.Fatalf("expected exactly 1 token-endpoint call to prime the cache, got %d", idpCalls)
+	}
+
+	// token-1's 5s remaining TTL is inside the 10s expiryBuffer: the outer
+	// cache falls through to inner.Token(), and inner itself - via
+	// ReuseTokenSourceWithExpiry using that same 10s buffer - must perform a
+	// genuine second token-endpoint call rather than replaying token-1.
+	tok, err = src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.AccessToken != "token-2" {
+		t.Errorf("expected expiryBuffer to force a fresh token-endpoint call instead of reusing the near-expiry token, got access token %q", tok.AccessToken)
+	}
+	if idpCalls != 2 {
+		t.Errorf("expected exactly 2 token-endpoint calls total (primed + buffer-triggered refetch), got %d", idpCalls)
+	}
+}
+
 // ─── getOrCreateRedisClient ──────────────────────────────────────────────────
 
 func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {

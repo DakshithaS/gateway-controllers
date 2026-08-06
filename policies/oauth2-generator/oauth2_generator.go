@@ -73,6 +73,14 @@ const (
 	// in lockstep against the same struggling identity provider.
 	retryBaseDelay = 100 * time.Millisecond
 	retryMaxDelay  = 2 * time.Second
+
+	// defaultExpiryBuffer is how far ahead of a token's actual expiry it's
+	// treated as no-longer-fresh, both by the caching layer (token_cache.go's
+	// tokenFreshEnough) and by the token-endpoint source itself (via
+	// xoauth2.ReuseTokenSourceWithExpiry below) - see expiryBuffer's field
+	// comment. 30s comfortably covers a request's own in-flight time to the
+	// backend, well beyond golang.org/x/oauth2's own hardcoded 10s default.
+	defaultExpiryBuffer = 30 * time.Second
 )
 
 // defaultPurgeStatusCodes is applied when tokenPurgeStatusCodes is
@@ -151,6 +159,19 @@ type oauth2Params struct {
 	// tokenTTLFallback is applied by the caching layer when the token
 	// endpoint's response omits expires_in - see defaultTokenTTLFallback.
 	tokenTTLFallback time.Duration
+
+	// expiryBuffer is how far ahead of a token's actual expiry it's treated
+	// as stale, so a request never gets sent upstream with a credential that
+	// expires mid-flight or a hair before the backend even sees it. Applied
+	// both to the caching layer's own local/Redis freshness check
+	// (token_cache.go's tokenFreshEnough) and to the token-endpoint source's
+	// own reuse behavior (see buildTokenSource's use of
+	// xoauth2.ReuseTokenSourceWithExpiry) - both must agree on the same
+	// threshold, or the cache layer would decide a token is stale while the
+	// token source itself still considers its own cached copy fresh and
+	// hands back the very token being avoided. Unused when bearerToken is
+	// set - see defaultExpiryBuffer.
+	expiryBuffer time.Duration
 
 	// purgeStatusCodes are the upstream response status codes that purge the
 	// cached token - see OnResponseHeaders and defaultPurgeStatusCodes.
@@ -337,7 +358,15 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			// the library's own request/response handling untouched.
 			EndpointParams: toURLValues(p.tokenRequestParams),
 		}
-		return cfg.TokenSource(ctx), nil
+		// cfg.TokenSource(ctx) would wrap this in the library's own
+		// ReuseTokenSource, hardcoded to a 10s early-expiry buffer - not
+		// configurable, and not the same threshold the caching layer uses
+		// (see expiryBuffer's field comment). cfg.Token(ctx) is the same
+		// underlying fetch with no caching of its own, so wrapping it
+		// ourselves in ReuseTokenSourceWithExpiry(p.expiryBuffer) gets the
+		// identical single-flight/mutex behavior with a matching threshold.
+		raw := tokenFetcherFunc(func() (*xoauth2.Token, error) { return cfg.Token(ctx) })
+		return xoauth2.ReuseTokenSourceWithExpiry(nil, raw, p.expiryBuffer), nil
 
 	case GrantTypePassword:
 		cfg := &xoauth2.Config{
@@ -365,9 +394,11 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		// TokenSource(ctx, initialToken) only refreshes via refresh_token,
 		// which the password grant's response may not include, so
 		// passwordTokenSource re-authenticates directly instead.
-		// ReuseTokenSource gives it the same caching/mutex-safety
-		// clientcredentials gets internally.
-		return xoauth2.ReuseTokenSource(nil, src), nil
+		// ReuseTokenSourceWithExpiry gives it the same caching/mutex-safety
+		// clientcredentials gets internally, using the same configurable
+		// expiryBuffer threshold rather than the library's hardcoded 10s
+		// default.
+		return xoauth2.ReuseTokenSourceWithExpiry(nil, src, p.expiryBuffer), nil
 
 	default:
 		// Unreachable - validateAndExtractParams already rejects any other
@@ -375,6 +406,15 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		return nil, fmt.Errorf("unsupported grantType %q", p.grantType)
 	}
 }
+
+// tokenFetcherFunc adapts a plain fetch function to xoauth2.TokenSource, so a
+// Config's uncached single-shot Token(ctx) method (rather than its own
+// TokenSource(ctx), which bundles in the library's hardcoded-10s
+// ReuseTokenSource) can be wrapped in our own ReuseTokenSourceWithExpiry -
+// see buildTokenSource's client_credentials case.
+type tokenFetcherFunc func() (*xoauth2.Token, error)
+
+func (f tokenFetcherFunc) Token() (*xoauth2.Token, error) { return f() }
 
 // tokenEndpointTransportKey identifies a distinct token-endpoint HTTP
 // client configuration - proxy and TLS settings, the only things that
@@ -827,6 +867,13 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	p.tokenRequestHeaders = getStringMapParam(params, "tokenRequestHeaders")
 	p.requestTimeout = getDurationParam(params, "tokenRequestTimeout", defaultTokenRequestTimeout)
 	p.tokenTTLFallback = getDurationParam(params, "defaultTokenTTL", defaultTokenTTLFallback)
+	p.expiryBuffer = getDurationParam(params, "expiryBuffer", defaultExpiryBuffer)
+	if p.expiryBuffer < 0 {
+		// A negative buffer has no sane meaning here (see getIntParam's
+		// identical treatment of negative retry counts) - fall back rather
+		// than let it invert the freshness check.
+		p.expiryBuffer = defaultExpiryBuffer
+	}
 	p.purgeStatusCodes = getPurgeStatusCodesParam(params, "tokenPurgeStatusCodes", defaultPurgeStatusCodes)
 
 	p.proxyURL = getStringParam(params, "proxyURL")

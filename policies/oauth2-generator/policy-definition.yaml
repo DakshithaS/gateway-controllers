@@ -147,6 +147,18 @@ parameters:
         used only when the token endpoint's response omits expires_in.
         Has no effect when bearerToken is set.
       default: "1h"
+    expiryBuffer:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        How long before a token's actual expiry it's treated as stale and
+        refreshed early, as a Go duration string (e.g. "30s") - so a
+        request is never forwarded upstream with a credential that expires
+        mid-flight. Keep this comfortably below defaultTokenTTL and any
+        expires_in the token endpoint actually returns - a value at or
+        above the token's real lifetime forces a fresh fetch on every
+        request. Has no effect when bearerToken is set.
+      default: "30s"
     tokenPurgeStatusCodes:
       type: array
       x-wso2-policy-advanced-param: true

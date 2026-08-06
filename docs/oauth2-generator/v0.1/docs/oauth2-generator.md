@@ -38,8 +38,9 @@ supports proxying and custom TLS trust (`proxyURL`/`tlsCaCertPath`/
 - Two-tier token cache: in-process (always on) and an optional shared Redis
   tier (`cacheStrategy: redis`) so every gateway-runtime replica reuses the
   same token and survives an individual replica restart
-- Automatic refresh ahead of token expiry, and automatic cache purge on a
-  configurable set of upstream rejection status codes (default `401`)
+- Automatic refresh ahead of token expiry (`expiryBuffer`, default `30s`
+  before actual expiry), and automatic cache purge on a configurable set of
+  upstream rejection status codes (default `401`)
 - Bounded retry of transient token-endpoint failures (network errors,
   `429`, `5xx`), with exponential backoff and jitter
 - Configurable credential injection: any header name, any (or no) scheme
@@ -79,6 +80,7 @@ fields), and **system parameters**, set by the gateway operator in
 | `tokenRequestTimeout` | string | No | `"10s"` | Bounds a single token-endpoint HTTP call (Go duration format). Without this, a hung identity provider would otherwise block a token fetch indefinitely. |
 | `tokenRequestMaxRetries` | integer | No | `2` | Additional attempts after the initial token-endpoint call fails with a transient error (network error, `429`, `5xx`) — a rejected/malformed credential (other `4xx`) is never retried. Backoff is exponential with jitter, capped at 2s. |
 | `defaultTokenTTL` | string | No | `"1h"` | Applied when the token endpoint's response omits `expires_in` (Go duration format). Without this fallback, such a token would never be cached — every request would re-fetch it. |
+| `expiryBuffer` | string | No | `"30s"` | How long before a token's actual expiry it's treated as stale and refreshed early (Go duration format) — so a request is never forwarded upstream with a credential that expires mid-flight. Applies to both the cache tiers and the token endpoint's own refresh timing, replacing the hardcoded 10s margin `golang.org/x/oauth2` uses internally. Keep this comfortably below `defaultTokenTTL` and any `expires_in` the token endpoint actually returns — a value at or above the token's real lifetime forces a fresh fetch on every request. |
 | `tokenPurgeStatusCodes` | integer array | No | `[401]` | Upstream response status codes that purge the cached token — a signal that the token this policy just injected was rejected (e.g. revoked out-of-band at the identity provider). Set to `[]` to disable purge-on-rejection entirely. |
 | `proxyURL` | string | No | - | HTTP/HTTPS proxy for the token-endpoint call only — independent of the proxied request's own upstream connection. |
 | `tlsCaCertPath` | string | No | - | Path (inside the gateway-runtime container) to a PEM-encoded CA certificate to trust for the token-endpoint call, for a private/internal certificate authority. |
@@ -135,13 +137,16 @@ key_prefix = "my-gateway:oauth2:"
    source for the current credential:
    - **Static path** (`bearerToken` set): the configured token is returned
      as-is. No network call, caching, or refresh.
-   - **Token-endpoint path**: a valid, non-expired token is served from the
-     in-process cache (and, if `cacheStrategy: redis`, the shared Redis tier)
-     if one exists. Otherwise the token endpoint is called using the
-     configured grant, with bounded retry on transient failures
-     (`tokenRequestMaxRetries`), and the resulting token is cached (using
-     `defaultTokenTTL` as a fallback expiry if the response omitted
-     `expires_in`).
+   - **Token-endpoint path**: a token still fresh outside `expiryBuffer` of
+     its expiry is served from the in-process cache (and, if
+     `cacheStrategy: redis`, the shared Redis tier) if one exists. Otherwise
+     the token endpoint is called using the configured grant, with bounded
+     retry on transient failures (`tokenRequestMaxRetries`), and the
+     resulting token is cached (using `defaultTokenTTL` as a fallback expiry
+     if the response omitted `expires_in`). `expiryBuffer` governs this
+     refresh-ahead decision at every layer — the cache tiers and the token
+     endpoint's own internal reuse both refresh once a cached token enters
+     that window, rather than only once it's actually expired.
 2. The credential is injected into `headerName`, prefixed with `valuePrefix`
    (a single space separator), and the request is forwarded upstream.
 3. **Response header phase** – if the upstream backend responds with one of

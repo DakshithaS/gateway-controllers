@@ -265,6 +265,62 @@ func TestValidateAndExtractParams_TimeoutAndTTLUnparsable_FallsBackToDefault(t *
 	}
 }
 
+// ─── expiryBuffer ─────────────────────────────────────────────────────────────
+
+func TestValidateAndExtractParams_ExpiryBufferDefaults(t *testing.T) {
+	p, err := validateAndExtractParams(validParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.expiryBuffer != defaultExpiryBuffer {
+		t.Errorf("expected expiryBuffer to default to %s, got %s", defaultExpiryBuffer, p.expiryBuffer)
+	}
+}
+
+func TestValidateAndExtractParams_ExpiryBufferExplicitOverride(t *testing.T) {
+	params := validParams()
+	params["expiryBuffer"] = "45s"
+
+	p, err := validateAndExtractParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.expiryBuffer != 45*time.Second {
+		t.Errorf("unexpected expiryBuffer: %s", p.expiryBuffer)
+	}
+}
+
+func TestValidateAndExtractParams_ExpiryBufferUnparsable_FallsBackToDefault(t *testing.T) {
+	params := validParams()
+	params["expiryBuffer"] = "not-a-duration"
+
+	p, err := validateAndExtractParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.expiryBuffer != defaultExpiryBuffer {
+		t.Errorf("expected unparsable expiryBuffer to fall back to default %s, got %s", defaultExpiryBuffer, p.expiryBuffer)
+	}
+}
+
+// TestValidateAndExtractParams_ExpiryBufferNegative_FallsBackToDefault locks
+// in that a negative buffer (which would invert tokenFreshEnough's check,
+// treating a token as fresh for longer the further past its expiry it gets)
+// is rejected the same way getIntParam already rejects a negative retry
+// count.
+func TestValidateAndExtractParams_ExpiryBufferNegative_FallsBackToDefault(t *testing.T) {
+	params := validParams()
+	params["expiryBuffer"] = "-5s"
+
+	p, err := validateAndExtractParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.expiryBuffer != defaultExpiryBuffer {
+		t.Errorf("expected negative expiryBuffer to fall back to default %s, got %s", defaultExpiryBuffer, p.expiryBuffer)
+	}
+}
+
 // TestClientCredentials_TokenRequestTimeout_BoundsHungIdP proves
 // tokenRequestTimeout actually bounds the token-endpoint HTTP call - without
 // it, golang.org/x/oauth2 falls back to http.DefaultClient (Timeout: 0, no

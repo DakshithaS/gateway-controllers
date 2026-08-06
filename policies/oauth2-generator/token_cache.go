@@ -276,6 +276,12 @@ type redisCachingTokenSource struct {
 	// its use site in Token().
 	defaultTTL time.Duration
 
+	// expiryBuffer is how far ahead of a token's actual expiry both cache
+	// tiers stop trusting it - see tokenFreshEnough and oauth2Params.expiryBuffer's
+	// field comment for why this must match the threshold buildTokenSource's
+	// inner ReuseTokenSourceWithExpiry uses.
+	expiryBuffer time.Duration
+
 	mu    sync.Mutex
 	local *xoauth2.Token
 
@@ -313,7 +319,26 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oau
 		readTimeout:  cp.redis.readTimeout,
 		writeTimeout: cp.redis.writeTimeout,
 		defaultTTL:   p.tokenTTLFallback,
+		expiryBuffer: p.expiryBuffer,
 	}
+}
+
+// tokenFreshEnough reports whether tok is both present and far enough from
+// its own expiry to still be trusted - the buffer-aware counterpart to
+// xoauth2.Token.Valid(), which only ever applies the library's own
+// hardcoded, non-configurable 10s margin. A zero Expiry mirrors Valid()'s
+// own convention (never expires) - by the time a token reaches either cache
+// tier it has already been normalized away from zero (see Token()'s
+// defaultTTL fallback), so this only matters for a token handed in directly
+// by a test or future caller.
+func tokenFreshEnough(tok *xoauth2.Token, buffer time.Duration) bool {
+	if tok == nil || tok.AccessToken == "" {
+		return false
+	}
+	if tok.Expiry.IsZero() {
+		return true
+	}
+	return tok.Expiry.Add(-buffer).After(time.Now())
 }
 
 // newResilientInner wraps a raw buildTokenSource output with retry (see
@@ -371,7 +396,7 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 func (s *redisCachingTokenSource) localToken() *xoauth2.Token {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.local != nil && s.local.Valid() {
+	if tokenFreshEnough(s.local, s.expiryBuffer) {
 		return s.local
 	}
 	return nil
@@ -440,9 +465,13 @@ func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {
 		RefreshToken: ct.RefreshToken,
 		Expiry:       ct.Expiry,
 	}
-	if !tok.Valid() {
-		// Defensive only - the Redis TTL should already have expired this
-		// entry by the time it would fail Valid().
+	if !tokenFreshEnough(tok, s.expiryBuffer) {
+		// Not just defensive: unlike Valid()'s hardcoded 10s, expiryBuffer
+		// can be large enough that a replica reads this entry, per its own
+		// freshness threshold, well before the Redis TTL naturally expires
+		// it - falling through here (rather than trusting Redis's mere
+		// presence) is what makes that replica refetch instead of serving a
+		// token the caller configured it not to trust anymore.
 		return nil, nil
 	}
 	return tok, nil
