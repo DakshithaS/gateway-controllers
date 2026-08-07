@@ -182,7 +182,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -221,7 +221,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -263,7 +263,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -304,7 +304,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
@@ -355,7 +355,7 @@ spec:
   context: /openai
   template: openai-template
   upstream:
-    url: https://api.openai.com
+    url: https://api.openai.com/v1
     auth:
       type: api-key
       header: Authorization
