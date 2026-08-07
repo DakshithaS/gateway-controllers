@@ -30,8 +30,14 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wso2/api-platform/sdk/core/utils/cache"
 	xoauth2 "golang.org/x/oauth2"
 )
+
+// localTokenCacheKey is the sole key ever used in a redisCachingTokenSource's
+// localCache - each instance holds exactly one credential (its own), so
+// there's nothing to key on beyond a fixed constant.
+var localTokenCacheKey = cache.CacheKey{Key: "token"}
 
 const (
 	// FailureModeOpen degrades to fetching directly from the token endpoint
@@ -205,14 +211,25 @@ type oauth2CacheKeyFields struct {
 	PasswordHash     string `json:"passwordHash,omitempty"`
 }
 
+// hashSensitiveValue returns a SHA-256 hex digest of a secret value, so it
+// can be used as part of oauth2ConfigDiscriminator's cache-key material
+// below without the raw secret appearing in it.
+func hashSensitiveValue(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
 // oauth2ConfigDiscriminator derives a stable cache-key component from the oauth2
 // config: every field that determines what token the endpoint would issue feeds
 // into the hash, so a rotated clientSecret/password lands on a different key while
 // byte-identical configs share one, regardless of which API/provider they're on.
 //
 // clientSecret/password are hashed with SHA-256 rather than stored raw (Redis key
-// names appear in MONITOR/slowlog output - see hashSensitiveValue in
-// redis_clients.go), closing a cross-credential reuse gap: two configs sharing only
+// names appear in MONITOR/slowlog output - see hashSensitiveValue above),
+// closing a cross-credential reuse gap: two configs sharing only
 // clientId/tokenEndpoint but different credentials now land on different keys.
 func oauth2ConfigDiscriminator(p oauth2Params) string {
 	fields := oauth2CacheKeyFields{
@@ -260,7 +277,8 @@ type tokenProvider interface {
 // a Redis error either falls back to the token endpoint (failOpen, the default) or
 // surfaces as a failure, per redis.failureMode.
 type redisCachingTokenSource struct {
-	// inner is read/written under mu - Purge() replaces it with a freshly-built
+	// inner is read/written under mu (mu guards only inner - localCache is its
+	// own thread-safe SDK cache) - Purge() replaces it with a freshly-built
 	// one. Always a *resilientTokenSource wrapping buildTokenSource's raw output.
 	inner xoauth2.TokenSource
 
@@ -282,8 +300,16 @@ type redisCachingTokenSource struct {
 	// inner ReuseTokenSourceWithExpiry uses.
 	expiryBuffer time.Duration
 
-	mu    sync.Mutex
-	local *xoauth2.Token
+	mu sync.Mutex
+
+	// localCache holds this instance's single cached token - a size-1
+	// SDK cache (see backend-jwt/opaque-token-auth for the same package used
+	// for their own, genuinely multi-entry token caches) rather than a
+	// hand-rolled field, for consistency across the policy set. Its own TTL
+	// support isn't used (ttl=0, never expires per the cache's own check) -
+	// tokenFreshEnough applies the dynamic, per-token expiryBuffer margin on
+	// every read instead, which a single fixed cache-wide TTL can't express.
+	localCache *cache.InMemoryCache[xoauth2.Token]
 
 	// redisKey is fixed at construction from oauth2ConfigDiscriminator - it
 	// depends only on the config, never anything request-time.
@@ -298,7 +324,14 @@ type redisCachingTokenSource struct {
 func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
 	var client *redis.Client
 	if cp.strategy == CacheStrategyRedis {
-		client = getOrCreateRedisClient(&redis.Options{
+		// created/pingErr deliberately ignored: this policy's own failOpen/
+		// failClosed handling already covers a down Redis at the point of
+		// first real use (getFromRedis/saveToRedis) - adopting
+		// getOrCreateRedisClient's create-time ping-and-fail-fast behavior
+		// too would change *when* a failClosed+Redis-down error surfaces
+		// (at policy-chain-build time instead of first request), a real
+		// behavior change this call site isn't opting into.
+		client, _, _ = getOrCreateRedisClient(&redis.Options{
 			Addr:         fmt.Sprintf("%s:%d", cp.redis.host, cp.redis.port),
 			Username:     cp.redis.username,
 			Password:     cp.redis.password,
@@ -307,7 +340,7 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oau
 			ReadTimeout:  cp.redis.readTimeout,
 			WriteTimeout: cp.redis.writeTimeout,
 			PoolSize:     cp.redis.poolSize,
-		})
+		}, cp.redis.connectionTimeout)
 	}
 
 	return &redisCachingTokenSource{
@@ -320,6 +353,7 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oau
 		writeTimeout: cp.redis.writeTimeout,
 		defaultTTL:   p.tokenTTLFallback,
 		expiryBuffer: p.expiryBuffer,
+		localCache:   cache.NewInMemoryCache[xoauth2.Token]("oauth2-generator-local-token", 1, 0, cache.LRUEvictionPolicy, slog.Default()),
 	}
 }
 
@@ -394,18 +428,15 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 }
 
 func (s *redisCachingTokenSource) localToken() *xoauth2.Token {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if tokenFreshEnough(s.local, s.expiryBuffer) {
-		return s.local
+	tok, ok := s.localCache.Get(context.Background(), localTokenCacheKey)
+	if !ok || !tokenFreshEnough(&tok, s.expiryBuffer) {
+		return nil
 	}
-	return nil
+	return &tok
 }
 
 func (s *redisCachingTokenSource) setLocal(tok *xoauth2.Token) {
-	s.mu.Lock()
-	s.local = tok
-	s.mu.Unlock()
+	_ = s.localCache.Set(context.Background(), localTokenCacheKey, *tok) // never errors - see InMemoryCache.Set
 }
 
 func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
@@ -423,8 +454,9 @@ func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
 // unsupported grantType, already rejected at construction - if it fails here
 // anyway, keep the existing inner rather than leave it nil.
 func (s *redisCachingTokenSource) Purge() {
+	_ = s.localCache.Delete(context.Background(), localTokenCacheKey)
+
 	s.mu.Lock()
-	s.local = nil
 	if fresh, err := buildTokenSource(s.params); err == nil {
 		s.inner = newResilientInner(fresh, s.params)
 	} else {

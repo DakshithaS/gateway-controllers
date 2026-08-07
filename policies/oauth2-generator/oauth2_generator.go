@@ -20,6 +20,7 @@ package oauth2generator
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -489,6 +491,21 @@ func buildTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
 	}
 
 	return transport, nil
+}
+
+// loadCACertPool reads a PEM-encoded CA certificate file and returns a pool
+// containing it, for TLS connections that must trust a private/internal CA
+// - used by buildTokenEndpointTransport above, its only caller.
+func loadCACertPool(path string) (*x509.CertPool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA cert file %q: %w", path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("no valid PEM certificates found in %q", path)
+	}
+	return pool, nil
 }
 
 // headerInjectingRoundTripper adds tokenRequestHeaders to every request before
