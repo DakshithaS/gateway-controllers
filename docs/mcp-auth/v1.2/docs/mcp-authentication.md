@@ -157,7 +157,7 @@ If a peer policy such as [Set Headers](../../../set-headers/v1.1/docs/set-header
 Apply MCP authentication to an API using a specific key manager:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -183,7 +183,7 @@ spec:
 Disable authentication for specific tools while keeping it enabled for others:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -220,7 +220,7 @@ spec:
 Advertise required scopes in the protected resource metadata (scopes are not enforced by this policy):
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -249,7 +249,7 @@ spec:
 Map JWT claims to downstream headers for use by backend services:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -279,7 +279,7 @@ spec:
 Completely disable authentication for MCP resources while keeping it for tools:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -313,7 +313,7 @@ spec:
 By default the user ID published to analytics is taken from the `sub` claim. Point `userIdClaim` at a different claim when your identity provider carries the meaningful identifier elsewhere:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -340,7 +340,7 @@ spec:
 Forward the token under a dedicated header so the MCP server can identify the caller, while the inbound `Authorization` header is still stripped:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -370,7 +370,7 @@ The MCP server receives `X-Backend-Authorization: Bearer eyJ...`.
 Some MCP servers expect the raw token without the `Bearer` prefix:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
@@ -401,7 +401,7 @@ The MCP server receives `X-MCP-Token: eyJ...`.
 A common pattern is to authenticate the client with its own token and hand the MCP server a completely different credential. Because `set-headers` owns `Authorization` once it writes to it, this policy leaves that value alone:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: Mcp
 metadata:
     name: mcp-server-api-v1.0
