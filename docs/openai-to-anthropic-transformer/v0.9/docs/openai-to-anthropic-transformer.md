@@ -54,10 +54,10 @@ additionalProviders:
         model: claude-sonnet-4-5-20250929
 ```
 
-For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+For a single-provider proxy (no router in front), attach it directly under `spec.operationPolicies` so it runs on every request:
 
 ```yaml
-policies:
+operationPolicies:
   - name: openai-to-anthropic-transformer
     version: v1
     paths:

@@ -54,10 +54,10 @@ additionalProviders:
         apiVersion: v1beta
 ```
 
-For a single-provider proxy (no router in front), attach it directly under `spec.policies` so it runs on every request:
+For a single-provider proxy (no router in front), attach it directly under `spec.operationPolicies` so it runs on every request:
 
 ```yaml
-policies:
+operationPolicies:
   - name: openai-to-gemini-transformer
     version: v1
     paths:

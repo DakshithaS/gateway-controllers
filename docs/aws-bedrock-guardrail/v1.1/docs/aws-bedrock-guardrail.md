@@ -123,7 +123,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Deploy an LLM provider with AWS Bedrock Guardrail validation:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: bedrock-guardrail-provider
@@ -131,7 +131,7 @@ spec:
   displayName: AWS Bedrock Guardrail Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -143,7 +143,7 @@ spec:
     exceptions:
       - path: /chat/completions
         methods: [POST]
-  policies:
+  operationPolicies:
     - name: aws-bedrock-guardrail
       version: v1
       paths:
@@ -161,13 +161,10 @@ spec:
 
 **Test the guardrail:**
 
-**Note**: Ensure that "openai" is mapped to the appropriate IP address (e.g., 127.0.0.1) in your `/etc/hosts` file, or remove the vhost from the LLM provider configuration and use localhost to invoke.
-
 ```bash
 # Request with prohibited content (should fail with HTTP 422)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -179,9 +176,8 @@ curl -X POST http://openai:8080/chat/completions \
   }'
 
 # Request with PII (should mask PII and proceed)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -198,7 +194,7 @@ curl -X POST http://openai:8080/chat/completions \
 Configure to redact PII:
 
 ```yaml
-policies:
+operationPolicies:
   - name: aws-bedrock-guardrail
     version: v1
     paths:
@@ -260,7 +256,7 @@ If `showAssessment` is enabled, additional details are included:
 Two attachments on the same gateway, each pointing at a different AWS Bedrock Guardrail while sharing the same gateway-wide `region`:
 
 ```yaml
-policies:
+operationPolicies:
   - name: aws-bedrock-guardrail
     version: v1
     paths:

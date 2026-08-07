@@ -68,7 +68,7 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 Deploy an LLM provider that masks email addresses and phone numbers in requests and restores them in responses:
 
 ```yaml
-apiVersion: gateway.api-platform.wso2.com/v1alpha1
+apiVersion: gateway.api-platform.wso2.com/v1
 kind: LlmProvider
 metadata:
   name: pii-masking-provider
@@ -76,7 +76,7 @@ spec:
   displayName: PII Masking Provider
   version: v1.0
   template: openai
-  vhost: openai
+  context: /openai
   upstream:
     url: "https://api.openai.com/v1"
     auth:
@@ -92,7 +92,7 @@ spec:
         methods: [GET]
       - path: /models/{modelId}
         methods: [GET]
-  policies:
+  operationPolicies:
     - name: pii-masking-regex
       version: v1
       paths:
@@ -107,13 +107,10 @@ spec:
 
 **Test the guardrail:**
 
-**Note**: Ensure that "openai" is mapped to the appropriate IP address (e.g., 127.0.0.1) in your `/etc/hosts` file. or remove the vhost from the llm provider configuration and use localhost to invoke.
-
 ```bash
 # Request with PII (should be masked)
-curl -X POST http://openai:8080/chat/completions \
+curl -X POST http://localhost:8080/openai/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Host: openai" \
   -d '{
     "model": "gpt-4",
     "messages": [
@@ -143,7 +140,7 @@ curl -X POST http://openai:8080/chat/completions \
 When using masking mode with a streaming LLM endpoint, PII placeholders sent to the upstream are automatically restored in the SSE response stream:
 
 ```yaml
-  policies:
+  operationPolicies:
     - name: pii-masking-regex
       version: v1
       paths:
