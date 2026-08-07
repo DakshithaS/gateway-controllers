@@ -18,47 +18,26 @@
 package oauth2generator
 
 import (
+	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
-	"fmt"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// loadCACertPool reads a PEM-encoded CA certificate file and returns a pool
-// containing it, for TLS connections that must trust a private/internal CA
-// - used by the token endpoint's Transport (oauth2_generator.go's
-// buildTokenEndpointTransport).
-func loadCACertPool(path string) (*x509.CertPool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA cert file %q: %w", path, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, fmt.Errorf("no valid PEM certificates found in %q", path)
-	}
-	return pool, nil
-}
-
-// redisConnKey identifies a distinct Redis connection configuration. Two
-// policy instances with identical connection settings share one
-// *redis.Client (one pool) - mirrors advanced-ratelimit's own redis_clients.go.
+// redisConnKey identifies a distinct Redis connection configuration. Two policy
+// instances with identical connection settings share one *redis.Client (one pool).
 //
-// NOTE(#3056): duplicates sdk/core/utils/redisclient, which exists to share
-// one such registry across every Redis-using policy. Reverted to a local
-// copy here because sdk/core has no tagged release containing it yet, and a
-// local replace directive would force every other statically-linked policy
-// onto that same unreleased checkout. Switch back once a release exists.
+// Excludes TLSConfig and any credentials-provider option - see
+// getOrCreateRedisClient's bypass for those.
 type redisConnKey struct {
 	addr         string
 	username     string
 	passwordHash string // sha256 hex; keeps the secret out of the in-process map key
 	db           int
+	protocol     int
 	dialTimeout  time.Duration
 	readTimeout  time.Duration
 	writeTimeout time.Duration
@@ -73,41 +52,61 @@ var redisClients = struct {
 	m  map[redisConnKey]*redis.Client
 }{m: make(map[redisConnKey]*redis.Client)}
 
-// hashSensitiveValue returns a SHA-256 hex digest of a secret value, so it can be
-// used as part of a lookup key (here, and oauth2ConfigDiscriminator in
-// token_cache.go) without the raw secret appearing in it.
-func hashSensitiveValue(s string) string {
-	if s == "" {
+func hashRedisPassword(p string) string {
+	if p == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(s))
+	sum := sha256.Sum256([]byte(p))
 	return hex.EncodeToString(sum[:])
 }
 
 // getOrCreateRedisClient returns the process-wide shared client for these connection
-// settings, creating it on first use. Construction always succeeds regardless of
-// whether Redis is reachable - go-redis connects lazily on the first command, and any
-// error there is handled by the caller per the configured failureMode.
-func getOrCreateRedisClient(opts *redis.Options) *redis.Client {
+// settings, creating (and pinging once) it on first use. created reports whether this
+// call created the client; pingErr is non-nil only when created and the initial ping
+// failed. The client is registered and returned even on ping failure (go-redis
+// reconnects lazily). Clients are never closed — they live for the process lifetime.
+func getOrCreateRedisClient(opts *redis.Options, pingTimeout time.Duration) (client *redis.Client, created bool, pingErr error) {
+	// TLSConfig and credentials-provider hooks can't be fingerprinted
+	// safely: a *tls.Config's pointer says nothing about its content, and
+	// Go func values aren't comparable at all. Bypass the registry rather
+	// than risk silently reusing a client built for a different config.
+	if opts.TLSConfig != nil || opts.CredentialsProvider != nil || opts.CredentialsProviderContext != nil || opts.StreamingCredentialsProvider != nil {
+		c := redis.NewClient(opts)
+		ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+		defer cancel()
+		pingErr = c.Ping(ctx).Err()
+		return c, true, pingErr
+	}
+
 	key := redisConnKey{
 		addr:         opts.Addr,
 		username:     opts.Username,
-		passwordHash: hashSensitiveValue(opts.Password),
+		passwordHash: hashRedisPassword(opts.Password),
 		db:           opts.DB,
+		protocol:     opts.Protocol,
 		dialTimeout:  opts.DialTimeout,
 		readTimeout:  opts.ReadTimeout,
 		writeTimeout: opts.WriteTimeout,
 		poolSize:     opts.PoolSize,
 	}
 
+	// Lock guards only the map lookup/insert, never the ping below - mu is
+	// process-wide, so holding it during a slow/down connection's ping
+	// would stall every other caller's get-or-create too. A concurrent
+	// caller for the same key may see the just-inserted client before this
+	// ping finishes - fine, since a reused client is already "assumed
+	// healthy" regardless of timing, never gated on this call's pingErr.
 	redisClients.mu.Lock()
-	defer redisClients.mu.Unlock()
-
 	if c, ok := redisClients.m[key]; ok {
-		return c
+		redisClients.mu.Unlock()
+		return c, false, nil
 	}
-
 	c := redis.NewClient(opts)
 	redisClients.m[key] = c
-	return c
+	redisClients.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	pingErr = c.Ping(ctx).Err()
+	return c, true, pingErr
 }
