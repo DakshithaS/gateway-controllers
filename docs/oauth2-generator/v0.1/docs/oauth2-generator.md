@@ -181,7 +181,7 @@ spec:
       params:
         tokenEndpoint: https://idp.example.com/oauth2/token
         clientId: gateway-client
-        clientSecret: s3cr3t
+        clientSecret: '{{ secret "partner-api-client-secret" }}'
         tokenRequestParams:
           scope: partner-api.read
   operations:
@@ -211,7 +211,7 @@ spec:
       policyParams:
         tokenEndpoint: https://idp.example.com/oauth2/token
         clientId: gateway-client
-        clientSecret: s3cr3t
+        clientSecret: '{{ secret "openai-client-secret" }}'
         cacheStrategy: redis
         tokenPurgeStatusCodes: [401, 403]
   accessControl:
@@ -225,7 +225,7 @@ spec:
     - name: oauth2-generator
       version: v0
       params:
-        bearerToken: raw-api-key-xyz789
+        bearerToken: '{{ secret "static-api-token" }}'
         headerName: X-Api-Token
         valuePrefix: ""
 ```
@@ -240,9 +240,9 @@ spec:
         grantType: password
         tokenEndpoint: https://legacy-idp.example.com/oauth2/token
         clientId: gateway-client
-        clientSecret: s3cr3t
+        clientSecret: '{{ secret "legacy-idp-client-secret" }}'
         username: resource-owner
-        password: hunter2
+        password: '{{ secret "legacy-idp-password" }}'
         tokenRequestTimeout: "5s"
         tokenRequestMaxRetries: 3
 ```
