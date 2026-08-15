@@ -435,6 +435,39 @@ func TestSSE_AnthropicFormatRestoresAcrossEvents(t *testing.T) {
 		if !strings.Contains(out, "message_stop") {
 			t.Errorf("case %d: terminal event missing:\n%s", i, out)
 		}
+		assertWellFormedSSEBlocks(t, i, out)
+	}
+}
+
+// assertWellFormedSSEBlocks checks the framing of a merged stream, not just its
+// assembled text. Dropping a merged content event used to remove only its
+// "data:" line, orphaning the "event:" line that introduced it; the assembled
+// content looked correct while the wire format was malformed. Every block must
+// carry at most one "event:" field, and any block declaring one must also carry
+// a "data:" line.
+func assertWellFormedSSEBlocks(t *testing.T, caseIdx int, out string) {
+	t.Helper()
+	for blockIdx, block := range strings.Split(out, "\n\n") {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		var events, datas int
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				events++
+			case strings.HasPrefix(line, "data: "):
+				datas++
+			}
+		}
+		if events > 1 {
+			t.Errorf("case %d block %d: %d \"event:\" lines in one block, want at most 1:\n%s",
+				caseIdx, blockIdx, events, block)
+		}
+		if events == 1 && datas == 0 {
+			t.Errorf("case %d block %d: \"event:\" line with no \"data:\" line (orphaned by a merge):\n%s",
+				caseIdx, blockIdx, block)
+		}
 	}
 }
 

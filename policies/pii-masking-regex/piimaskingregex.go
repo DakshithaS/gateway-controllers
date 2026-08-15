@@ -766,6 +766,32 @@ func concatDeltaContent(raw string, paths []string) string {
 	return sb.String()
 }
 
+// isSSEFieldLine reports whether line is an SSE field that belongs to the event
+// block it precedes. Comments (": keep-alive") are deliberately excluded: they
+// are valid standalone and are preserved wherever they appear.
+func isSSEFieldLine(line string) bool {
+	return strings.HasPrefix(line, sseEventPrefix) ||
+		strings.HasPrefix(line, "id:") ||
+		strings.HasPrefix(line, "retry:")
+}
+
+// markEventBlockForRemoval marks the whole SSE block owning the data line at
+// dataIdx: the field lines immediately preceding it and the blank separator
+// terminating it. Dropping only the data line would leave its "event:" line
+// orphaned — a block with no data — which is malformed for providers that emit
+// a field line per event, Anthropic being the one that does.
+func markEventBlockForRemoval(lines []string, dataIdx int, removeLines map[int]bool) {
+	removeLines[dataIdx] = true
+	// Walk back over this block's field lines. A blank line, a comment, or the
+	// preceding event's data line all stop the walk, so no other block is touched.
+	for j := dataIdx - 1; j >= 0 && isSSEFieldLine(lines[j]); j-- {
+		removeLines[j] = true
+	}
+	if dataIdx+1 < len(lines) && lines[dataIdx+1] == "" {
+		removeLines[dataIdx+1] = true
+	}
+}
+
 // mergeSSEContent writes restoredContent into the first content-bearing event
 // of raw and drops the other content events (their content has been merged),
 // keeping every non-content line — comments, [DONE], usage frames — in order.
@@ -790,10 +816,7 @@ func mergeSSEContent(raw, restoredContent string, paths []string) string {
 			lines[i] = replaceContentInSSELine(line, content, restoredContent, paths)
 			continue
 		}
-		removeLines[i] = true
-		if i+1 < len(lines) && lines[i+1] == "" {
-			removeLines[i+1] = true // drop the blank separator with the event
-		}
+		markEventBlockForRemoval(lines, i, removeLines)
 	}
 	if first == -1 {
 		return raw
@@ -911,16 +934,12 @@ func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[s
 	)
 	removeLines := make(map[int]bool, len(contentLines)-1)
 	for _, cl := range contentLines[1:] {
-		removeLines[cl.lineIdx] = true
+		markEventBlockForRemoval(lines, cl.lineIdx, removeLines)
 	}
 
 	filtered := lines[:0:0]
 	for i, line := range lines {
 		if removeLines[i] {
-			// Also drop the blank separator line immediately after, if present.
-			if i+1 < len(lines) && lines[i+1] == "" {
-				removeLines[i+1] = true
-			}
 			continue
 		}
 		filtered = append(filtered, line)
