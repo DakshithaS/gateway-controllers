@@ -18,7 +18,6 @@
 package piimaskingregex
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,6 +49,35 @@ const (
 	sseEventPrefix = "event:"
 )
 
+// DefaultStreamingJSONPaths locate the assistant text inside one SSE data frame.
+// They are tried in order and the first match wins, so this policy is not bound
+// to any single vendor's wire format. A shape that is not listed here is not
+// restored: the frame passes through untouched and the client sees the masked
+// placeholder, so a new provider format is added by extending this list.
+var DefaultStreamingJSONPaths = []string{
+	// OpenAI chat completions — also Azure OpenAI, Mistral, Groq, DeepSeek,
+	// Together, Fireworks and everything else speaking the OpenAI wire format.
+	"$.choices[0].delta.content",
+	// Anthropic Messages — content_block_delta carries delta.text.
+	"$.delta.text",
+	// Google Gemini streamGenerateContent.
+	"$.candidates[0].content.parts[0].text",
+	// Amazon Bedrock Converse — contentBlockDelta wraps the same delta.text.
+	"$.contentBlockDelta.delta.text",
+	// Amazon Bedrock (Titan) and Anthropic legacy text completions.
+	"$.outputText",
+	"$.completion",
+	// OpenAI legacy completions.
+	"$.choices[0].text",
+	// OpenAI Responses API (also Azure OpenAI and Azure AI Foundry /responses)
+	// — response.output_text.delta carries the text as a plain string, not an
+	// object. Last on purpose: it is the most generic shape here, so every
+	// specific path above gets first refusal. Anthropic's delta is an object,
+	// and ExtractStringValueFromJsonpath errors on non-scalars, so this cannot
+	// steal a match from "$.delta.text".
+	"$.delta",
+}
+
 var textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
 
 // PIIMaskingRegexPolicy implements regex-based PII masking
@@ -79,7 +107,6 @@ func GetPolicy(
 
 	return p, nil
 }
-
 
 // Mode returns the processing mode for the PII masking regex policy.
 func (p *PIIMaskingRegexPolicy) Mode() policy.ProcessingMode {
@@ -467,39 +494,102 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 	return policy.DownstreamResponseModifications{}
 }
 
-// NeedsMoreResponseData implements v2alpha.StreamingResponsePolicy.
-// Returns true when the accumulated SSE delta.content contains an unclosed '['
-// that may be a PII placeholder, so the kernel keeps buffering until ']' arrives
-// or 5 more SSE data lines have passed (whichever comes first).
+// ─── Streaming restore (bounded-carry) ───────────────────────────────────────
 //
-// For non-SSE (plain JSON) responses delivered via chunked transfer encoding,
-// accumulates until the full JSON body is complete and parseable.
+// Restoration must survive a placeholder being split across chunk boundaries
+// without buffering the whole response. The approach is streaming find/replace
+// with a bounded holdback: every complete placeholder in the bytes seen so far
+// is replaced and emitted immediately; the only bytes withheld are the shortest
+// suffix that could still grow into a known placeholder ("[EMA" when
+// "[EMAIL_0000]" is in this request's restore map). The carry is therefore
+// bounded by the longest placeholder for the request (~tens of bytes), the
+// response streams through with no added buffering, and the kernel's own
+// accumulator limits are never bypassed.
+//
+// SSE responses need the same idea one level up: a placeholder can be split
+// across the delta.content of several events, where the raw bytes never
+// contain it contiguously. Content events are held only while the tail of
+// their concatenated content is a prefix of a known placeholder, and resolved
+// as soon as it completes, stops matching, or the stream ends ([DONE]/EOS).
+//
+// Per-request state lives in respCtx.Metadata under metadataKeyStreamState as a
+// JSON *string*. It must not be stored as a Go struct pointer: the Python
+// policy bridge serializes SharedContext.Metadata through structpb.NewStruct
+// (pythonbridge/translator.go), which rejects arbitrary Go types
+// ("proto: invalid type: *piimaskingregex.streamRestoreState") and would fail
+// every chain containing a Python policy. Strings round-trip cleanly.
+// The entry is deleted at end of stream so no response bytes outlive the request.
+
+const (
+	// metadataKeyStreamState holds the *streamRestoreState for this request.
+	metadataKeyStreamState = "piimaskingregex:stream_state"
+
+	// modeUnknown/modeRaw/modeSSE route chunks once per request. The decision is
+	// sticky: an SSE stream never falls back to raw handling on a chunk that
+	// happens not to contain a "data:" line (heartbeats, split frames).
+	modeUnknown = 0
+	modeRaw     = 1
+	modeSSE     = 2
+
+	// maxSSEPendingBytes is a defensive ceiling on the SSE hold buffer. The hold
+	// condition (tail is a placeholder prefix) bounds it naturally — one event
+	// per placeholder character in the worst case — so this only guards against
+	// pathological streams. On overflow the pending events are restored
+	// best-effort and emitted.
+	maxSSEPendingBytes = 64 * 1024
+
+	sseEventSeparator = "\n\n"
+)
+
+// streamRestoreState is the per-request streaming state, persisted as a JSON
+// string in respCtx.Metadata (see metadataKeyStreamState).
+type streamRestoreState struct {
+	Mode int `json:"m,omitempty"`
+
+	// Carry holds tail bytes of the raw (non-SSE) body withheld because they are
+	// a proper prefix of a known placeholder. Always shorter than the longest
+	// placeholder for this request.
+	Carry string `json:"c,omitempty"`
+
+	// SSECarry holds a trailing incomplete SSE event (no "\n\n" yet).
+	SSECarry string `json:"sc,omitempty"`
+	// SSEPending holds complete SSE events withheld while their concatenated
+	// delta.content tail could still grow into a placeholder.
+	SSEPending string `json:"sp,omitempty"`
+}
+
+// loadStreamState reads the per-request state, tolerating a missing or
+// unparseable entry by starting fresh.
+func loadStreamState(metadata map[string]interface{}) *streamRestoreState {
+	state := &streamRestoreState{}
+	if raw, ok := metadata[metadataKeyStreamState].(string); ok && raw != "" {
+		_ = json.Unmarshal([]byte(raw), state)
+	}
+	return state
+}
+
+// saveStreamState persists the state, removing the entry entirely when nothing
+// is being withheld so the common case leaves no residue in metadata.
+func saveStreamState(metadata map[string]interface{}, state *streamRestoreState) {
+	if state.Carry == "" && state.SSECarry == "" && state.SSEPending == "" && state.Mode == modeUnknown {
+		delete(metadata, metadataKeyStreamState)
+		return
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		delete(metadata, metadataKeyStreamState)
+		return
+	}
+	metadata[metadataKeyStreamState] = string(encoded)
+}
+
+// NeedsMoreResponseData implements v2alpha.StreamingResponsePolicy.
+// Always false: cross-chunk state is handled inside OnResponseBodyChunk with a
+// bounded carry, so the kernel should deliver every chunk immediately. This
+// also keeps behaviour identical on the compressed path, where the kernel
+// never consults this method.
 func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
-	if p.params.RedactPII {
-		return false
-	}
-
-	s := string(accumulated)
-
-	if !isSSEChunk(s) {
-		return !json.Valid(bytes.TrimSpace(accumulated))
-	}
-
-	content, openBracketDataLineIdx, totalDataLines := extractSSEDeltaContentTracked(s)
-
-	lastOpen := strings.LastIndex(content, "[")
-	if lastOpen == -1 {
-		return false
-	}
-
-	afterBracket := content[lastOpen+1:]
-	if strings.Contains(afterBracket, "]") {
-		return false
-	}
-
-	// Unclosed '[' found — wait, but no more than 5 data lines after it.
-	dataLinesAfterOpen := totalDataLines - openBracketDataLineIdx - 1
-	return dataLinesAfterOpen <= 5
+	return false
 }
 
 // OnResponseBodyChunk implements v2alpha.StreamingResponsePolicy.
@@ -512,9 +602,11 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx
 	if p.params.RedactPII {
 		return policy.ForwardResponseChunk{}
 	}
-	if chunk == nil || len(chunk.Chunk) == 0 {
+	if chunk == nil {
 		return policy.ForwardResponseChunk{}
 	}
+	// Note: an empty chunk is NOT an early return — an empty EndOfStream
+	// sentinel must still flush any withheld carry below.
 
 	maskedPII, exists := respCtx.Metadata[MetadataKeyPIIEntities]
 	if !exists {
@@ -525,17 +617,232 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx
 		return policy.ForwardResponseChunk{}
 	}
 
-	chunkStr := string(chunk.Chunk)
-
 	// maskedPIIMap is keyed original→placeholder (set by maskPIIFromContent).
 	// The restore helpers expect placeholder→original, so invert before use.
 	restoreMap := invertStringMap(maskedPIIMap)
 
-	// Detect format: SSE responses have lines starting with "data: "
-	if isSSEChunk(chunkStr) {
-		return p.restoreSSEChunk(chunkStr, restoreMap)
+	// respCtx.Metadata is non-nil here: the MetadataKeyPIIEntities lookup above
+	// already returned on a missing entry, which a nil map cannot have.
+	state := loadStreamState(respCtx.Metadata)
+
+	chunkStr := string(chunk.Chunk)
+	state.detectMode(respCtx, chunkStr)
+
+	var out string
+	if state.Mode == modeSSE {
+		out = p.restoreSSEStream(state, chunkStr, chunk.EndOfStream, restoreMap)
+	} else {
+		out = p.restoreRawStream(state, chunkStr, chunk.EndOfStream, restoreMap)
 	}
-	return p.restoreJSONChunk(chunkStr, restoreMap)
+
+	if chunk.EndOfStream {
+		// Nothing may outlive the stream: any residual carry has been emitted above.
+		delete(respCtx.Metadata, metadataKeyStreamState)
+	} else {
+		saveStreamState(respCtx.Metadata, state)
+	}
+
+	if out == chunkStr {
+		return policy.ForwardResponseChunk{} // passthrough, nothing withheld or changed
+	}
+	// Body must be non-nil even when out is "" (every byte of this chunk is being
+	// withheld): the executor forwards the original chunk unchanged when Body is
+	// nil, which would emit the withheld bytes here and again when they are
+	// released. append guarantees a non-nil slice; []byte("") does not.
+	return policy.ForwardResponseChunk{Body: append([]byte{}, out...)}
+}
+
+// detectMode fixes the SSE-vs-raw routing decision for the request. The
+// upstream Content-Type is authoritative when present; the first chunk's shape
+// is the fallback for contexts without response headers. An SSE comment line
+// (": keep-alive") counts as SSE — it can legitimately arrive before the first
+// data event and must not push the stream onto the raw path.
+func (s *streamRestoreState) detectMode(respCtx *policy.ResponseStreamContext, chunkStr string) {
+	if s.Mode != modeUnknown {
+		return
+	}
+	if respCtx.ResponseHeaders != nil {
+		if ct := respCtx.ResponseHeaders.Get("content-type"); len(ct) > 0 {
+			if strings.HasPrefix(strings.ToLower(ct[0]), "text/event-stream") {
+				s.Mode = modeSSE
+			} else {
+				s.Mode = modeRaw
+			}
+			return
+		}
+	}
+	trimmed := strings.TrimLeft(chunkStr, "\r\n ")
+	if strings.HasPrefix(trimmed, ":") || isSSEChunk(chunkStr) {
+		s.Mode = modeSSE
+		return
+	}
+	if trimmed != "" {
+		s.Mode = modeRaw
+	}
+}
+
+// restoreRawStream is the non-SSE path: streaming find/replace with a bounded
+// placeholder-prefix carry. Output preserves every byte of the body except
+// that complete placeholders are replaced with their JSON-escaped originals.
+func (p *PIIMaskingRegexPolicy) restoreRawStream(state *streamRestoreState, chunkStr string, endOfStream bool, restoreMap map[string]string) string {
+	buf := state.Carry + chunkStr
+	state.Carry = ""
+
+	result := restoreJSONBytes(buf, restoreMap)
+
+	if !endOfStream {
+		if hold := placeholderPrefixSuffixLen(result, restoreMap); hold > 0 {
+			state.Carry = result[len(result)-hold:]
+			result = result[:len(result)-hold]
+		}
+	}
+	return result
+}
+
+// restoreSSEStream is the SSE path. Complete events flow through immediately
+// unless their concatenated delta.content ends in a placeholder prefix, in
+// which case they are withheld until the placeholder completes, stops
+// matching, or the stream terminates ([DONE]/EOS).
+func (p *PIIMaskingRegexPolicy) restoreSSEStream(state *streamRestoreState, chunkStr string, endOfStream bool, restoreMap map[string]string) string {
+	buf := state.SSECarry + chunkStr
+	state.SSECarry = ""
+
+	// Split off a trailing incomplete event (no terminating blank line yet).
+	complete := buf
+	if !endOfStream {
+		if idx := strings.LastIndex(buf, sseEventSeparator); idx >= 0 {
+			complete = buf[:idx+len(sseEventSeparator)]
+			state.SSECarry = buf[idx+len(sseEventSeparator):]
+		} else {
+			state.SSECarry = buf
+			complete = ""
+		}
+	}
+
+	pending := state.SSEPending + complete
+	state.SSEPending = ""
+	if pending == "" {
+		return ""
+	}
+
+	// Terminal conditions force resolution: nothing further can complete a
+	// pending placeholder.
+	terminal := endOfStream || strings.Contains(complete, sseDataPrefix+sseDone)
+
+	assembled := concatDeltaContent(pending, DefaultStreamingJSONPaths)
+	if assembled == "" {
+		return pending // no content events (heartbeats, usage frames, [DONE])
+	}
+
+	restored := restore(assembled, restoreMap)
+	if !terminal && len(pending) <= maxSSEPendingBytes {
+		if hold := placeholderPrefixSuffixLen(restored, restoreMap); hold > 0 {
+			// Tail could still grow into a placeholder — withhold these events.
+			state.SSEPending = pending
+			return ""
+		}
+	}
+
+	if restored == assembled {
+		return pending // nothing to rewrite — emit events exactly as received
+	}
+	return mergeSSEContent(pending, restored, DefaultStreamingJSONPaths)
+}
+
+// concatDeltaContent concatenates the delta.content of every data event in raw
+// SSE text, in order.
+func concatDeltaContent(raw string, paths []string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(line, sseDataPrefix) {
+			continue
+		}
+		jsonStr := strings.TrimPrefix(line, sseDataPrefix)
+		if jsonStr == sseDone {
+			continue
+		}
+		sb.WriteString(extractFirstDeltaContent(jsonStr, paths))
+	}
+	return sb.String()
+}
+
+// mergeSSEContent writes restoredContent into the first content-bearing event
+// of raw and drops the other content events (their content has been merged),
+// keeping every non-content line — comments, [DONE], usage frames — in order.
+func mergeSSEContent(raw, restoredContent string, paths []string) string {
+	lines := strings.Split(raw, "\n")
+	first := -1
+	removeLines := make(map[int]bool)
+	for i, line := range lines {
+		if !strings.HasPrefix(line, sseDataPrefix) {
+			continue
+		}
+		jsonStr := strings.TrimPrefix(line, sseDataPrefix)
+		if jsonStr == sseDone {
+			continue
+		}
+		content := extractFirstDeltaContent(jsonStr, paths)
+		if content == "" {
+			continue
+		}
+		if first == -1 {
+			first = i
+			lines[i] = replaceContentInSSELine(line, content, restoredContent, paths)
+			continue
+		}
+		removeLines[i] = true
+		if i+1 < len(lines) && lines[i+1] == "" {
+			removeLines[i+1] = true // drop the blank separator with the event
+		}
+	}
+	if first == -1 {
+		return raw
+	}
+	filtered := lines[:0:0]
+	for i, line := range lines {
+		if removeLines[i] {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
+}
+
+// placeholderPrefixSuffixLen returns the length of the longest suffix of s
+// that is a proper prefix of any placeholder in restoreMap (keys), or 0.
+func placeholderPrefixSuffixLen(s string, restoreMap map[string]string) int {
+	longest := 0
+	for placeholder := range restoreMap {
+		max := len(placeholder) - 1
+		if max > len(s) {
+			max = len(s)
+		}
+		for l := max; l > longest; l-- {
+			if strings.HasSuffix(s, placeholder[:l]) {
+				longest = l
+				break
+			}
+		}
+	}
+	return longest
+}
+
+// restoreJSONBytes replaces every complete placeholder in s with its
+// JSON-escaped original, preserving all other bytes exactly.
+func restoreJSONBytes(s string, restoreMap map[string]string) string {
+	result := s
+	for placeholder, original := range restoreMap {
+		if !strings.Contains(result, placeholder) {
+			continue
+		}
+		encodedBytes, err := json.Marshal(original)
+		if err != nil {
+			continue
+		}
+		escapedOriginal := string(encodedBytes[1 : len(encodedBytes)-1])
+		result = strings.ReplaceAll(result, placeholder, escapedOriginal)
+	}
+	return result
 }
 
 // ─── SSE / Streaming helpers ─────────────────────────────────────────────────
@@ -575,7 +882,7 @@ func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[s
 		if jsonStr == sseDone {
 			continue
 		}
-		if c := extractFirstDeltaContent(jsonStr); c != "" {
+		if c := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths); c != "" {
 			contentLines = append(contentLines, contentLine{lineIdx: i, content: c})
 		}
 	}
@@ -600,6 +907,7 @@ func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[s
 	// subsequent events are dropped entirely.
 	lines[contentLines[0].lineIdx] = replaceContentInSSELine(
 		lines[contentLines[0].lineIdx], contentLines[0].content, restoredContent,
+		DefaultStreamingJSONPaths,
 	)
 	removeLines := make(map[int]bool, len(contentLines)-1)
 	for _, cl := range contentLines[1:] {
@@ -623,18 +931,32 @@ func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[s
 
 // extractFirstDeltaContent parses a single SSE JSON line and returns the
 // delta.content value from the first choice, or empty string if absent/empty.
-func extractFirstDeltaContent(jsonStr string) string {
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		return ""
-	}
-	choices, _ := data["choices"].([]interface{})
-	for _, cr := range choices {
-		choice, _ := cr.(map[string]interface{})
-		delta, _ := choice["delta"].(map[string]interface{})
-		if content, _ := delta["content"].(string); content != "" {
-			return content
+func extractFirstDeltaContent(jsonStr string, paths []string) string {
+	content, _ := extractFirstDeltaContentKeyed(jsonStr, paths)
+	return content
+}
+
+// extractFirstDeltaContentKeyed returns the assistant text carried by one SSE
+// data payload along with the JSONPath it was found at, so an in-place rewrite
+// can target that same field. Paths are tried in order; the first that yields a
+// non-empty string wins.
+func extractFirstDeltaContentKeyed(jsonStr string, paths []string) (string, string) {
+	for _, path := range paths {
+		text, err := utils.ExtractStringValueFromJsonpath([]byte(jsonStr), path)
+		if err == nil && text != "" {
+			return text, path
 		}
+	}
+	return "", ""
+}
+
+// jsonPathLeafKey returns the final field name of a JSONPath, e.g. "content"
+// for "$.choices[0].delta.content". Used to locate the value in the raw JSON so
+// a rewrite can preserve the frame's original key order and spacing instead of
+// re-marshaling it.
+func jsonPathLeafKey(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		return path[i+1:]
 	}
 	return ""
 }
@@ -643,43 +965,37 @@ func extractFirstDeltaContent(jsonStr string) string {
 // line in-place, touching only the JSON-encoded content value and leaving all
 // other fields intact. Falls back to a full re-marshal if the in-place
 // replacement cannot locate the expected token.
-func replaceContentInSSELine(line, oldContent, newContent string) string {
+func replaceContentInSSELine(line, oldContent, newContent string, paths []string) string {
 	jsonStr := strings.TrimPrefix(line, sseDataPrefix)
+	_, matchedPath := extractFirstDeltaContentKeyed(jsonStr, paths)
+	if matchedPath == "" {
+		return line
+	}
+	key := jsonPathLeafKey(matchedPath)
 	oldJSON, err1 := json.Marshal(oldContent)
 	newJSON, err2 := json.Marshal(newContent)
 	if err1 != nil || err2 != nil {
-		return updateDeltaContentInLine(line, newContent)
+		return updateDeltaContentInLine(line, newContent, matchedPath)
 	}
-	updated := strings.Replace(jsonStr, `"content":`+string(oldJSON), `"content":`+string(newJSON), 1)
+	updated := strings.Replace(jsonStr, `"`+key+`":`+string(oldJSON), `"`+key+`":`+string(newJSON), 1)
 	if updated == jsonStr {
 		// Token not found (e.g. whitespace around colon) — fall back.
-		return updateDeltaContentInLine(line, newContent)
+		return updateDeltaContentInLine(line, newContent, matchedPath)
 	}
 	return sseDataPrefix + updated
 }
 
 // updateDeltaContentInLine is the fallback full-remarshal path used when
 // replaceContentInSSELine cannot locate the content token in the raw JSON.
-func updateDeltaContentInLine(line, newContent string) string {
+// It writes through the same JSONPath the text was extracted from, so it stays
+// correct for any provider shape without knowing which one this is.
+func updateDeltaContentInLine(line, newContent, matchedPath string) string {
 	jsonStr := strings.TrimPrefix(line, sseDataPrefix)
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 		return line
 	}
-	choices, _ := data["choices"].([]interface{})
-	updated := false
-	for _, cr := range choices {
-		choice, _ := cr.(map[string]interface{})
-		delta, ok := choice["delta"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if _, hasContent := delta["content"]; hasContent {
-			delta["content"] = newContent
-			updated = true
-		}
-	}
-	if !updated {
+	if err := utils.SetValueAtJSONPath(data, matchedPath, newContent); err != nil {
 		return line
 	}
 	b, err := json.Marshal(data)
@@ -693,20 +1009,7 @@ func updateDeltaContentInLine(line, newContent string) string {
 // Placeholders are replaced directly in the raw JSON bytes so that key order,
 // whitespace, and any trailing newline from the LLM are preserved exactly.
 func (p *PIIMaskingRegexPolicy) restoreJSONChunk(chunkStr string, maskedMap map[string]string) policy.ForwardResponseChunk {
-	result := chunkStr
-	for placeholder, original := range maskedMap {
-		if !strings.Contains(result, placeholder) {
-			continue
-		}
-		// JSON-encode the replacement so special characters (", \, etc.) are
-		// properly escaped. Strip the surrounding quotes that json.Marshal adds.
-		encodedBytes, err := json.Marshal(original)
-		if err != nil {
-			continue
-		}
-		escapedOriginal := string(encodedBytes[1 : len(encodedBytes)-1])
-		result = strings.ReplaceAll(result, placeholder, escapedOriginal)
-	}
+	result := restoreJSONBytes(chunkStr, maskedMap)
 	if result == chunkStr {
 		return policy.ForwardResponseChunk{}
 	}
@@ -765,57 +1068,6 @@ func restoreInChoices(jsonStr string, maskedMap map[string]string, choiceKey str
 		return jsonStr, false
 	}
 	return string(updatedBytes), true
-}
-
-// extractSSEDeltaContentTracked concatenates choices[*].delta.content from all
-// complete SSE data lines in the accumulated buffer. It returns:
-//   - the concatenated content string
-//   - the 0-based data-line index of the last line that contributed a '[' character
-//   - the total number of complete SSE data lines processed
-//
-// TODO (Set Jsonstreaming path)
-func extractSSEDeltaContentTracked(s string) (string, int, int) {
-	var sb strings.Builder
-	totalDataLines := 0
-	lastOpenBracketDataLine := 0
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimRight(line, "\r")
-		var value string
-		if strings.HasPrefix(line, sseDataPrefix) {
-			value = strings.TrimPrefix(line, sseDataPrefix)
-		} else if strings.HasPrefix(line, sseEventPrefix) {
-			value = strings.TrimSpace(strings.TrimPrefix(line, sseEventPrefix))
-		} else {
-			continue
-		}
-		if value == sseDone {
-			totalDataLines++
-			continue
-		}
-		if value == "" {
-			continue
-		}
-		var data map[string]interface{}
-		lineContent := ""
-		if err := json.Unmarshal([]byte(value), &data); err != nil {
-			// Not JSON — use the entire value as content
-			lineContent = value
-		} else {
-			choices, _ := data["choices"].([]interface{})
-			for _, cr := range choices {
-				choice, _ := cr.(map[string]interface{})
-				delta, _ := choice["delta"].(map[string]interface{})
-				content, _ := delta["content"].(string)
-				lineContent += content
-			}
-		}
-		if strings.Contains(lineContent, "[") {
-			lastOpenBracketDataLine = totalDataLines
-		}
-		sb.WriteString(lineContent)
-		totalDataLines++
-	}
-	return sb.String(), lastOpenBracketDataLine, totalDataLines
 }
 
 // invertStringMap returns a new map with keys and values swapped.
