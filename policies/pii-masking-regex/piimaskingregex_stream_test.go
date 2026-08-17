@@ -694,3 +694,114 @@ func TestDefaultPaths_BindToExpectedShape(t *testing.T) {
 		})
 	}
 }
+
+// ─── SSE line terminators and [DONE] detection ───────────────────────────────
+
+// sseEventCRLF is sseEvent with the spec-legal CRLF terminators some providers
+// and proxies emit.
+func sseEventCRLF(content string) string {
+	return strings.ReplaceAll(sseEvent(content), "\n", "\r\n")
+}
+
+// A CRLF-delimited stream must be recognised as event-complete. Matching only
+// "\n\n" would leave every event in SSECarry, so nothing reaches the client
+// until end-of-stream and the carry grows unbounded.
+func TestSSE_CRLFEventsAreReleasedBeforeEndOfStream(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+	// A complete, placeholder-free CRLF event mid-stream must be emitted now.
+	sb := &policy.StreamBody{Chunk: []byte(sseEventCRLF("Hello there.")), EndOfStream: false}
+	fwd, ok := p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil).(policy.ForwardResponseChunk)
+	if !ok {
+		t.Fatalf("expected ForwardResponseChunk")
+	}
+	if fwd.Body != nil && len(fwd.Body) == 0 {
+		t.Fatal("complete CRLF event was withheld; client receives nothing until EOS")
+	}
+}
+
+// The full CRLF stream must still restore a placeholder split across events.
+func TestSSE_CRLFStreamRestoresSplitPlaceholder(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+	got := driveResponseStream(t, p, respCtx, []string{
+		sseEventCRLF("Confirmation sent to "),
+		sseEventCRLF("[EMA"),
+		sseEventCRLF("IL_0"),
+		sseEventCRLF("000]."),
+		"data: [DONE]\r\n\r\n",
+	})
+
+	if strings.Contains(got, "[EMAIL_0000]") {
+		t.Errorf("placeholder leaked to client: %q", got)
+	}
+	assembled := assembleSSEContent(t, strings.ReplaceAll(got, "\r", ""))
+	if want := "Confirmation sent to guest@example.com."; assembled != want {
+		t.Errorf("assembled content = %q, want %q", assembled, want)
+	}
+}
+
+// Assistant text that merely mentions "data: [DONE]" is not end-of-stream.
+// Treating it as terminal releases a half-buffered placeholder as a visible leak.
+func TestSSE_DoneInAssistantTextIsNotTerminal(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+	got := driveResponseStream(t, p, respCtx, []string{
+		sseEvent("The stream ends with the line data: [DONE] — then mail ") + sseEvent("[EMA"),
+		sseEvent("IL_0000]."),
+		"data: [DONE]\n\n",
+	})
+
+	if strings.Contains(got, "[EMAIL_0000]") {
+		t.Errorf("placeholder leaked to client: %q", got)
+	}
+	assembled := assembleSSEContent(t, got)
+	want := "The stream ends with the line data: [DONE] — then mail guest@example.com."
+	if assembled != want {
+		t.Errorf("assembled content = %q, want %q", assembled, want)
+	}
+}
+
+func TestLastCompleteEventEnd(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		want int
+	}{
+		{"lf terminated", "data: a\n\n", 9},
+		{"crlf terminated", "data: a\r\n\r\n", 11},
+		{"crlf then partial", "data: a\r\n\r\ndata: b\r\n", 11},
+		{"no terminator", "data: a\r\n", -1},
+		{"mixed prefers the later end", "data: a\n\ndata: b\r\n\r\n", 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := lastCompleteEventEnd(tc.buf); got != tc.want {
+				t.Errorf("lastCompleteEventEnd(%q) = %d, want %d", tc.buf, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSSEFrameHasDone(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"lf done field", "data: [DONE]\n\n", true},
+		{"crlf done field", "data: [DONE]\r\n\r\n", true},
+		{"done inside a json payload is not a done field", `data: {"delta":"data: [DONE]"}` + "\n\n", false},
+		{"no done", "data: {}\n\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sseFrameHasDone(tc.raw); got != tc.want {
+				t.Errorf("sseFrameHasDone(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

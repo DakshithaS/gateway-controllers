@@ -538,7 +538,10 @@ const (
 	// best-effort and emitted.
 	maxSSEPendingBytes = 64 * 1024
 
-	sseEventSeparator = "\n\n"
+	// SSE terminates an event with a blank line. Both line terminators are legal,
+	// and a CRLF stream contains no "\n\n" at all, so both must be recognised.
+	sseEventSeparator     = "\n\n"
+	sseEventSeparatorCRLF = "\r\n\r\n"
 )
 
 // streamRestoreState is the per-request streaming state, persisted as a JSON
@@ -710,9 +713,9 @@ func (p *PIIMaskingRegexPolicy) restoreSSEStream(state *streamRestoreState, chun
 	// Split off a trailing incomplete event (no terminating blank line yet).
 	complete := buf
 	if !endOfStream {
-		if idx := strings.LastIndex(buf, sseEventSeparator); idx >= 0 {
-			complete = buf[:idx+len(sseEventSeparator)]
-			state.SSECarry = buf[idx+len(sseEventSeparator):]
+		if end := lastCompleteEventEnd(buf); end >= 0 {
+			complete = buf[:end]
+			state.SSECarry = buf[end:]
 		} else {
 			state.SSECarry = buf
 			complete = ""
@@ -727,7 +730,7 @@ func (p *PIIMaskingRegexPolicy) restoreSSEStream(state *streamRestoreState, chun
 
 	// Terminal conditions force resolution: nothing further can complete a
 	// pending placeholder.
-	terminal := endOfStream || strings.Contains(complete, sseDataPrefix+sseDone)
+	terminal := endOfStream || sseFrameHasDone(complete)
 
 	assembled := concatDeltaContent(pending, DefaultStreamingJSONPaths)
 	if assembled == "" {
@@ -749,16 +752,67 @@ func (p *PIIMaskingRegexPolicy) restoreSSEStream(state *streamRestoreState, chun
 	return mergeSSEContent(pending, restored, DefaultStreamingJSONPaths)
 }
 
+// lastCompleteEventEnd returns the offset just past the last event terminator in
+// buf, or -1 when buf holds no complete event. Both LF and CRLF terminators are
+// recognised: a CRLF stream contains no "\n\n" at all, so matching LF alone
+// would hold every event in SSECarry until end-of-stream — an unbounded buffer
+// and no tokens reaching the client until the stream finishes.
+func lastCompleteEventEnd(buf string) int {
+	end := -1
+	if i := strings.LastIndex(buf, sseEventSeparator); i >= 0 {
+		end = i + len(sseEventSeparator)
+	}
+	if i := strings.LastIndex(buf, sseEventSeparatorCRLF); i >= 0 && i+len(sseEventSeparatorCRLF) > end {
+		end = i + len(sseEventSeparatorCRLF)
+	}
+	return end
+}
+
+// sseLineBody drops the trailing CR left on every line when a CRLF-delimited
+// frame is split on "\n", so field parsing is terminator-agnostic.
+func sseLineBody(line string) string {
+	return strings.TrimSuffix(line, "\r")
+}
+
+// sseDataPayload returns the payload of an SSE "data: " field line and whether
+// line is one at all. CR-tolerant, so "data: [DONE]\r" yields "[DONE]".
+func sseDataPayload(line string) (string, bool) {
+	body := sseLineBody(line)
+	if !strings.HasPrefix(body, sseDataPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(body, sseDataPrefix), true
+}
+
+// rebuildSSEDataLine reassembles a data line around a rewritten payload,
+// preserving the line's original CR terminator.
+func rebuildSSEDataLine(line, payload string) string {
+	if strings.HasSuffix(line, "\r") {
+		return sseDataPrefix + payload + "\r"
+	}
+	return sseDataPrefix + payload
+}
+
+// sseFrameHasDone reports whether raw carries a data field whose payload is
+// exactly [DONE]. A substring search over the whole frame would instead fire on
+// assistant text that merely mentions "data: [DONE]", treating it as end of
+// stream and releasing a half-buffered placeholder as a visible leak.
+func sseFrameHasDone(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		if payload, ok := sseDataPayload(line); ok && payload == sseDone {
+			return true
+		}
+	}
+	return false
+}
+
 // concatDeltaContent concatenates the delta.content of every data event in raw
 // SSE text, in order.
 func concatDeltaContent(raw string, paths []string) string {
 	var sb strings.Builder
 	for _, line := range strings.Split(raw, "\n") {
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		jsonStr := strings.TrimPrefix(line, sseDataPrefix)
-		if jsonStr == sseDone {
+		jsonStr, ok := sseDataPayload(line)
+		if !ok || jsonStr == sseDone {
 			continue
 		}
 		sb.WriteString(extractFirstDeltaContent(jsonStr, paths))
@@ -770,9 +824,10 @@ func concatDeltaContent(raw string, paths []string) string {
 // block it precedes. Comments (": keep-alive") are deliberately excluded: they
 // are valid standalone and are preserved wherever they appear.
 func isSSEFieldLine(line string) bool {
-	return strings.HasPrefix(line, sseEventPrefix) ||
-		strings.HasPrefix(line, "id:") ||
-		strings.HasPrefix(line, "retry:")
+	body := sseLineBody(line)
+	return strings.HasPrefix(body, sseEventPrefix) ||
+		strings.HasPrefix(body, "id:") ||
+		strings.HasPrefix(body, "retry:")
 }
 
 // markEventBlockForRemoval marks the whole SSE block owning the data line at
@@ -787,7 +842,7 @@ func markEventBlockForRemoval(lines []string, dataIdx int, removeLines map[int]b
 	for j := dataIdx - 1; j >= 0 && isSSEFieldLine(lines[j]); j-- {
 		removeLines[j] = true
 	}
-	if dataIdx+1 < len(lines) && lines[dataIdx+1] == "" {
+	if dataIdx+1 < len(lines) && sseLineBody(lines[dataIdx+1]) == "" {
 		removeLines[dataIdx+1] = true
 	}
 }
@@ -800,11 +855,8 @@ func mergeSSEContent(raw, restoredContent string, paths []string) string {
 	first := -1
 	removeLines := make(map[int]bool)
 	for i, line := range lines {
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		jsonStr := strings.TrimPrefix(line, sseDataPrefix)
-		if jsonStr == sseDone {
+		jsonStr, ok := sseDataPayload(line)
+		if !ok || jsonStr == sseDone {
 			continue
 		}
 		content := extractFirstDeltaContent(jsonStr, paths)
@@ -898,11 +950,8 @@ func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[s
 	}
 	var contentLines []contentLine
 	for i, line := range lines {
-		if !strings.HasPrefix(line, sseDataPrefix) {
-			continue
-		}
-		jsonStr := strings.TrimPrefix(line, sseDataPrefix)
-		if jsonStr == sseDone {
+		jsonStr, ok := sseDataPayload(line)
+		if !ok || jsonStr == sseDone {
 			continue
 		}
 		if c := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths); c != "" {
@@ -985,7 +1034,10 @@ func jsonPathLeafKey(path string) string {
 // other fields intact. Falls back to a full re-marshal if the in-place
 // replacement cannot locate the expected token.
 func replaceContentInSSELine(line, oldContent, newContent string, paths []string) string {
-	jsonStr := strings.TrimPrefix(line, sseDataPrefix)
+	jsonStr, ok := sseDataPayload(line)
+	if !ok {
+		return line
+	}
 	_, matchedPath := extractFirstDeltaContentKeyed(jsonStr, paths)
 	if matchedPath == "" {
 		return line
@@ -1001,7 +1053,7 @@ func replaceContentInSSELine(line, oldContent, newContent string, paths []string
 		// Token not found (e.g. whitespace around colon) — fall back.
 		return updateDeltaContentInLine(line, newContent, matchedPath)
 	}
-	return sseDataPrefix + updated
+	return rebuildSSEDataLine(line, updated)
 }
 
 // updateDeltaContentInLine is the fallback full-remarshal path used when
@@ -1009,7 +1061,10 @@ func replaceContentInSSELine(line, oldContent, newContent string, paths []string
 // It writes through the same JSONPath the text was extracted from, so it stays
 // correct for any provider shape without knowing which one this is.
 func updateDeltaContentInLine(line, newContent, matchedPath string) string {
-	jsonStr := strings.TrimPrefix(line, sseDataPrefix)
+	jsonStr, ok := sseDataPayload(line)
+	if !ok {
+		return line
+	}
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 		return line
@@ -1021,7 +1076,7 @@ func updateDeltaContentInLine(line, newContent, matchedPath string) string {
 	if err != nil {
 		return line
 	}
-	return sseDataPrefix + string(b)
+	return rebuildSSEDataLine(line, string(b))
 }
 
 // restoreJSONChunk handles full JSON responses delivered via chunked transfer encoding.
