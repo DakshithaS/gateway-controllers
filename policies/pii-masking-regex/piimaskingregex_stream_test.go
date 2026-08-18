@@ -28,29 +28,40 @@ import (
 
 // ─── harness ─────────────────────────────────────────────────────────────────
 
-// driveResponseStream feeds chunks to OnResponseBodyChunk exactly as the kernel
-// does (EndOfStream on the last) and reconstructs the bytes sent downstream
-// using the SDK action semantics: ForwardResponseChunk.Body nil = forward the
-// original chunk unchanged, non-nil = replace it (empty slice = emit nothing).
+// driveResponseStream drives the policy exactly as the policy-engine kernel
+// does: chunks are accumulated while any policy asks for more data
+// (NeedsMoreResponseData), and only the assembled buffer is handed to
+// OnResponseBodyChunk. The bytes sent downstream are reconstructed using the
+// SDK action semantics: ForwardResponseChunk.Body nil = forward the flushed
+// buffer unchanged, non-nil = replace it (empty slice = emit nothing).
 func driveResponseStream(t *testing.T, p *PIIMaskingRegexPolicy, respCtx *policy.ResponseStreamContext, chunks []string) string {
 	t.Helper()
 	var out strings.Builder
+	var acc []byte
+	flushes := 0
 	for i, c := range chunks {
-		sb := &policy.StreamBody{
-			Chunk:       []byte(c),
-			EndOfStream: i == len(chunks)-1,
-			Index:       uint64(i),
+		eos := i == len(chunks)-1
+		acc = append(acc, c...)
+		if !eos && p.NeedsMoreResponseData(acc) {
+			continue
 		}
+		sb := &policy.StreamBody{
+			Chunk:       acc,
+			EndOfStream: eos,
+			Index:       uint64(flushes),
+		}
+		flushes++
 		action := p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil)
 		fwd, ok := action.(policy.ForwardResponseChunk)
 		if !ok {
-			t.Fatalf("chunk %d: expected ForwardResponseChunk, got %T", i, action)
+			t.Fatalf("flush %d: expected ForwardResponseChunk, got %T", flushes-1, action)
 		}
 		if fwd.Body == nil {
-			out.WriteString(c)
+			out.Write(acc)
 		} else {
 			out.Write(fwd.Body)
 		}
+		acc = nil
 	}
 	return out.String()
 }
@@ -161,7 +172,7 @@ func TestNonSSE_NoPlaceholderIsForwardedIntact(t *testing.T) {
 	}
 }
 
-// A separate empty EndOfStream sentinel must flush any withheld carry.
+// A separate empty EndOfStream sentinel must flush the accumulated body.
 func TestNonSSE_EmptyEndOfStreamSentinelFlushesCarry(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
 	respCtx := streamingRespCtx("application/json", map[string]string{"guest@example.com": "[EMAIL_0000]"})
@@ -175,7 +186,7 @@ func TestNonSSE_EmptyEndOfStreamSentinelFlushesCarry(t *testing.T) {
 }
 
 // A body whose tail genuinely looks like the start of a placeholder must not be
-// swallowed — the carry has to be released at end of stream.
+// swallowed — an incomplete body is still released at end of stream.
 func TestNonSSE_TrailingPlaceholderPrefixIsNotSwallowed(t *testing.T) {
 	body := `{"content":"an unclosed bracket [EMA`
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
@@ -185,23 +196,24 @@ func TestNonSSE_TrailingPlaceholderPrefixIsNotSwallowed(t *testing.T) {
 	}
 }
 
-// The carry must stay bounded by the longest placeholder — the policy must
-// never buffer the whole body (that would bypass the kernel's accumulator cap).
-func TestNonSSE_CarryStaysBounded(t *testing.T) {
+// An unclosed '[' must not hold the stream open forever: ordinary prose
+// containing a bracket that never closes has to be released after a bounded
+// number of further events, or the policy would buffer to the kernel's
+// accumulator ceiling before anything reached the client.
+func TestSSE_UnclosedBracketReleasesAfterBoundedWait(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	respCtx := streamingRespCtx("application/json", map[string]string{"guest@example.com": "[EMAIL_0000]"})
 
-	payload := strings.Repeat("a", 8192)
-	maxHeld := 0
-	for i := 0; i < 64; i++ {
-		sb := &policy.StreamBody{Chunk: []byte(payload), EndOfStream: false, Index: uint64(i)}
-		p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil)
-		if raw, ok := respCtx.Metadata[metadataKeyStreamState].(string); ok && len(raw) > maxHeld {
-			maxHeld = len(raw)
-		}
+	var acc strings.Builder
+	acc.WriteString(sseEvent("see ["))
+	if !p.NeedsMoreResponseData([]byte(acc.String())) {
+		t.Fatal("expected the policy to wait on a trailing unclosed bracket")
 	}
-	if maxHeld > 1024 {
-		t.Fatalf("policy withheld %d bytes of state; expected a small bounded carry", maxHeld)
+	for i := 0; i <= maxDataLinesAwaitingBracket; i++ {
+		acc.WriteString(sseEvent("word "))
+	}
+	if p.NeedsMoreResponseData([]byte(acc.String())) {
+		t.Fatalf("still waiting after %d further events; expected release at %d",
+			maxDataLinesAwaitingBracket+1, maxDataLinesAwaitingBracket)
 	}
 }
 
@@ -271,18 +283,13 @@ func TestSSE_LeadingHeartbeatKeepsItsPosition(t *testing.T) {
 	}
 }
 
-// Ordinary prose containing '[' must not stall the stream: with no placeholder
-// prefix matching, every event flows straight through.
-func TestSSE_BracketInProseDoesNotWithhold(t *testing.T) {
+// Ordinary prose whose brackets are already closed must not stall the stream:
+// there is nothing a later event could complete, so the flush happens now.
+func TestSSE_ClosedBracketInProseDoesNotWithhold(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
-
 	chunk := sseEvent("see [1] and [2] for details")
-	sb := &policy.StreamBody{Chunk: []byte(chunk), EndOfStream: false}
-	action := p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil)
-	fwd := action.(policy.ForwardResponseChunk)
-	if fwd.Body != nil && len(fwd.Body) == 0 {
-		t.Fatal("event was withheld despite containing no placeholder prefix")
+	if p.NeedsMoreResponseData([]byte(chunk)) {
+		t.Fatal("stream withheld despite every bracket being closed")
 	}
 }
 
@@ -311,12 +318,44 @@ func TestSSE_SurvivesArbitraryChunkSplits(t *testing.T) {
 
 // ─── contract guards ─────────────────────────────────────────────────────────
 
-// The kernel must hand us every chunk directly; cross-chunk state is ours.
-func TestNeedsMoreResponseData_AlwaysFalse(t *testing.T) {
+// The kernel owns accumulation. This policy asks it to keep buffering only
+// while a placeholder could still be incomplete — an unparseable JSON body, or
+// SSE assistant text ending in an unclosed '['.
+func TestNeedsMoreResponseData(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty", "", true},
+		{"truncated json", "{", true},
+		{"complete json", `{"a":"b"}`, false},
+		{"json with trailing whitespace", `{"a":"b"}` + "\n", false},
+		{"sse with no bracket", sseEvent("hello there"), false},
+		{"sse with closed bracket", sseEvent("see [1] for details"), false},
+		{"sse with unclosed bracket", sseEvent("mail ["), true},
+		{"sse with placeholder split across events", sseEvent("mail [") + sseEvent("EMAIL"), true},
+		{"sse with completed placeholder", sseEvent("mail [") + sseEvent("EMAIL_0000]"), false},
+		{"sse cut mid-event", strings.TrimSuffix(sseEvent("hello there"), "}\n\n"), true},
+		{"crlf sse event", sseEventCRLF("hello there"), false},
+	}
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	for _, in := range []string{"", "{", `{"a":"b"}`, "data: {\"choices\":[]}\n\n", "[EMA"} {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := p.NeedsMoreResponseData([]byte(tc.in)); got != tc.want {
+				t.Errorf("NeedsMoreResponseData(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Redaction is one-way — nothing is restored on the response path, so the
+// policy must never ask the kernel to hold response bytes back.
+func TestNeedsMoreResponseData_RedactModeNeverBuffers(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "redactPII": true})
+	for _, in := range []string{"", "{", sseEvent("mail [")} {
 		if p.NeedsMoreResponseData([]byte(in)) {
-			t.Errorf("NeedsMoreResponseData(%q) = true, want false", in)
+			t.Errorf("NeedsMoreResponseData(%q) = true in redact mode, want false", in)
 		}
 	}
 }
@@ -327,44 +366,6 @@ func TestNoMetadata_StreamsThroughUnchanged(t *testing.T) {
 	respCtx := streamingRespCtx("application/json", nil)
 	if got := driveResponseStream(t, p, respCtx, splitEvery(maskedJSONBody, 33)); got != maskedJSONBody {
 		t.Fatalf("body altered when no PII was masked:\n%s", got)
-	}
-}
-
-// Per-request state must be a JSON-safe scalar. The Python policy bridge
-// converts SharedContext.Metadata via structpb.NewStruct on every call, which
-// rejects arbitrary Go types ("proto: invalid type: *piimaskingregex...") and
-// would break any chain containing a Python policy. Regression guard against
-// storing a struct pointer (or any non-scalar) in metadata.
-func TestStreamState_IsJSONSafeScalar(t *testing.T) {
-	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	respCtx := streamingRespCtx("application/json", map[string]string{"guest@example.com": "[EMAIL_0000]"})
-
-	// Mid-stream chunk ending in a placeholder prefix — forces state to be stored.
-	sb := &policy.StreamBody{Chunk: []byte(`{"content":"mail [EMA`), EndOfStream: false}
-	p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil)
-
-	raw, ok := respCtx.Metadata[metadataKeyStreamState]
-	if !ok {
-		t.Fatal("expected stream state to be stored mid-stream")
-	}
-	encoded, isString := raw.(string)
-	if !isString {
-		t.Fatalf("stream state must be stored as a string (structpb-safe), got %T", raw)
-	}
-	if !json.Valid([]byte(encoded)) {
-		t.Fatalf("stream state is not valid JSON: %q", encoded)
-	}
-}
-
-// State must not outlive the stream: nothing is left in metadata once the
-// response has completed.
-func TestStreamState_ClearedAtEndOfStream(t *testing.T) {
-	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	respCtx := streamingRespCtx("application/json", map[string]string{"guest@example.com": "[EMAIL_0000]"})
-
-	driveResponseStream(t, p, respCtx, splitEvery(maskedJSONBody, 9))
-	if _, ok := respCtx.Metadata[metadataKeyStreamState]; ok {
-		t.Fatal("stream state still present after end of stream")
 	}
 }
 
@@ -703,20 +704,12 @@ func sseEventCRLF(content string) string {
 	return strings.ReplaceAll(sseEvent(content), "\n", "\r\n")
 }
 
-// A CRLF-delimited stream must be recognised as event-complete. Matching only
-// "\n\n" would leave every event in SSECarry, so nothing reaches the client
-// until end-of-stream and the carry grows unbounded.
+// A CRLF-delimited stream must be parsed as SSE, not mistaken for a JSON body:
+// a complete, placeholder-free CRLF event has to be released immediately rather
+// than accumulated until the body happens to parse as JSON (which it never will).
 func TestSSE_CRLFEventsAreReleasedBeforeEndOfStream(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
-	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
-
-	// A complete, placeholder-free CRLF event mid-stream must be emitted now.
-	sb := &policy.StreamBody{Chunk: []byte(sseEventCRLF("Hello there.")), EndOfStream: false}
-	fwd, ok := p.OnResponseBodyChunk(context.Background(), respCtx, sb, nil).(policy.ForwardResponseChunk)
-	if !ok {
-		t.Fatalf("expected ForwardResponseChunk")
-	}
-	if fwd.Body != nil && len(fwd.Body) == 0 {
+	if p.NeedsMoreResponseData([]byte(sseEventCRLF("Hello there."))) {
 		t.Fatal("complete CRLF event was withheld; client receives nothing until EOS")
 	}
 }
@@ -743,8 +736,9 @@ func TestSSE_CRLFStreamRestoresSplitPlaceholder(t *testing.T) {
 	}
 }
 
-// Assistant text that merely mentions "data: [DONE]" is not end-of-stream.
-// Treating it as terminal releases a half-buffered placeholder as a visible leak.
+// Assistant text that merely mentions "data: [DONE]" must not be mistaken for
+// the stream terminator — doing so releases a half-buffered placeholder as a
+// visible leak.
 func TestSSE_DoneInAssistantTextIsNotTerminal(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
 	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
@@ -762,46 +756,5 @@ func TestSSE_DoneInAssistantTextIsNotTerminal(t *testing.T) {
 	want := "The stream ends with the line data: [DONE] — then mail guest@example.com."
 	if assembled != want {
 		t.Errorf("assembled content = %q, want %q", assembled, want)
-	}
-}
-
-func TestLastCompleteEventEnd(t *testing.T) {
-	cases := []struct {
-		name string
-		buf  string
-		want int
-	}{
-		{"lf terminated", "data: a\n\n", 9},
-		{"crlf terminated", "data: a\r\n\r\n", 11},
-		{"crlf then partial", "data: a\r\n\r\ndata: b\r\n", 11},
-		{"no terminator", "data: a\r\n", -1},
-		{"mixed prefers the later end", "data: a\n\ndata: b\r\n\r\n", 20},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := lastCompleteEventEnd(tc.buf); got != tc.want {
-				t.Errorf("lastCompleteEventEnd(%q) = %d, want %d", tc.buf, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestSSEFrameHasDone(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  string
-		want bool
-	}{
-		{"lf done field", "data: [DONE]\n\n", true},
-		{"crlf done field", "data: [DONE]\r\n\r\n", true},
-		{"done inside a json payload is not a done field", `data: {"delta":"data: [DONE]"}` + "\n\n", false},
-		{"no done", "data: {}\n\n", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := sseFrameHasDone(tc.raw); got != tc.want {
-				t.Errorf("sseFrameHasDone(%q) = %v, want %v", tc.raw, got, tc.want)
-			}
-		})
 	}
 }

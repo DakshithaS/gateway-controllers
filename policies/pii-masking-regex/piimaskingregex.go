@@ -494,122 +494,118 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 	return policy.DownstreamResponseModifications{}
 }
 
-// ─── Streaming restore (bounded-carry) ───────────────────────────────────────
+// ─── Streaming restore ───────────────────────────────────────────
 //
-// Restoration must survive a placeholder being split across chunk boundaries
-// without buffering the whole response. The approach is streaming find/replace
-// with a bounded holdback: every complete placeholder in the bytes seen so far
-// is replaced and emitted immediately; the only bytes withheld are the shortest
-// suffix that could still grow into a known placeholder ("[EMA" when
-// "[EMAIL_0000]" is in this request's restore map). The carry is therefore
-// bounded by the longest placeholder for the request (~tens of bytes), the
-// response streams through with no added buffering, and the kernel's own
-// accumulator limits are never bypassed.
+// Accumulation is the kernel's job, not the policy's. The policy engine buffers
+// response chunks and only hands them to policies once no policy asks for more
+// (anyPolicyNeedsMoreResponseData in the policy-engine kernel), and it now does
+// that identically on the plain and compressed paths. NeedsMoreResponseData is
+// how this policy makes that request, so no cross-chunk state is kept here:
+// every flush is restored on its own, statelessly.
 //
-// SSE responses need the same idea one level up: a placeholder can be split
-// across the delta.content of several events, where the raw bytes never
-// contain it contiguously. Content events are held only while the tail of
-// their concatenated content is a prefix of a known placeholder, and resolved
-// as soon as it completes, stops matching, or the stream ends ([DONE]/EOS).
-//
-// Per-request state lives in respCtx.Metadata under metadataKeyStreamState as a
-// JSON *string*. It must not be stored as a Go struct pointer: the Python
-// policy bridge serializes SharedContext.Metadata through structpb.NewStruct
-// (pythonbridge/translator.go), which rejects arbitrary Go types
-// ("proto: invalid type: *piimaskingregex.streamRestoreState") and would fail
-// every chain containing a Python policy. Strings round-trip cleanly.
-// The entry is deleted at end of stream so no response bytes outlive the request.
+// What restoration needs is a *complete* placeholder. An LLM emits "[EMAIL_0000]"
+// as several tokens ("[", "EMAIL", "_0000", "]"), each in its own SSE event, so a
+// flush cut in the middle would match nothing and leak the masked text to the
+// client. Waiting until a trailing unclosed "[" is closed is the entire rule.
 
-const (
-	// metadataKeyStreamState holds the *streamRestoreState for this request.
-	metadataKeyStreamState = "piimaskingregex:stream_state"
-
-	// modeUnknown/modeRaw/modeSSE route chunks once per request. The decision is
-	// sticky: an SSE stream never falls back to raw handling on a chunk that
-	// happens not to contain a "data:" line (heartbeats, split frames).
-	modeUnknown = 0
-	modeRaw     = 1
-	modeSSE     = 2
-
-	// maxSSEPendingBytes is a defensive ceiling on the SSE hold buffer. The hold
-	// condition (tail is a placeholder prefix) bounds it naturally — one event
-	// per placeholder character in the worst case — so this only guards against
-	// pathological streams. On overflow the pending events are restored
-	// best-effort and emitted.
-	maxSSEPendingBytes = 64 * 1024
-
-	// SSE terminates an event with a blank line. Both line terminators are legal,
-	// and a CRLF stream contains no "\n\n" at all, so both must be recognised.
-	sseEventSeparator     = "\n\n"
-	sseEventSeparatorCRLF = "\r\n\r\n"
-)
-
-// streamRestoreState is the per-request streaming state, persisted as a JSON
-// string in respCtx.Metadata (see metadataKeyStreamState).
-type streamRestoreState struct {
-	Mode int `json:"m,omitempty"`
-
-	// Carry holds tail bytes of the raw (non-SSE) body withheld because they are
-	// a proper prefix of a known placeholder. Always shorter than the longest
-	// placeholder for this request.
-	Carry string `json:"c,omitempty"`
-
-	// SSECarry holds a trailing incomplete SSE event (no "\n\n" yet).
-	SSECarry string `json:"sc,omitempty"`
-	// SSEPending holds complete SSE events withheld while their concatenated
-	// delta.content tail could still grow into a placeholder.
-	SSEPending string `json:"sp,omitempty"`
-}
-
-// loadStreamState reads the per-request state, tolerating a missing or
-// unparseable entry by starting fresh.
-func loadStreamState(metadata map[string]interface{}) *streamRestoreState {
-	state := &streamRestoreState{}
-	if raw, ok := metadata[metadataKeyStreamState].(string); ok && raw != "" {
-		_ = json.Unmarshal([]byte(raw), state)
-	}
-	return state
-}
-
-// saveStreamState persists the state, removing the entry entirely when nothing
-// is being withheld so the common case leaves no residue in metadata.
-func saveStreamState(metadata map[string]interface{}, state *streamRestoreState) {
-	if state.Carry == "" && state.SSECarry == "" && state.SSEPending == "" && state.Mode == modeUnknown {
-		delete(metadata, metadataKeyStreamState)
-		return
-	}
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		delete(metadata, metadataKeyStreamState)
-		return
-	}
-	metadata[metadataKeyStreamState] = string(encoded)
-}
+// maxDataLinesAwaitingBracket bounds how many further SSE data events may arrive
+// while an unclosed "[" is outstanding. Assistant prose legitimately contains
+// brackets that never close, and without a bound such a stream would buffer to
+// the kernel's accumulator ceiling before anything reached the client.
+const maxDataLinesAwaitingBracket = 5
 
 // NeedsMoreResponseData implements v2alpha.StreamingResponsePolicy.
-// Always false: cross-chunk state is handled inside OnResponseBodyChunk with a
-// bounded carry, so the kernel should deliver every chunk immediately. This
-// also keeps behaviour identical on the compressed path, where the kernel
-// never consults this method.
+//
+// For non-SSE (plain JSON) responses delivered via chunked transfer encoding,
+// accumulates until the full JSON body is complete and parseable. For SSE,
+// accumulates while a placeholder looks partially emitted — an unclosed "[" in
+// the assistant text so far — up to maxDataLinesAwaitingBracket further events.
 func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
-	return false
+	// Redaction is one-way: nothing is restored on the response path, so there is
+	// never a reason to hold a chunk back.
+	if p.params.RedactPII {
+		return false
+	}
+
+	s := string(accumulated)
+
+	if !isSSEChunk(s) {
+		return !json.Valid([]byte(strings.TrimSpace(s)))
+	}
+
+	// A partially-received event carries a partially-received JSON payload, which
+	// no JSONPath can be read from. Flushing it would hand the client the first
+	// half of a placeholder and restore nothing, so wait for the event terminator.
+	if !endsAtSSEEventBoundary(s) {
+		return true
+	}
+
+	content, openBracketDataLineIdx, totalDataLines := extractSSEDeltaContentTracked(s)
+
+	lastOpen := strings.LastIndex(content, "[")
+	if lastOpen == -1 {
+		return false
+	}
+
+	if strings.Contains(content[lastOpen+1:], "]") {
+		return false // already closed — a whole placeholder is present
+	}
+
+	// Unclosed "[" found — wait, but not indefinitely.
+	return totalDataLines-openBracketDataLineIdx-1 <= maxDataLinesAwaitingBracket
+}
+
+// endsAtSSEEventBoundary reports whether s ends on a complete SSE event. Both
+// terminators are legal and a CRLF stream contains no "\n\n" at all, so matching
+// LF alone would treat every CRLF event as incomplete and buffer the whole
+// response to the kernel's accumulator ceiling.
+func endsAtSSEEventBoundary(s string) bool {
+	return strings.HasSuffix(s, "\n\n") || strings.HasSuffix(s, "\r\n\r\n")
+}
+
+// extractSSEDeltaContentTracked concatenates the assistant text carried by every
+// data event in an SSE buffer, and reports alongside it the index of the data
+// event holding the most recent "[" plus the total number of data events. Those
+// indices are what let NeedsMoreResponseData bound the wait; the "[" it reports
+// is the same one strings.LastIndex finds in the returned content, since only
+// the last fragment containing a bracket updates the index.
+func extractSSEDeltaContentTracked(s string) (content string, lastOpenBracketDataLineIdx int, totalDataLines int) {
+	var sb strings.Builder
+	lastOpenBracketDataLineIdx = -1
+	for _, line := range strings.Split(s, "\n") {
+		jsonStr, ok := sseDataPayload(line)
+		if !ok {
+			continue
+		}
+		totalDataLines++
+		if jsonStr == sseDone {
+			continue
+		}
+		fragment := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths)
+		if strings.Contains(fragment, "[") {
+			lastOpenBracketDataLineIdx = totalDataLines - 1
+		}
+		sb.WriteString(fragment)
+	}
+	return sb.String(), lastOpenBracketDataLineIdx, totalDataLines
 }
 
 // OnResponseBodyChunk implements v2alpha.StreamingResponsePolicy.
-// Restores masked PII in response chunks.
+// Restores masked PII in a flushed response chunk.
 //
 // LLMs always use Transfer-Encoding: chunked, so this method handles two formats:
 //   - SSE streaming: lines prefixed with "data: ", restores in choices[*].delta.content
 //   - Full JSON (non-streaming, chunked transfer): restores in raw JSON bytes
+//
+// NeedsMoreResponseData guarantees the chunk seen here holds whole placeholders,
+// so no state is carried between calls.
 func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx *policy.ResponseStreamContext, chunk *policy.StreamBody, params map[string]interface{}) policy.StreamingResponseAction {
 	if p.params.RedactPII {
 		return policy.ForwardResponseChunk{}
 	}
-	if chunk == nil {
+	if chunk == nil || len(chunk.Chunk) == 0 {
 		return policy.ForwardResponseChunk{}
 	}
-	// Note: an empty chunk is NOT an early return — an empty EndOfStream
-	// sentinel must still flush any withheld carry below.
 
 	maskedPII, exists := respCtx.Metadata[MetadataKeyPIIEntities]
 	if !exists {
@@ -624,148 +620,11 @@ func (p *PIIMaskingRegexPolicy) OnResponseBodyChunk(ctx context.Context, respCtx
 	// The restore helpers expect placeholder→original, so invert before use.
 	restoreMap := invertStringMap(maskedPIIMap)
 
-	// respCtx.Metadata is non-nil here: the MetadataKeyPIIEntities lookup above
-	// already returned on a missing entry, which a nil map cannot have.
-	state := loadStreamState(respCtx.Metadata)
-
 	chunkStr := string(chunk.Chunk)
-	state.detectMode(respCtx, chunkStr)
-
-	var out string
-	if state.Mode == modeSSE {
-		out = p.restoreSSEStream(state, chunkStr, chunk.EndOfStream, restoreMap)
-	} else {
-		out = p.restoreRawStream(state, chunkStr, chunk.EndOfStream, restoreMap)
+	if isSSEChunk(chunkStr) {
+		return p.restoreSSEChunk(chunkStr, restoreMap)
 	}
-
-	if chunk.EndOfStream {
-		// Nothing may outlive the stream: any residual carry has been emitted above.
-		delete(respCtx.Metadata, metadataKeyStreamState)
-	} else {
-		saveStreamState(respCtx.Metadata, state)
-	}
-
-	if out == chunkStr {
-		return policy.ForwardResponseChunk{} // passthrough, nothing withheld or changed
-	}
-	// Body must be non-nil even when out is "" (every byte of this chunk is being
-	// withheld): the executor forwards the original chunk unchanged when Body is
-	// nil, which would emit the withheld bytes here and again when they are
-	// released. append guarantees a non-nil slice; []byte("") does not.
-	return policy.ForwardResponseChunk{Body: append([]byte{}, out...)}
-}
-
-// detectMode fixes the SSE-vs-raw routing decision for the request. The
-// upstream Content-Type is authoritative when present; the first chunk's shape
-// is the fallback for contexts without response headers. An SSE comment line
-// (": keep-alive") counts as SSE — it can legitimately arrive before the first
-// data event and must not push the stream onto the raw path.
-func (s *streamRestoreState) detectMode(respCtx *policy.ResponseStreamContext, chunkStr string) {
-	if s.Mode != modeUnknown {
-		return
-	}
-	if respCtx.ResponseHeaders != nil {
-		if ct := respCtx.ResponseHeaders.Get("content-type"); len(ct) > 0 {
-			if strings.HasPrefix(strings.ToLower(ct[0]), "text/event-stream") {
-				s.Mode = modeSSE
-			} else {
-				s.Mode = modeRaw
-			}
-			return
-		}
-	}
-	trimmed := strings.TrimLeft(chunkStr, "\r\n ")
-	if strings.HasPrefix(trimmed, ":") || isSSEChunk(chunkStr) {
-		s.Mode = modeSSE
-		return
-	}
-	if trimmed != "" {
-		s.Mode = modeRaw
-	}
-}
-
-// restoreRawStream is the non-SSE path: streaming find/replace with a bounded
-// placeholder-prefix carry. Output preserves every byte of the body except
-// that complete placeholders are replaced with their JSON-escaped originals.
-func (p *PIIMaskingRegexPolicy) restoreRawStream(state *streamRestoreState, chunkStr string, endOfStream bool, restoreMap map[string]string) string {
-	buf := state.Carry + chunkStr
-	state.Carry = ""
-
-	result := restoreJSONBytes(buf, restoreMap)
-
-	if !endOfStream {
-		if hold := placeholderPrefixSuffixLen(result, restoreMap); hold > 0 {
-			state.Carry = result[len(result)-hold:]
-			result = result[:len(result)-hold]
-		}
-	}
-	return result
-}
-
-// restoreSSEStream is the SSE path. Complete events flow through immediately
-// unless their concatenated delta.content ends in a placeholder prefix, in
-// which case they are withheld until the placeholder completes, stops
-// matching, or the stream terminates ([DONE]/EOS).
-func (p *PIIMaskingRegexPolicy) restoreSSEStream(state *streamRestoreState, chunkStr string, endOfStream bool, restoreMap map[string]string) string {
-	buf := state.SSECarry + chunkStr
-	state.SSECarry = ""
-
-	// Split off a trailing incomplete event (no terminating blank line yet).
-	complete := buf
-	if !endOfStream {
-		if end := lastCompleteEventEnd(buf); end >= 0 {
-			complete = buf[:end]
-			state.SSECarry = buf[end:]
-		} else {
-			state.SSECarry = buf
-			complete = ""
-		}
-	}
-
-	pending := state.SSEPending + complete
-	state.SSEPending = ""
-	if pending == "" {
-		return ""
-	}
-
-	// Terminal conditions force resolution: nothing further can complete a
-	// pending placeholder.
-	terminal := endOfStream || sseFrameHasDone(complete)
-
-	assembled := concatDeltaContent(pending, DefaultStreamingJSONPaths)
-	if assembled == "" {
-		return pending // no content events (heartbeats, usage frames, [DONE])
-	}
-
-	restored := restore(assembled, restoreMap)
-	if !terminal && len(pending) <= maxSSEPendingBytes {
-		if hold := placeholderPrefixSuffixLen(restored, restoreMap); hold > 0 {
-			// Tail could still grow into a placeholder — withhold these events.
-			state.SSEPending = pending
-			return ""
-		}
-	}
-
-	if restored == assembled {
-		return pending // nothing to rewrite — emit events exactly as received
-	}
-	return mergeSSEContent(pending, restored, DefaultStreamingJSONPaths)
-}
-
-// lastCompleteEventEnd returns the offset just past the last event terminator in
-// buf, or -1 when buf holds no complete event. Both LF and CRLF terminators are
-// recognised: a CRLF stream contains no "\n\n" at all, so matching LF alone
-// would hold every event in SSECarry until end-of-stream — an unbounded buffer
-// and no tokens reaching the client until the stream finishes.
-func lastCompleteEventEnd(buf string) int {
-	end := -1
-	if i := strings.LastIndex(buf, sseEventSeparator); i >= 0 {
-		end = i + len(sseEventSeparator)
-	}
-	if i := strings.LastIndex(buf, sseEventSeparatorCRLF); i >= 0 && i+len(sseEventSeparatorCRLF) > end {
-		end = i + len(sseEventSeparatorCRLF)
-	}
-	return end
+	return p.restoreJSONChunk(chunkStr, restoreMap)
 }
 
 // sseLineBody drops the trailing CR left on every line when a CRLF-delimited
@@ -793,33 +652,6 @@ func rebuildSSEDataLine(line, payload string) string {
 	return sseDataPrefix + payload
 }
 
-// sseFrameHasDone reports whether raw carries a data field whose payload is
-// exactly [DONE]. A substring search over the whole frame would instead fire on
-// assistant text that merely mentions "data: [DONE]", treating it as end of
-// stream and releasing a half-buffered placeholder as a visible leak.
-func sseFrameHasDone(raw string) bool {
-	for _, line := range strings.Split(raw, "\n") {
-		if payload, ok := sseDataPayload(line); ok && payload == sseDone {
-			return true
-		}
-	}
-	return false
-}
-
-// concatDeltaContent concatenates the delta.content of every data event in raw
-// SSE text, in order.
-func concatDeltaContent(raw string, paths []string) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(raw, "\n") {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		sb.WriteString(extractFirstDeltaContent(jsonStr, paths))
-	}
-	return sb.String()
-}
-
 // isSSEFieldLine reports whether line is an SSE field that belongs to the event
 // block it precedes. Comments (": keep-alive") are deliberately excluded: they
 // are valid standalone and are preserved wherever they appear.
@@ -845,61 +677,6 @@ func markEventBlockForRemoval(lines []string, dataIdx int, removeLines map[int]b
 	if dataIdx+1 < len(lines) && sseLineBody(lines[dataIdx+1]) == "" {
 		removeLines[dataIdx+1] = true
 	}
-}
-
-// mergeSSEContent writes restoredContent into the first content-bearing event
-// of raw and drops the other content events (their content has been merged),
-// keeping every non-content line — comments, [DONE], usage frames — in order.
-func mergeSSEContent(raw, restoredContent string, paths []string) string {
-	lines := strings.Split(raw, "\n")
-	first := -1
-	removeLines := make(map[int]bool)
-	for i, line := range lines {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		content := extractFirstDeltaContent(jsonStr, paths)
-		if content == "" {
-			continue
-		}
-		if first == -1 {
-			first = i
-			lines[i] = replaceContentInSSELine(line, content, restoredContent, paths)
-			continue
-		}
-		markEventBlockForRemoval(lines, i, removeLines)
-	}
-	if first == -1 {
-		return raw
-	}
-	filtered := lines[:0:0]
-	for i, line := range lines {
-		if removeLines[i] {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	return strings.Join(filtered, "\n")
-}
-
-// placeholderPrefixSuffixLen returns the length of the longest suffix of s
-// that is a proper prefix of any placeholder in restoreMap (keys), or 0.
-func placeholderPrefixSuffixLen(s string, restoreMap map[string]string) int {
-	longest := 0
-	for placeholder := range restoreMap {
-		max := len(placeholder) - 1
-		if max > len(s) {
-			max = len(s)
-		}
-		for l := max; l > longest; l-- {
-			if strings.HasSuffix(s, placeholder[:l]) {
-				longest = l
-				break
-			}
-		}
-	}
-	return longest
 }
 
 // restoreJSONBytes replaces every complete placeholder in s with its
