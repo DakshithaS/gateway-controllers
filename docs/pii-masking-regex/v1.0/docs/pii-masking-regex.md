@@ -196,7 +196,7 @@ Restoration needs a *complete* placeholder: an LLM emits `[EMAIL_0000]` as sever
 
 **Non-SSE chunked responses**: For plain JSON responses delivered via chunked transfer encoding (e.g., `stream: false` with `Transfer-Encoding: chunked`), the body is accumulated until it parses as complete JSON, then restored and forwarded in one piece. Such a response is not incrementally consumable anyway, so buffering it costs no perceived latency, and it guarantees no placeholder is split across two flushes.
 
-**Compressed responses**: `gzip` and `br` responses are decompressed by the gateway before this policy runs and re-compressed afterwards, so restoration works normally. Responses in an encoding the gateway cannot round-trip (for example `deflate` or `zstd`) are forwarded untouched and are **not** inspected or restored — the gateway logs a warning when this happens.
+**Compressed responses**: `gzip`, `br`, `zstd` and `deflate` responses are decompressed by the gateway before this policy runs and re-compressed afterwards, so restoration works normally and the policy itself is encoding-agnostic. If an upstream answers in an encoding the gateway cannot round-trip, the response is rejected rather than forwarded uninspected, so a masked placeholder is never silently delivered because restoration did not run.
 
 #### Processing Behavior
 

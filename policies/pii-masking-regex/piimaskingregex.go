@@ -512,7 +512,7 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 // while an unclosed "[" is outstanding. Assistant prose legitimately contains
 // brackets that never close, and without a bound such a stream would buffer to
 // the kernel's accumulator ceiling before anything reached the client.
-const maxDataLinesAwaitingBracket = 5
+const maxDataLinesAwaitingBracket = 7
 
 // NeedsMoreResponseData implements v2alpha.StreamingResponsePolicy.
 //
