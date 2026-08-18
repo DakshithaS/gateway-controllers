@@ -196,11 +196,10 @@ func TestNonSSE_TrailingPlaceholderPrefixIsNotSwallowed(t *testing.T) {
 	}
 }
 
-// An unclosed '[' must not hold the stream open forever: ordinary prose
-// containing a bracket that never closes has to be released after a bounded
-// number of further events, or the policy would buffer to the kernel's
-// accumulator ceiling before anything reached the client.
-func TestSSE_UnclosedBracketReleasesAfterBoundedWait(t *testing.T) {
+// An unclosed '[' must not hold the stream open forever. Prose that opens a
+// bracket and continues with ordinary words proves no placeholder is arriving —
+// the very next fragment settles it, with no need to count events.
+func TestSSE_UnclosedBracketInProseReleasesImmediately(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
 
 	var acc strings.Builder
@@ -208,12 +207,131 @@ func TestSSE_UnclosedBracketReleasesAfterBoundedWait(t *testing.T) {
 	if !p.NeedsMoreResponseData([]byte(acc.String())) {
 		t.Fatal("expected the policy to wait on a trailing unclosed bracket")
 	}
-	for i := 0; i <= maxDataLinesAwaitingBracket; i++ {
-		acc.WriteString(sseEvent("word "))
-	}
+	acc.WriteString(sseEvent("word "))
 	if p.NeedsMoreResponseData([]byte(acc.String())) {
-		t.Fatalf("still waiting after %d further events; expected release at %d",
-			maxDataLinesAwaitingBracket+1, maxDataLinesAwaitingBracket)
+		t.Fatal("still waiting after prose followed the bracket; nothing could complete a placeholder")
+	}
+}
+
+// A bracket opening onto text that never stops looking like an entity name must
+// still be released, or an operator-configured long name would let prose stall
+// the stream up to the kernel's accumulator ceiling.
+func TestSSE_UnclosedBracketReleasesAtTailCeiling(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+
+	var acc strings.Builder
+	acc.WriteString(sseEvent("see ["))
+	acc.WriteString(sseEvent(strings.Repeat("A", maxPlaceholderTailBytes)))
+	if !p.NeedsMoreResponseData([]byte(acc.String())) {
+		t.Fatal("released at exactly the ceiling; a name of this length could still complete")
+	}
+	acc.WriteString(sseEvent("A"))
+	if p.NeedsMoreResponseData([]byte(acc.String())) {
+		t.Fatalf("still waiting past %d bytes of tail", maxPlaceholderTailBytes)
+	}
+}
+
+// driveResponseStreamPerEvent is driveResponseStream with the chunk boundaries
+// aligned to event boundaries — one SSE event per chunk, which is what a real
+// upstream flushing per event produces.
+//
+// This is the framing the rest of the SSE tests do NOT exercise: they call
+// splitEvery(stream, 40), which coalesces several events into each chunk, so a
+// per-event bound is never reached and a placeholder tokenised one character at
+// a time still arrives inside a single buffer. The event-count bound this policy
+// used to have was green under 40-byte framing and leaked under this one.
+func driveResponseStreamPerEvent(t *testing.T, p *PIIMaskingRegexPolicy, respCtx *policy.ResponseStreamContext, events []string) string {
+	t.Helper()
+	return driveResponseStream(t, p, respCtx, events)
+}
+
+// The originally-reported case: an upstream that emits one SSE event per chunk
+// and one character per event, so "[EMAIL_0000]" spans 12 events. Restoration
+// must not depend on how finely the upstream tokenises, nor on chunk boundaries
+// happening to coalesce events.
+func TestSSE_RestoresWhenChunksAlignToEventsAtEveryTokenisation(t *testing.T) {
+	perChar := []string{"mail "}
+	for _, r := range "[EMAIL_0000]" {
+		perChar = append(perChar, string(r))
+	}
+	perChar = append(perChar, " ok")
+
+	cases := []struct {
+		name  string
+		frags []string
+	}{
+		{"whole placeholder in one event", []string{"mail ", "[EMAIL_0000]", " ok"}},
+		{"four fragments", []string{"mail ", "[EMA", "IL_0", "000]", " ok"}},
+		{"five fragments", []string{"mail ", "[", "EMAIL", "_", "0000", "]", " ok"}},
+		{"one character per event (12 events)", perChar},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+			respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+			events := make([]string, 0, len(tc.frags)+1)
+			for _, f := range tc.frags {
+				events = append(events, sseEvent(f))
+			}
+			events = append(events, "data: [DONE]\n\n")
+
+			out := driveResponseStreamPerEvent(t, p, respCtx, events)
+
+			if got, want := assembleSSEContent(t, out), "mail guest@example.com ok"; got != want {
+				t.Errorf("assembled content mismatch\n got: %q\nwant: %q", got, want)
+			}
+			if strings.Contains(out, "[EMAIL_0000]") {
+				t.Errorf("placeholder leaked to client:\n%s", out)
+			}
+		})
+	}
+}
+
+// The same per-event framing for Anthropic, whose text lives at delta.text —
+// defect 1 and the event-alignment defect interacting.
+func TestSSE_AnthropicRestoresWhenChunksAlignToEvents(t *testing.T) {
+	frags := []string{"mail "}
+	for _, r := range "[EMAIL_0000]" {
+		frags = append(frags, string(r))
+	}
+	frags = append(frags, " ok")
+
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+	events := []string{"event: message_start\ndata: {\"type\":\"message_start\"}\n\n"}
+	for _, f := range frags {
+		events = append(events, anthropicDeltaEvent(f))
+	}
+	events = append(events, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+
+	out := driveResponseStreamPerEvent(t, p, respCtx, events)
+
+	if got, want := assembleAnthropicContent(t, out), "mail guest@example.com ok"; got != want {
+		t.Errorf("assembled content mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if strings.Contains(out, "[EMAIL_0000]") {
+		t.Errorf("placeholder leaked to client:\n%s", out)
+	}
+	assertWellFormedSSEBlocks(t, 0, out)
+}
+
+// Prose must not be held hostage by the wait: a bracket that cannot become a
+// placeholder is released on the event that proves it, so tokens keep flowing.
+func TestSSE_ProseWithBracketsStreamsWithoutStalling(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true})
+	respCtx := streamingRespCtx("text/event-stream", map[string]string{"guest@example.com": "[EMAIL_0000]"})
+
+	events := []string{}
+	for _, f := range []string{"see ", "[", "1", "]", " and ", "[", "text", "]", "(url)", " plus [ this"} {
+		events = append(events, sseEvent(f))
+	}
+	out := driveResponseStreamPerEvent(t, p, respCtx, events)
+
+	if got, want := assembleSSEContent(t, out), "see [1] and [text](url) plus [ this"; got != want {
+		t.Errorf("prose corrupted\n got: %q\nwant: %q", got, want)
 	}
 }
 

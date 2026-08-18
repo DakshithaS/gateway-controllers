@@ -508,18 +508,56 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 // flush cut in the middle would match nothing and leak the masked text to the
 // client. Waiting until a trailing unclosed "[" is closed is the entire rule.
 
-// maxDataLinesAwaitingBracket bounds how many further SSE data events may arrive
-// while an unclosed "[" is outstanding. Assistant prose legitimately contains
-// brackets that never close, and without a bound such a stream would buffer to
-// the kernel's accumulator ceiling before anything reached the client.
-const maxDataLinesAwaitingBracket = 7
+// maxPlaceholderTailBytes bounds how much assistant text may accumulate after an
+// unclosed "[" before it is released regardless of shape. Entity names are
+// operator-configurable and so unbounded in principle; without a ceiling, prose
+// opening a bracket onto a long uppercase run would buffer to the kernel's
+// accumulator limit before anything reached the client. 64 bytes is far past any
+// real placeholder — "[CREDIT_CARD_NUMBER_0000]" is 25.
+const maxPlaceholderTailBytes = 64
+
+// placeholderTailPattern matches the text after an unclosed "[" when that text
+// could still become a placeholder.
+//
+// Placeholders are built as "[%s_%04x]" with the entity name uppercased, and the
+// request side validates them with ^\[[A-Z_]+_[0-9a-f]{4}\]$. The two halves draw
+// on disjoint character sets — the name is [A-Z_], the counter is [0-9a-f] — so a
+// half-emitted placeholder is exactly a run of the first followed by up to four
+// of the second. Anything else after the bracket (a space, lowercase prose,
+// punctuation) proves no placeholder can complete, so the stream is released now.
+var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,4}$`)
+
+// couldCompletePlaceholder reports whether content ends in an unclosed "[" whose
+// trailing text is still a viable placeholder prefix — that is, whether waiting
+// for more data could turn it into something restorable.
+//
+// This is what replaced counting SSE data events. Whether a placeholder is still
+// arriving is a property of the *text*, not of how many frames the upstream split
+// it across, so a placeholder emitted one character per event is held exactly as
+// long as one emitted whole. An event-count bound could not express that: any
+// fixed number is both too small for a finely-tokenised placeholder (it leaks)
+// and too large for prose (it stalls).
+func couldCompletePlaceholder(content string) bool {
+	lastOpen := strings.LastIndex(content, "[")
+	if lastOpen == -1 {
+		return false
+	}
+	tail := content[lastOpen+1:]
+	if strings.Contains(tail, "]") {
+		return false // already closed — a whole placeholder is present
+	}
+	if len(tail) > maxPlaceholderTailBytes {
+		return false
+	}
+	return placeholderTailPattern.MatchString(tail)
+}
 
 // NeedsMoreResponseData implements v2alpha.StreamingResponsePolicy.
 //
 // For non-SSE (plain JSON) responses delivered via chunked transfer encoding,
 // accumulates until the full JSON body is complete and parseable. For SSE,
-// accumulates while a placeholder looks partially emitted — an unclosed "[" in
-// the assistant text so far — up to maxDataLinesAwaitingBracket further events.
+// accumulates while the assembled assistant text ends in a bracket that could
+// still be completing a placeholder.
 func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 	// Redaction is one-way: nothing is restored on the response path, so there is
 	// never a reason to hold a chunk back.
@@ -540,19 +578,7 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 		return true
 	}
 
-	content, openBracketDataLineIdx, totalDataLines := extractSSEDeltaContentTracked(s)
-
-	lastOpen := strings.LastIndex(content, "[")
-	if lastOpen == -1 {
-		return false
-	}
-
-	if strings.Contains(content[lastOpen+1:], "]") {
-		return false // already closed — a whole placeholder is present
-	}
-
-	// Unclosed "[" found — wait, but not indefinitely.
-	return totalDataLines-openBracketDataLineIdx-1 <= maxDataLinesAwaitingBracket
+	return couldCompletePlaceholder(extractSSEDeltaContent(s))
 }
 
 // endsAtSSEEventBoundary reports whether s ends on a complete SSE event. Both
@@ -563,31 +589,22 @@ func endsAtSSEEventBoundary(s string) bool {
 	return strings.HasSuffix(s, "\n\n") || strings.HasSuffix(s, "\r\n\r\n")
 }
 
-// extractSSEDeltaContentTracked concatenates the assistant text carried by every
-// data event in an SSE buffer, and reports alongside it the index of the data
-// event holding the most recent "[" plus the total number of data events. Those
-// indices are what let NeedsMoreResponseData bound the wait; the "[" it reports
-// is the same one strings.LastIndex finds in the returned content, since only
-// the last fragment containing a bracket updates the index.
-func extractSSEDeltaContentTracked(s string) (content string, lastOpenBracketDataLineIdx int, totalDataLines int) {
+// extractSSEDeltaContent concatenates the assistant text carried by every data
+// event in an SSE buffer, which is the text a client ultimately assembles and so
+// the only thing placeholder detection should look at. Frame boundaries are
+// deliberately not preserved: a placeholder split across events is contiguous
+// here, which is what lets the shape test in couldCompletePlaceholder work
+// regardless of how finely the upstream tokenised it.
+func extractSSEDeltaContent(s string) string {
 	var sb strings.Builder
-	lastOpenBracketDataLineIdx = -1
 	for _, line := range strings.Split(s, "\n") {
 		jsonStr, ok := sseDataPayload(line)
-		if !ok {
+		if !ok || jsonStr == sseDone {
 			continue
 		}
-		totalDataLines++
-		if jsonStr == sseDone {
-			continue
-		}
-		fragment := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths)
-		if strings.Contains(fragment, "[") {
-			lastOpenBracketDataLineIdx = totalDataLines - 1
-		}
-		sb.WriteString(fragment)
+		sb.WriteString(extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths))
 	}
-	return sb.String(), lastOpenBracketDataLineIdx, totalDataLines
+	return sb.String()
 }
 
 // OnResponseBodyChunk implements v2alpha.StreamingResponsePolicy.
