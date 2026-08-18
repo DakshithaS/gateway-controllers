@@ -15,7 +15,7 @@ This policy supports SSE streaming responses. When the upstream returns a stream
 - Two modes: masking (reversible) and redaction (permanent)
 - Automatic PII restoration in responses when using masking mode
 - Supports JSONPath extraction to process specific fields within JSON payloads
-- Streaming response support for both SSE and plain chunked bodies -- withholds only the trailing bytes that could still complete a PII placeholder (e.g., `[EMAIL_0000]`), never the whole response
+- Streaming response support for both SSE and plain chunked bodies -- the gateway accumulates only until a PII placeholder (e.g., `[EMAIL_0000]`) is complete, then restores and forwards
 
 ## Configuration
 
@@ -40,41 +40,6 @@ Each item in the `customPIIEntities` array must contain:
 |-------|------|----------|-------------|
 | `piiEntity` | string | Yes | Name/type of the PII entity (e.g., "CREDIT_CARD", "PASSPORT"). Must contain only uppercase letters and underscores. |
 | `piiRegex` | string | Yes | Regular expression pattern to match the PII entity. Must be a valid Go regexp pattern. |
-
-#### Supported Streaming Response Shapes
-
-In a streaming response the assistant text is located by trying a list of JSONPath expressions in
-order against each SSE `data:` frame; the first match wins. One policy configuration therefore works
-across providers with different wire formats.
-
-Multiple shapes are needed because the `openai-to-*` transformer policies deliberately do **not**
-translate streaming responses: `openai-to-anthropic-transformer` and `openai-to-gemini-transformer`
-pass SSE through untouched (streaming translation would require a stateful chunk-level policy), so
-this policy sees provider-native Anthropic and Gemini frames rather than a normalized OpenAI shape.
-`openai-to-bedrock-transformer` is the exception — it decodes the Amazon binary event-stream into
-OpenAI chunks, so Bedrock traffic arrives already OpenAI-shaped.
-
-| JSONPath | Covers |
-|----------|--------|
-| `$.choices[0].delta.content` | OpenAI chat completions — also Azure OpenAI, Mistral, Groq, DeepSeek, Together, Fireworks, and any other OpenAI-compatible provider |
-| `$.delta.text` | Anthropic Messages (`content_block_delta`) |
-| `$.candidates[0].content.parts[0].text` | Google Gemini `streamGenerateContent` |
-| `$.contentBlockDelta.delta.text` | Amazon Bedrock Converse |
-| `$.outputText` | Amazon Bedrock (Titan) |
-| `$.completion` | Anthropic legacy text completions |
-| `$.choices[0].text` | OpenAI legacy completions |
-| `$.delta` | OpenAI Responses API `/responses` (also Azure OpenAI and Azure AI Foundry), where `response.output_text.delta` carries the text as a plain string |
-
-`$.delta` is deliberately last: it is the most generic shape in the list, so every more specific path
-gets first refusal. It cannot shadow Anthropic's `$.delta.text`, because Anthropic's `delta` is an
-object and only scalar values resolve to text.
-
-A frame matching none of these is forwarded unchanged, which means a provider whose streaming shape is
-not listed will deliver the masked placeholder rather than the restored value. Support for a new
-format is added by extending this list in the policy.
-
-Restoration in **non-streaming** responses is format-independent — placeholders are replaced directly
-in the raw JSON bytes — so a buffered response from any provider is restored regardless of shape.
 
 #### JSONPath Support
 
@@ -220,16 +185,16 @@ When the upstream returns an SSE streaming response, each SSE event arrives as a
 data: {"choices":[{"delta":{"content":"token"}}]}
 ```
 
-The PII masking policy restores masked placeholders in streaming responses using placeholder-prefix boundary detection:
+Restoration needs a *complete* placeholder: an LLM emits `[EMAIL_0000]` as several tokens (`[`, `EMAIL`, `_0000`, `]`), each in its own SSE event, so a chunk cut in the middle would match nothing and deliver the masked text to the client. The gateway therefore buffers response chunks on the policy's behalf and hands them over only once a placeholder cannot still be half-emitted:
 
-1. **Response Mode Detection**: The response is routed as SSE or plain-body once per request, based on the upstream `Content-Type` (`text/event-stream`). The decision is sticky, so an event that is legitimately not data-shaped — a `: keep-alive` comment, for example — never reroutes the stream.
-2. **Delta Content Extraction**: The assistant text is extracted from each SSE `data:` line using the ordered JSONPath list in [Supported Streaming Response Shapes](#supported-streaming-response-shapes) — `choices[0].delta.content` for OpenAI-compatible providers, `delta.text` for Anthropic, and so on. The paths are tried in order and the first match wins, so no provider is special-cased.
-3. **Placeholder Boundary Detection**: Events are held only while the tail of their concatenated delta content is a prefix of a placeholder actually masked in this request (`[EMA` when `[EMAIL_0000]` was masked). The hold is released as soon as the placeholder completes, the tail stops matching, `[DONE]` arrives, or the stream ends — so a placeholder split across any number of events is restored, and a `[` in ordinary prose never withholds anything.
-4. **Placeholder Restoration**: When a held run resolves, the extracted text of every held event is concatenated, placeholders are restored to their original PII values, and the restored text is written back through the same JSONPath it was extracted from, into the first content-bearing SSE event. Each subsequent merged event is dropped as a complete block — its `event:` field line and trailing blank separator go with its `data:` line — so the stream stays well-formed for providers that label every event. Comments, `[DONE]`, and usage frames keep their original position.
-5. **Redaction Mode**: When `redactPII: true`, no restoration is performed in the response phase, so streaming chunks pass through without buffering.
+1. **Response Mode Detection**: Each buffer handed to the policy is routed as SSE or plain-body by its own shape — SSE if it carries a `data:` or `event:` line. Because the gateway only releases a buffer on an SSE event boundary, a frame that is legitimately not data-shaped (a `: keep-alive` comment, for example) always travels with the events around it rather than being judged on its own.
+2. **Delta Content Extraction**: The assistant text is extracted from each SSE `data:` line using an ordered list of JSONPath expressions — `choices[0].delta.content` for OpenAI-compatible providers, `delta.text` for Anthropic, `candidates[0].content.parts[0].text` for Gemini, `contentBlockDelta.delta.text` for Bedrock Converse, and so on. The paths are tried in order and the first match wins, so no provider is special-cased.
+3. **Placeholder Boundary Detection**: The policy asks the gateway to keep buffering while the assembled assistant text ends in an unclosed `[` — the opening of a placeholder whose remaining tokens have not arrived yet. Buffering stops as soon as that bracket is closed, at end of stream, or after five further data events, whichever comes first. The five-event bound is what stops ordinary prose containing an unclosed `[` from stalling the stream. Buffering also continues across a partially received event, since a truncated JSON payload has no readable content.
+4. **Placeholder Restoration**: When a buffer is released, the extracted text of every event in it is concatenated, placeholders are restored to their original PII values, and the restored text is written back through the same JSONPath it was extracted from, into the first content-bearing SSE event. Each subsequent merged event is dropped as a complete block — its `event:` field line and trailing blank separator go with its `data:` line — so the stream stays well-formed for providers that label every event. Comments, `[DONE]`, and usage frames keep their original position.
+5. **Redaction Mode**: When `redactPII: true`, no restoration is performed in the response phase, so the policy never asks for buffering and chunks pass straight through.
 6. **Error Handling**: Since HTTP response headers are already committed when streaming begins, errors cannot be reported via HTTP status codes. If an error occurs during restoration, the chunk passes through unmodified.
 
-**Non-SSE chunked responses**: For plain JSON responses delivered via chunked transfer encoding (e.g., `stream: false` with `Transfer-Encoding: chunked`), chunks are restored and forwarded as they arrive. Only the shortest trailing run of bytes that could still grow into a placeholder is withheld, so the whole body is never buffered and the response streams through without added latency.
+**Non-SSE chunked responses**: For plain JSON responses delivered via chunked transfer encoding (e.g., `stream: false` with `Transfer-Encoding: chunked`), the body is accumulated until it parses as complete JSON, then restored and forwarded in one piece. Such a response is not incrementally consumable anyway, so buffering it costs no perceived latency, and it guarantees no placeholder is split across two flushes.
 
 **Compressed responses**: `gzip` and `br` responses are decompressed by the gateway before this policy runs and re-compressed afterwards, so restoration works normally. Responses in an encoding the gateway cannot round-trip (for example `deflate` or `zstd`) are forwarded untouched and are **not** inspected or restored — the gateway logs a warning when this happens.
 
@@ -251,5 +216,5 @@ The PII masking policy restores masked placeholders in streaming responses using
 - When using JSONPath, if the path does not exist or the extracted value is not a string, an error response (HTTP 500) is returned.
 - Redaction mode is irreversible; use masking mode if you need to restore PII in responses.
 - In streaming mode, `redactPII: true` disables response-phase processing entirely since there is nothing to restore. Chunks pass through without buffering overhead.
-- In streaming mode, placeholder boundary detection holds events only while their trailing text is a prefix of a placeholder actually masked in this request. There is no event-count limit, so a placeholder split across any number of events is restored, and a `[` in ordinary prose withholds nothing.
+- In streaming mode, buffering continues while the assembled assistant text ends in an unclosed `[`, and stops once that bracket closes, at end of stream, or after five further data events. A placeholder whose opening `[` and closing `]` are more than five data events apart is therefore delivered to the client unrestored — in practice tokenisers emit a placeholder well inside that window.
 - Complex regex patterns may impact performance; test thoroughly with expected content volumes.
