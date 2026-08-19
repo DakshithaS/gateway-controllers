@@ -19,11 +19,10 @@ Every setting can be configured per policy attachment or gateway-wide. An attach
 - **PII redaction**: Permanently removes PII by replacing with "*****" (redaction mode)
 - **Per-attachment guardrail selection**: Each attachment can set its own `region`, `guardrailID`, and `guardrailVersion`
 - **Per-attachment AWS identity**: Each attachment can set its own `awsAuth`, letting the guardrail live in a different AWS account
-- **Five credential modes**: gateway-wide (`system`, the default), IRSA, STS AssumeRole, default credential chain, or static access keys
+- **Credential modes**: gateway-wide (`system`, the default), IRSA, STS AssumeRole, default credential chain, or static access keys
 - **Gateway-level allowlists**: Operators can restrict which regions, guardrails, roles, and credential modes attachments may select
 - **JSONPath support**: Extract and validate specific fields within JSON payloads
 - **Separate request/response configuration**: Independent configuration for request and response phases
-- **Detailed assessment information**: Optional detailed violation information in error responses
 
 ## Configuration
 
@@ -47,7 +46,7 @@ The policy uses a two-level configuration. Every parameter can be set gateway-wi
 
 #### Allowlists
 
-Each allowlist restricts what a policy attachment may select. An empty or unset allowlist places no restriction. Allowlists are checked against the **effective** value, so when you set one you must include the gateway's own default.
+Each allowlist restricts what a policy attachment may select. An empty or unset allowlist places no restriction.
 
 `allowedRegions` and `allowedRoleARNs` accept a single trailing `*` as a prefix match. `allowedGuardrailIDs` and `allowedAuthTypes` are exact-match only.
 
@@ -98,19 +97,13 @@ At least one of `request` or `response` must be provided.
 
 `region`, `guardrailID`, and `guardrailVersion` resolve independently — an attachment can set only the version and inherit the rest.
 
-> **`localGuardrailID` / `localGuardrailVersion` are deprecated.** They still work, so existing attachments need no immediate change, but prefer `guardrailID` / `guardrailVersion` for new work.
->
-> **Precedence:** the current parameter wins. `localGuardrailID` is consulted only when `guardrailID` resolves to nothing — from the attachment *or* from the gateway-wide `awsbedrock_guardrail_id`. Adding `guardrailID` to an attachment that already sets `localGuardrailID` therefore takes effect immediately; you can remove the `local` spelling in the same edit or later.
->
-> **One case to check before upgrading:** if your gateway sets a non-empty `awsbedrock_guardrail_id` **and** an attachment sets only `localGuardrailID`, that attachment now resolves to the gateway-wide guardrail instead of its own. The merge that combines gateway-wide and attachment parameters erases which level a value came from, so this cannot be detected and rejected automatically. Give such attachments an explicit `guardrailID` (same value as their `localGuardrailID`) before upgrading. Attachments on a gateway that leaves `awsbedrock_guardrail_id` empty are unaffected.
+> **`localGuardrailID` / `localGuardrailVersion` are deprecated.** Still work exactly as previously, therefore no existing attachment needs changing. Prefer `guardrailID` / `guardrailVersion` for new attachments. Please migrate existing attachments to the new parameter names.
 
 #### `awsAuth` — per-attachment AWS identity
 
 `awsAuth` is optional and defaults to `system`. If it is not set, the gateway-wide credential settings from `config.toml` are used, exactly as before.
 
 `authenticationType: system` states that deferral explicitly. **Every other mode ignores the gateway-wide credential settings entirely** — `awsbedrock_access_key_id`, `awsbedrock_role_arn` and the rest are not consulted, and cannot be mixed with what the attachment supplies.
-
-What each mode does use instead differs, and only one of them is fully described by the attachment:
 
 | Mode | Identity comes from | Attachment supplies |
 | ---- | ------------------- | ------------------- |
@@ -119,18 +112,16 @@ What each mode does use instead differs, and only one of them is fully described
 | `default-credential-chain` | Whatever the AWS SDK resolves at runtime: environment, instance profile, ECS task role, or IRSA | Nothing |
 | `iam-user-access-key` | The key and secret in the attachment | Everything |
 
-So "self-contained" applies strictly only to `iam-user-access-key`. The others are self-contained with respect to *gateway-wide configuration*, while still relying on the runtime identity of the gateway process. That is the point of `sts-assume-role` with no static key: the pod's IRSA identity assumes the tenant's role, and no credential material appears in the API definition at all.
+Therefore "self-contained" applies strictly only to `iam-user-access-key`. The others are self-contained with respect to *gateway-wide configuration*, while still relying on the runtime identity of the gateway process
 
-One case is rejected rather than defaulted: an `awsAuth` block carrying credential fields but no `authenticationType`. Defaulting it to `system` would silently ignore those fields, leaving an attachment that looks like it configures an identity while the gateway-wide one is in use. Name the mode instead.
-
-**The declared mode is authoritative.** If it fails — a role that cannot be assumed, an expired key, a missing IRSA environment — the attachment is rejected at deploy time or the request is blocked. It never silently falls back to the gateway-wide credentials, so a broken attachment-level identity cannot end up running under the gateway's own.
+An `awsAuth` block with credential fields but no `authenticationType` resolves to `system`, and those fields are ignored — the gateway-wide identity is used. Name the mode explicitly if you intend the attachment to have its own.
 
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
 | `authenticationType` | string | No | `system` | One of `system`, `irsa`, `sts-assume-role`, `default-credential-chain`, `iam-user-access-key`. Defaults to `system`, so an `awsAuth` block that names no mode uses the gateway-wide identity. |
 | `awsRoleARN` | string | Conditional | – | Required for `sts-assume-role`. Optional for `irsa` — falls back to the `AWS_ROLE_ARN` environment variable. |
 | `awsRoleRegion` | string | No | effective `region` | AWS region whose STS endpoint is used for the assumption. |
-| `awsRoleExternalID` | string | No | – | External ID required by the target role's trust policy. Only applicable to `sts-assume-role`. |
+| `awsRoleExternalID` | string | No | – | External ID required by the target role's trust policy. Used only by `sts-assume-role` — `irsa` calls `AssumeRoleWithWebIdentity`, which has no external-ID parameter, so a value set there is ignored. |
 | `awsRoleSessionName` | string | No | `bedrock-guardrail-session` | Session name used when assuming the role. This is what appears in the target account's CloudTrail, so prefer a value identifying this API. |
 | `awsAccessKeyID` | string | Conditional | – | Required for `iam-user-access-key`. Optional base credential for `sts-assume-role`. |
 | `awsSecretAccessKey` | string | Conditional | – | Required for `iam-user-access-key`. |
@@ -155,37 +146,19 @@ For `irsa`, the web identity token file path is never a policy parameter — it 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `true` | Enables validation for the request flow. |
-| `jsonPath` | string | No | `"$.messages[-1].content"` | JSONPath expression to extract a value from the request payload. If empty, validates the entire payload as a string. |
-| `redactPII` | boolean | No | `false` | If `true`, redacts PII by replacing with `*****` (permanent). If `false`, masks PII with placeholders restorable in responses. |
-| `passthroughOnError` | boolean | No | `false` | If `true`, allows the request to proceed when the Bedrock call fails, for any reason. See "Error handling" below. |
-| `showAssessment` | boolean | No | `false` | If `true`, includes detailed assessment information in error responses. |
+| `jsonPath` | string | No | `"$.messages[-1].content"` | JSONPath expression to extract a specific value from the request JSON payload. If empty, validates the entire payload as a string. |
+| `redactPII` | boolean | No | `false` | If `true`, redacts PII by replacing with `*****` (permanent). If `false`, masks PII with placeholders that can be restored in responses. |
+| `passthroughOnError` | boolean | No | `false` | If `true`, allows the request to proceed when the AWS Bedrock Guardrail API call fails. If `false`, blocks on API errors. |
+| `showAssessment` | boolean | No | `false` | If `true`, includes detailed assessment information from AWS Bedrock Guardrail in error responses. |
 
 #### Response Configuration
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `false` | Enables validation for the response flow. |
-| `jsonPath` | string | No | `"$.choices[0].message.content"` | JSONPath expression to extract a value from the response payload. |
-| `passthroughOnError` | boolean | No | `false` | As above. |
-| `showAssessment` | boolean | No | `false` | As above. |
-
-#### Error handling — what `passthroughOnError` covers
-
-`passthroughOnError` exists so that a Bedrock outage does not take your API down with it. When enabled, the request proceeds regardless of **why** the guardrail call failed — a timeout, a wrong guardrail ID, an unassumable role, or expired credentials all allow traffic through. This matches the behaviour of earlier versions.
-
-| Failure | `passthroughOnError: true` | `passthroughOnError: false` (default) |
-| ------- | -------------------------- | ------------------------------------- |
-| Timeout, connection failure, 5xx, throttling | Request proceeds | Blocked (HTTP 422) |
-| `ResourceNotFoundException` — wrong guardrail ID, version, or region | Request proceeds | Blocked |
-| `AccessDeniedException` — Bedrock or STS refuses | Request proceeds | Blocked |
-| `ValidationException` — malformed request | Request proceeds | Blocked |
-| Expired or unresolvable credentials | Request proceeds | Blocked |
-
-> **Understand what you are enabling.** A *transient* failure passed through costs you a few unscreened requests during an outage. A *permanent* one — a guardrail ID that does not exist, a role that cannot be assumed — means the guardrail never runs at all, on any request, while the API definition still shows it attached. There is no external signal that content is going unscreened.
->
-> There is no distinct signal for this state — the policy does not separate transient from permanent failures, and a passed-through request is logged only at debug level. If you enable `passthroughOnError` in production, monitor for a sustained absence of guardrail interventions, or watch the Bedrock `ApplyGuardrail` error rate in CloudWatch.
->
-> Consider `passthroughOnError: false` (the default) for guardrails that are enforcing a compliance requirement, and reserve `true` for availability-critical paths where unscreened traffic is the lesser risk.
+| `jsonPath` | string | No | `"$.choices[0].message.content"` | JSONPath expression to extract a specific value from the response JSON payload. If empty, validates the entire payload as a string. |
+| `passthroughOnError` | boolean | No | `false` | If `true`, allows the response to proceed when the AWS Bedrock Guardrail API call fails. If `false`, blocks on API errors. |
+| `showAssessment` | boolean | No | `false` | If `true`, includes detailed assessment information from AWS Bedrock Guardrail in error responses. |
 
 #### JSONPath Support
 
@@ -469,7 +442,7 @@ An attachment selecting `iam-user-access-key`, a region outside the list, or a r
 2. **Guardrail evaluation**: Calls `ApplyGuardrail` with the effective region, guardrail ID, and version, using the identity resolved from `awsAuth` or the gateway-wide settings.
 3. **PII processing**: With `redactPII: false`, masks PII with placeholders for later restoration. With `redactPII: true`, replaces PII with `*****` permanently.
 4. **Violation handling**: Blocks and returns HTTP `422` when Bedrock reports a violation.
-5. **Error strategy**: When `passthroughOnError` is `true`, the request proceeds on any failure — JSONPath extraction, credential resolution, the Bedrock call, and response evaluation alike. When `false` (the default), each of those blocks with HTTP 422.
+5. **Error Strategy**: Applies `passthroughOnError` behavior to decide whether to fail closed or allow traffic on Bedrock API failures.
 
 #### Response Phase
 
@@ -477,7 +450,7 @@ An attachment selecting `iam-user-access-key`, a region outside the list, or a r
 2. **Guardrail evaluation**: Validates response content through the guardrail.
 3. **PII restoration**: In masking mode, restores masked PII values when mappings are available from request metadata.
 4. **Violation handling**: Blocks and returns HTTP `422` on violation.
-5. **Error strategy**: As above.
+5. **Error Strategy**: Applies `passthroughOnError` behavior for Bedrock API failures.
 
 #### Credential resolution
 

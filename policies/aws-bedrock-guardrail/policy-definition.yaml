@@ -35,8 +35,7 @@ parameters:
       x-wso2-policy-deprecated-param: true
       description: >-
         DEPRECATED - use `guardrailID` instead. AWS Bedrock Guardrail identifier
-        for this policy attachment. Retained so attachments authored against
-        v1.1.0 keep working. Ignored when `guardrailID` is configured.
+        for this policy attachment.
       minLength: 1
     localGuardrailVersion:
       type: string
@@ -44,9 +43,7 @@ parameters:
       x-wso2-policy-deprecated-param: true
       description: >-
         DEPRECATED - use `guardrailVersion` instead. AWS Bedrock Guardrail
-        version (e.g., "DRAFT", "1") for this policy attachment. Retained so
-        attachments authored against v1.1.0 keep working. Ignored when
-        `guardrailVersion` is configured.
+        version (e.g., "DRAFT", "1") for this policy attachment.
       minLength: 1
     awsAuth:
       type: object
@@ -108,8 +105,9 @@ parameters:
           description: |
             External ID required by the target role's trust policy, for
             cross-account role assumption hardening. Must be unique per tenant.
-            Only applicable to "sts-assume-role" - AssumeRoleWithWebIdentity,
-            used by "irsa", does not support an External ID.
+            Only used by "sts-assume-role"; AssumeRoleWithWebIdentity, which
+            "irsa" calls, has no external-ID parameter, so a value set there is
+            ignored.
           minLength: 8
         awsRoleSessionName:
           type: string
@@ -157,14 +155,6 @@ parameters:
             required: [ authenticationType ]
           then:
             required: [ awsRoleARN ]
-        - if:
-            properties:
-              authenticationType:
-                const: irsa
-            required: [ authenticationType ]
-          then:
-            not:
-              required: [ awsRoleExternalID ]
         # A key/secret pair must be supplied together in every mode that accepts
         # them. Mirrors validateCredentialFields, which rejects a half-supplied
         # pair at runtime.
@@ -176,21 +166,6 @@ parameters:
             required: [ awsSecretAccessKey ]
           then:
             required: [ awsAccessKeyID ]
-        - if:
-            properties:
-              authenticationType:
-                const: system
-            required: [ authenticationType ]
-          then:
-            not:
-              anyOf:
-                - required: [ awsRoleARN ]
-                - required: [ awsRoleRegion ]
-                - required: [ awsRoleExternalID ]
-                - required: [ awsRoleSessionName ]
-                - required: [ awsAccessKeyID ]
-                - required: [ awsSecretAccessKey ]
-                - required: [ awsSessionToken ]
     request:
       type: object
       description: Configuration for request phase validation

@@ -326,17 +326,9 @@ func getStringParam(params map[string]interface{}, key string) string {
 // needs no fallback logic of its own.
 //
 // legacyKey, when non-empty, names the deprecated v1.1.0 spelling of the same
-// setting (localGuardrailID/localGuardrailVersion), kept purely for backward
-// compatibility. The canonical key wins when both are present; the legacy key is
-// consulted only as a fallback, so attachments authored against v1.1.0 keep
-// working untouched while an author adding the canonical name sees it take
-// effect immediately.
-//
-// Note the one behavioural consequence: when the system level supplies a
-// non-empty canonical value, an attachment that sets only the legacy key now
-// resolves to the system-level value rather than its own. The merge erases which
-// level a value came from, so this case cannot be detected and rejected - the
-// debug line below is what makes it diagnosable.
+// setting (localGuardrailID/localGuardrailVersion), kept for backward
+// compatibility. **The deprecated key wins when both are present**, which is the
+// order v1.1.0 used.
 func resolveGuardrailIdentityParam(params map[string]interface{}, legacyKey, canonicalKey string) (string, error) {
 	canonical, err := stringParam(params, canonicalKey)
 	if err != nil {
@@ -351,19 +343,17 @@ func resolveGuardrailIdentityParam(params map[string]interface{}, legacyKey, can
 		}
 	}
 
-	if canonical != "" {
-		if legacy != "" && legacy != canonical {
-			slog.Debug("AWSBedrockGuardrail: deprecated parameter ignored because the current one is set",
+	if legacy != "" {
+		if canonical != "" && canonical != legacy {
+			slog.Debug("AWSBedrockGuardrail: deprecated parameter takes precedence; remove it to use the current one",
 				"deprecatedParam", legacyKey, "deprecatedValue", legacy,
 				"param", canonicalKey, "value", canonical)
 		}
-		return canonical, nil
+		return legacy, nil
 	}
 
-	if legacy != "" {
-		slog.Debug("AWSBedrockGuardrail: using deprecated parameter; prefer the current one",
-			"deprecatedParam", legacyKey, "param", canonicalKey)
-		return legacy, nil
+	if canonical != "" {
+		return canonical, nil
 	}
 
 	if legacyKey != "" {
@@ -418,16 +408,10 @@ func resolveCredentialSet(params map[string]interface{}, region, defaultSessionN
 		return "", credentialFields{}, fmt.Errorf("awsAuth: %w", err)
 	}
 	if authType == "" {
-		// The schema defaults authenticationType to "system", so this branch is
-		// normally only reached when the policy is constructed without going
-		// through schema validation. It is kept as a backstop and behaves the
-		// same way: credential fields without a mode are rejected rather than
-		// defaulted, because defaulting would silently ignore them and leave an
-		// attachment that looks like it configures an identity while the
-		// gateway-wide one is in use.
-		if err := rejectCredentialFieldsForSystem(awsAuth, "no authenticationType is set"); err != nil {
-			return "", credentialFields{}, err
-		}
+		// The schema defaults authenticationType to "system"; this branch covers
+		// construction that bypasses schema validation and behaves the same way.
+		// Any credential fields present are ignored rather than rejected, which
+		// is how the policy treated fields a mode does not read before v1.2.0.
 		return resolveSystemCredentialSet(params, region, defaultSessionName)
 	}
 	switch authType {
@@ -441,9 +425,8 @@ func resolveCredentialSet(params map[string]interface{}, region, defaultSessionN
 	// mode is self-contained, so a failure in it is never masked by falling back
 	// to the gateway identity.
 	if authType == AuthTypeSystem {
-		if err := rejectCredentialFieldsForSystem(awsAuth, fmt.Sprintf("authenticationType is %q (the default when it is not set)", AuthTypeSystem)); err != nil {
-			return "", credentialFields{}, err
-		}
+		// Credential fields alongside "system" are ignored: the gateway-wide
+		// configuration supplies the identity.
 		return resolveSystemCredentialSet(params, region, defaultSessionName)
 	}
 
@@ -468,11 +451,6 @@ func resolveCredentialSet(params map[string]interface{}, region, defaultSessionN
 		return "", credentialFields{}, err
 	}
 
-	// Resolve the IRSA environment fallback here rather than leaving it to
-	// buildWebIdentityCredentialsProvider, so creds.roleARN always carries the
-	// role that will actually be assumed. Without this the allowlist check sees
-	// an empty ARN and lets the environment-supplied role through unexamined,
-	// while the identical role written out explicitly is checked.
 	if authType == AuthTypeIRSA && creds.roleARN == "" {
 		creds.roleARN = strings.TrimSpace(os.Getenv(envRoleARN))
 	}
@@ -552,18 +530,14 @@ func validateCredentialFields(authType string, creds credentialFields) error {
 		// "eks.amazonaws.com/role-arn" annotation, so the param is commonly
 		// left unset. buildWebIdentityCredentialsProvider falls back to that
 		// variable and fails there if neither source supplies a value.
-		if creds.roleExternalID != "" {
-			return fmt.Errorf("'awsAuth.awsRoleExternalID' is not supported when authenticationType is %q, because AssumeRoleWithWebIdentity does not accept an external ID", AuthTypeIRSA)
-		}
-		if err := rejectStaticCredentials(creds, AuthTypeIRSA); err != nil {
-			return err
-		}
+		//
+		// awsRoleExternalID is ignored here rather than rejected:
+		// AssumeRoleWithWebIdentity has no external-ID parameter, so the value
+		// simply goes unused, consistent with every other field a mode does not
+		// read.
 	case AuthTypeDefaultCredentialChain:
 		// Resolution is delegated entirely to the AWS SDK's default provider
 		// chain, so any key configured here would be parsed and then ignored.
-		if err := rejectStaticCredentials(creds, AuthTypeDefaultCredentialChain); err != nil {
-			return err
-		}
 	case AuthTypeSystem:
 		// Handled before this point: credential fields are rejected outright and
 		// the gateway-wide configuration supplies the identity.
@@ -574,15 +548,7 @@ func validateCredentialFields(authType string, creds credentialFields) error {
 // resolveSystemCredentialSet resolves the identity from the system-level
 // configuration. Reached when authenticationType is "system" and when the
 // user level supplies no credential block at all, which is equivalent.
-//
-// Which provider those fields imply is decided in buildSystemCredentialsProvider
-// rather than here, so the shape is worked out in exactly one place.
 func resolveSystemCredentialSet(params map[string]interface{}, region, defaultSessionName string) (string, credentialFields, error) {
-	// Validated here rather than in GetPolicy so that both routes into this
-	// path - an omitted awsAuth and an explicit authenticationType "system" -
-	// enforce exactly the same rules. They are meant to be equivalent, and
-	// validating in only one of them made the same gateway configuration
-	// deploy or fail depending on which spelling the attachment used.
 	if err := validateAWSConfigParams(params); err != nil {
 		return "", credentialFields{}, err
 	}
@@ -611,49 +577,7 @@ func validateCredentialFormats(creds credentialFields) error {
 	return nil
 }
 
-// rejectStaticCredentials refuses a key/secret pair on the modes that never sign
-// with one. Accepting them silently would leave an attachment that looks like it
-// configures an identity while a different one is used - the same class of
-// invisible misconfiguration rejectCredentialFieldsForSystem removes for
-// "system".
-func rejectStaticCredentials(creds credentialFields, authType string) error {
-	for name, value := range map[string]string{
-		"awsAccessKeyID":     creds.accessKeyID,
-		"awsSecretAccessKey": creds.secretAccessKey,
-		"awsSessionToken":    creds.sessionToken,
-	} {
-		if value != "" {
-			return fmt.Errorf("'awsAuth.%s' cannot be set when authenticationType is %q: that mode never signs with a static key", name, authType)
-		}
-	}
-	return nil
-}
-
-// rejectCredentialFieldsForSystem enforces that the system-level identity is not
-// paired with user-level credential fields. Accepting them silently would
-// leave an attachment that looks like it configures an identity while the
-// gateway-wide one is actually in use - the same class of invisible
-// misconfiguration the explicit authenticationType exists to remove.
-func rejectCredentialFieldsForSystem(awsAuth map[string]interface{}, because string) error {
-	for _, key := range []string{
-		"awsRoleARN", "awsRoleRegion", "awsRoleExternalID", "awsRoleSessionName",
-		"awsAccessKeyID", "awsSecretAccessKey", "awsSessionToken",
-	} {
-		if v, ok := awsAuth[key]; ok && v != nil && v != "" {
-			return fmt.Errorf("'awsAuth.%s' cannot be set when %s: the gateway-wide credential configuration supplies the identity. Set authenticationType to the mode this field belongs to", key, because)
-		}
-	}
-	return nil
-}
-
 // applyCredentialDefaults fills in the fields that have a derived default.
-//
-// roleRegion defaults to the guardrail region so that a user-level awsAuth need
-// not repeat it. Note this does not make the system level lenient: an incomplete
-// system-level role (ARN with no region) is still rejected by
-// validateAWSConfigParams before this runs, because there an operator writes
-// both keys in the same file and a missing one is a typo rather than an
-// omission the policy should guess at.
 func applyCredentialDefaults(creds *credentialFields, region, defaultSessionName string) {
 	if creds.roleRegion == "" {
 		creds.roleRegion = region
@@ -669,12 +593,6 @@ var roleSessionNameDisallowed = regexp.MustCompile(`[^\w+=,.@-]`)
 
 // deriveRoleSessionName builds the default STS session name for this policy
 // attachment from the API it is attached to.
-//
-// The session name is what identifies the caller in the *target account's*
-// CloudTrail. When a guardrail lives in a tenant's own AWS account, a constant
-// name would render every gateway action indistinguishable to the tenant
-// auditing their own logs, so the API name and version are used instead.
-// Falls back to the constant when no metadata is available.
 func deriveRoleSessionName(metadata policy.PolicyMetadata) string {
 	parts := make([]string, 0, 3)
 	if metadata.APIName != "" {
@@ -700,14 +618,6 @@ func deriveRoleSessionName(metadata policy.PolicyMetadata) string {
 
 // checkAllowlist verifies an effective value against an operator-configured
 // allowlist. An empty or absent allowlist places no restriction.
-//
-// The check deliberately applies to the effective value rather than only to
-// attachment-supplied ones: the merge leaves no record of which level a value
-// came from, and an operator whose own gateway-wide default falls outside their
-// own allowlist has a misconfiguration worth surfacing at deploy time.
-//
-// When allowPrefix is set, an allowlist entry ending in "*" matches any value
-// with that prefix.
 func checkAllowlist(params map[string]interface{}, allowlistKey, valueName, value string, allowPrefix bool) error {
 	allowed, err := stringSliceParam(params, allowlistKey)
 	if err != nil {
@@ -717,10 +627,6 @@ func checkAllowlist(params map[string]interface{}, allowlistKey, valueName, valu
 		return nil
 	}
 	for _, entry := range allowed {
-		// A "*" that is not a wildcard in this position is a literal, so the
-		// entry silently matches nothing and refuses every deployment with a
-		// message about the value rather than the configuration. Fail on the
-		// configuration instead.
 		if i := strings.Index(entry, "*"); i != -1 {
 			switch {
 			case !allowPrefix:
@@ -767,14 +673,6 @@ func stringSliceParam(params map[string]interface{}, key string) ([]string, erro
 
 // validateAWSConfigParams validates AWS configuration parameters (from params)
 // validateAWSConfigParams type-checks the system-level credential parameters.
-//
-// An empty string means "not configured", not "misconfigured": every
-// awsbedrock_* key ships in config.toml with an empty default, and those empty
-// values reach the policy verbatim rather than being dropped. Rejecting them
-// would make the documented default configuration unusable.
-//
-// The region requirement lives in resolveGuardrailIdentityParam, which knows
-// whether the user level supplied one.
 func validateAWSConfigParams(params map[string]interface{}) error {
 	for _, key := range []string{
 		"awsAccessKeyID", "awsSecretAccessKey", "awsSessionToken",
@@ -880,19 +778,6 @@ func buildAssumeRoleCredentialsProvider(ctx context.Context, creds credentialFie
 // AssumeRoleWithWebIdentity using a Kubernetes projected service account token
 // - the mechanism EKS calls IAM Roles for Service Accounts (IRSA) - and caches
 // the resulting temporary credentials until they are close to expiry.
-//
-// This mode needs no credential material in the API definition at all, which
-// is what allows a policy attachment to use its own AWS identity without
-// storing a secret alongside the API configuration.
-//
-// The awsRoleARN param takes precedence when set; if empty, this falls back to
-// the AWS_ROLE_ARN environment variable that the EKS Pod Identity Webhook
-// injects for a ServiceAccount annotated with "eks.amazonaws.com/role-arn".
-// The token file path is never taken from a policy param - it is always read
-// from AWS_WEB_IDENTITY_TOKEN_FILE, injected by the same webhook. If either
-// variable is missing, IRSA is not available in this environment and this
-// returns an error rather than silently falling back to another credential
-// source.
 func buildWebIdentityCredentialsProvider(creds credentialFields) (aws.CredentialsProvider, error) {
 	roleARN := creds.roleARN
 	if roleARN == "" {
@@ -1226,13 +1111,6 @@ func (p *AWSBedrockGuardrailPolicy) buildAssessmentObject(reason string, validat
 
 	if showAssessment {
 		if validationError != nil {
-			// The underlying error text is deliberately withheld from the
-			// client and logged server-side instead. AWS distinguishes
-			// "no such guardrail" (ResourceNotFoundException) from "exists but
-			// you may not call it" (AccessDeniedException), so echoing the raw
-			// message would let a caller enumerate the guardrails and roles
-			// configured in the account. showAssessment widens the guardrail
-			// assessment detail, not AWS SDK diagnostics.
 			assessment["assessments"] = []string{reason}
 		} else if bedrockOutput, ok := output.(*bedrockruntime.ApplyGuardrailOutput); ok && bedrockOutput != nil {
 			if len(bedrockOutput.Assessments) > 0 {

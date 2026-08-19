@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
@@ -97,22 +98,40 @@ func TestResolveIdentity_EmptyAndNonStringRejected(t *testing.T) {
 		"'region' must be a string")
 }
 
-func TestResolveIdentity_CanonicalKeysTakePrecedenceOverDeprecated(t *testing.T) {
-	// guardrailID / guardrailVersion win over the deprecated local* spellings,
-	// so an author migrating an attachment sees the new parameter take effect
-	// immediately rather than being silently shadowed by the old one.
+func TestResolveIdentity_DeprecatedKeysTakePrecedence(t *testing.T) {
+	// The deprecated spelling wins, matching v1.1.0. This is what keeps an
+	// existing attachment pointed at its own guardrail on a gateway that also
+	// sets awsbedrock_guardrail_id: after the merge the canonical key carries
+	// the gateway-wide value whether the author wrote one or not, so preferring
+	// it would silently redirect every v1.1.0 attachment.
 	p := mustGetPolicy(t, paramsWith(map[string]interface{}{
-		"guardrailID":           "gr-current",
+		"guardrailID":           "gr-gateway-wide",
 		"guardrailVersion":      "3",
-		"localGuardrailID":      "gr-deprecated",
+		"localGuardrailID":      "gr-attachment-own",
 		"localGuardrailVersion": "1",
 	}))
 
-	if p.guardrailID != "gr-current" {
-		t.Fatalf("expected guardrailID to win over localGuardrailID, got %q", p.guardrailID)
+	if p.guardrailID != "gr-attachment-own" {
+		t.Fatalf("expected localGuardrailID to win, got %q", p.guardrailID)
 	}
-	if p.guardrailVersion != "3" {
-		t.Fatalf("expected guardrailVersion to win over localGuardrailVersion, got %q", p.guardrailVersion)
+	if p.guardrailVersion != "1" {
+		t.Fatalf("expected localGuardrailVersion to win, got %q", p.guardrailVersion)
+	}
+}
+
+func TestResolveIdentity_V110AttachmentKeepsItsOwnGuardrail(t *testing.T) {
+	// The regression this ordering exists to prevent: a v1.1.0 attachment on a
+	// gateway with a non-empty awsbedrock_guardrail_id must keep using its own
+	// guardrail, not silently switch to the gateway-wide one.
+	p := mustGetPolicy(t, paramsWith(map[string]interface{}{
+		"guardrailID":           "gr-gateway-wide", // as the system level supplies it
+		"guardrailVersion":      "DRAFT",
+		"localGuardrailID":      "gr-tenant-a", // all a v1.1.0 attachment sets
+		"localGuardrailVersion": "1",
+	}))
+
+	if p.guardrailID == "gr-gateway-wide" {
+		t.Fatal("v1.1.0 attachment was silently redirected to the gateway-wide guardrail")
 	}
 }
 
@@ -230,11 +249,6 @@ func TestCredentialSet_ModeValidation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "credential field with no authenticationType",
-			awsAuth: map[string]interface{}{"awsRoleARN": "arn:aws:iam::444455556666:role/tenant-a"},
-			wantErr: "cannot be set when no authenticationType is set",
-		},
-		{
 			name:    "unknown authenticationType",
 			awsAuth: map[string]interface{}{"authenticationType": "magic"},
 			wantErr: "'awsAuth.authenticationType' must be one of",
@@ -256,15 +270,6 @@ func TestCredentialSet_ModeValidation(t *testing.T) {
 			name:    "assume role without an ARN",
 			awsAuth: map[string]interface{}{"authenticationType": AuthTypeSTSAssumeRole},
 			wantErr: "'awsAuth.awsRoleARN' is required",
-		},
-		{
-			name: "irsa rejects an external ID",
-			awsAuth: map[string]interface{}{
-				"authenticationType": AuthTypeIRSA,
-				"awsRoleARN":         "arn:aws:iam::444455556666:role/tenant-a",
-				"awsRoleExternalID":  "tnt-a-7f3c9e21",
-			},
-			wantErr: "does not accept an external ID",
 		},
 	}
 
@@ -828,12 +833,16 @@ func TestAWSAuth_DefaultsToSystemWhenTypeOmitted(t *testing.T) {
 	}
 }
 
-func TestAWSAuth_CredentialFieldsWithoutTypeAreRejected(t *testing.T) {
-	// Defaulting this to system would silently ignore the role ARN, so it is
-	// rejected and the author told to name the mode.
-	expectGetPolicyError(t, paramsWith(map[string]interface{}{
+func TestAWSAuth_CredentialFieldsWithoutTypeAreIgnored(t *testing.T) {
+	// No authenticationType means "system". Credential fields alongside it are
+	// ignored rather than rejected, matching how the policy treated fields a
+	// mode does not read before v1.2.0.
+	p := mustGetPolicy(t, paramsWith(map[string]interface{}{
 		"awsAuth": map[string]interface{}{"awsRoleARN": "arn:aws:iam::444455556666:role/tenant-a"},
-	}), "no authenticationType is set")
+	}))
+	if p.authType != AuthTypeSystem {
+		t.Fatalf("expected %q, got %q", AuthTypeSystem, p.authType)
+	}
 }
 
 func TestAWSAuth_SystemModeUsesGatewayCredentials(t *testing.T) {
@@ -854,18 +863,29 @@ func TestAWSAuth_SystemModeUsesGatewayCredentials(t *testing.T) {
 	}
 }
 
-func TestAWSAuth_SystemModeRejectsCredentialFields(t *testing.T) {
-	// A credential field alongside "system" would be silently ignored, which is
-	// exactly the invisible misconfiguration the explicit mode exists to remove.
-	for _, k := range []string{"awsRoleARN", "awsAccessKeyID", "awsSecretAccessKey", "awsRoleExternalID", "awsRoleSessionName"} {
-		t.Run(k, func(t *testing.T) {
-			expectGetPolicyError(t, paramsWith(map[string]interface{}{
-				"awsAuth": map[string]interface{}{
-					"authenticationType": AuthTypeSystem,
-					k:                    "some-value",
-				},
-			}), fmt.Sprintf("'awsAuth.%s' cannot be set", k))
-		})
+func TestAWSAuth_SystemModeIgnoresCredentialFields(t *testing.T) {
+	// The gateway-wide identity is used; anything in awsAuth is ignored. The
+	// assertion that matters is that the attachment role does not leak into the
+	// resolved set, so the gateway identity really is the one in play.
+	p := mustGetPolicy(t, paramsWith(map[string]interface{}{
+		"awsRoleARN":    "arn:aws:iam::111122223333:role/gateway-default",
+		"awsRoleRegion": "us-east-1",
+		"awsAuth": map[string]interface{}{
+			"authenticationType": AuthTypeSystem,
+			"awsRoleARN":         "arn:aws:iam::444455556666:role/attachment-own",
+			"awsAccessKeyID":     "AKIAEXAMPLE",
+			"awsSecretAccessKey": "shh",
+		},
+	}))
+
+	if p.authType != AuthTypeSystem {
+		t.Fatalf("expected %q, got %q", AuthTypeSystem, p.authType)
+	}
+	if p.creds.roleARN != "arn:aws:iam::111122223333:role/gateway-default" {
+		t.Fatalf("system mode should use the gateway-wide role, got %q", p.creds.roleARN)
+	}
+	if p.creds.accessKeyID != "" {
+		t.Fatalf("attachment key leaked into the system credential set: %q", p.creds.accessKeyID)
 	}
 }
 
@@ -996,22 +1016,28 @@ func TestAllowlist_RejectsWildcardThatIsNotTrailing(t *testing.T) {
 	}))
 }
 
-func TestAWSAuth_ModesThatIgnoreStaticKeysRejectThem(t *testing.T) {
-	// irsa and default-credential-chain never sign with a static key, so
-	// accepting one would leave an attachment that looks configured while a
-	// different identity is used.
+func TestAWSAuth_ModesThatIgnoreStaticKeysAcceptThem(t *testing.T) {
+	// irsa and default-credential-chain never sign with a static key. Supplying
+	// one is accepted and ignored; the provider each mode builds is unaffected.
 	t.Setenv(envWebIdentityTokenFile, t.TempDir()+"/token")
 	t.Setenv(envRoleARN, "arn:aws:iam::367134611783:role/irsa")
 
 	for _, mode := range []string{AuthTypeIRSA, AuthTypeDefaultCredentialChain} {
 		t.Run(mode, func(t *testing.T) {
-			expectGetPolicyError(t, paramsWith(map[string]interface{}{
+			p := mustGetPolicy(t, paramsWith(map[string]interface{}{
 				"awsAuth": map[string]interface{}{
 					"authenticationType": mode,
 					"awsAccessKeyID":     "AKIAEXAMPLE",
 					"awsSecretAccessKey": "shh",
 				},
-			}), "never signs with a static key")
+			}))
+			if p.authType != mode {
+				t.Fatalf("expected %q, got %q", mode, p.authType)
+			}
+			// default-credential-chain defers to the SDK, so it builds none.
+			if mode == AuthTypeDefaultCredentialChain && p.credentialsProvider != nil {
+				t.Fatal("default-credential-chain should not build a provider")
+			}
 		})
 	}
 }
@@ -1050,4 +1076,25 @@ func TestAllowlist_RegionSupportsTrailingWildcard(t *testing.T) {
 		"region":         "us-east-1",
 		"allowedRegions": []interface{}{"us-*-1"},
 	}), "'*' is only supported as the final character")
+}
+
+func TestAWSAuth_StaticKeyModeIgnoresRoleFields(t *testing.T) {
+	// iam-user-access-key signs directly with the key. Role fields are accepted
+	// and ignored; the provider is still a static one.
+	p := mustGetPolicy(t, paramsWith(map[string]interface{}{
+		"awsAuth": map[string]interface{}{
+			"authenticationType": AuthTypeIAMUserAccessKey,
+			"awsAccessKeyID":     "AKIAEXAMPLE",
+			"awsSecretAccessKey": "shh",
+			"awsRoleARN":         "arn:aws:iam::444455556666:role/never-assumed",
+			"awsRoleExternalID":  "unused-external-id",
+		},
+	}))
+
+	if p.authType != AuthTypeIAMUserAccessKey {
+		t.Fatalf("expected %q, got %q", AuthTypeIAMUserAccessKey, p.authType)
+	}
+	if _, ok := p.credentialsProvider.(credentials.StaticCredentialsProvider); !ok {
+		t.Fatalf("expected a static credentials provider, got %T", p.credentialsProvider)
+	}
 }
