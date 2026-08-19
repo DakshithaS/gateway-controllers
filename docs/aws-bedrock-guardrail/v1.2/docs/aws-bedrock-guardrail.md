@@ -103,7 +103,7 @@ At least one of `request` or `response` must be provided.
 
 `awsAuth` is optional and defaults to `system`. If it is not set, the gateway-wide credential settings from `config.toml` are used, exactly as before.
 
-`authenticationType: system` states that deferral explicitly. **Every other mode ignores the gateway-wide credential settings entirely** — `awsbedrock_access_key_id`, `awsbedrock_role_arn` and the rest are not consulted, and cannot be mixed with what the attachment supplies.
+`authenticationType: system` states that deferral explicitly. **Every other mode ignores the gateway-wide credential settings entirely** — `awsbedrock_access_key_id`, `awsbedrock_role_arn` and the rest are not consulted, so an attachment-level identity is never blended with the gateway's.
 
 | Mode | Identity comes from | Attachment supplies |
 | ---- | ------------------- | ------------------- |
@@ -112,9 +112,14 @@ At least one of `request` or `response` must be provided.
 | `default-credential-chain` | Whatever the AWS SDK resolves at runtime: environment, instance profile, ECS task role, or IRSA | Nothing |
 | `iam-user-access-key` | The key and secret in the attachment | Everything |
 
-Therefore "self-contained" applies strictly only to `iam-user-access-key`. The others are self-contained with respect to *gateway-wide configuration*, while still relying on the runtime identity of the gateway process
+Therefore "self-contained" applies strictly only to `iam-user-access-key`. The others are self-contained with respect to *gateway-wide configuration*, while still relying on the runtime identity of the gateway process.
 
-An `awsAuth` block with credential fields but no `authenticationType` resolves to `system`, and those fields are ignored — the gateway-wide identity is used. Name the mode explicitly if you intend the attachment to have its own.
+**A field the selected mode does not use is ignored.** `awsRoleARN` alongside `iam-user-access-key`, `awsAccessKeyID` alongside `irsa`, or any credential field alongside `system` — each is accepted and has no effect. The same applies when `authenticationType` is omitted, which resolves to `system`.
+
+Two consequences worth internalising:
+
+- A stale field left behind by an edit will not fail a deployment, but it will not do anything either. **Read `authenticationType` to determine which identity an attachment uses — not which fields are present.**
+- Fields a mode *requires* are still enforced. `sts-assume-role` without `awsRoleARN`, or `iam-user-access-key` without a key and secret, is rejected at deploy time.
 
 | Parameter | Type | Required | Default | Description |
 | --------- | ---- | -------- | ------- | ----------- |
@@ -131,7 +136,7 @@ An `awsAuth` block with credential fields but no `authenticationType` resolves t
 
 | Mode | Credential material in the API definition | When to use |
 | ---- | ----------------------------------------- | ----------- |
-| `system` | **None** | The attachment has no AWS identity of its own and should use the gateway-wide configuration. No other field in `awsAuth` may be set. |
+| `system` | **None** | The attachment has no AWS identity of its own and uses the gateway-wide configuration. Any other field in `awsAuth` is ignored. |
 | `irsa` | **None** | Gateway runs on EKS with IAM Roles for Service Accounts. Preferred. |
 | `sts-assume-role` | None, when the base credentials come from IRSA or the gateway's instance role | Guardrail lives in another AWS account. Preferred for cross-account. |
 | `default-credential-chain` | **None** | Gateway compute already runs under the exact role needed. |

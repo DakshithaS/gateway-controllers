@@ -67,7 +67,7 @@ parameters:
             Selects how AWS credentials are obtained. "system" defers to the
             gateway-wide credential configuration in config.toml and is the
             option to use when the attachment has no AWS identity of its own;
-            no other field in this object may be set alongside it. "irsa" uses
+            any other field in this object is then ignored. "irsa" uses
             the gateway's Kubernetes projected service account token (IAM Roles
             for Service Accounts) and requires no credential material in the API
             definition. "sts-assume-role" assumes the given role from the
