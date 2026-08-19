@@ -87,8 +87,8 @@ awsbedrock_allowed_auth_types    = ["system", "irsa", "sts-assume-role", "defaul
 | `region` | string | No | gateway-wide value | AWS region hosting the guardrail for this attachment. |
 | `guardrailID` | string | No | gateway-wide value | Guardrail identifier for this attachment. |
 | `guardrailVersion` | string | No | gateway-wide value | Guardrail version for this attachment. |
-| `localGuardrailID` | string | No | – | **Deprecated** — use `guardrailID`. Used only when `guardrailID` resolves to nothing. Retained for attachments authored against v1.1.0. |
-| `localGuardrailVersion` | string | No | – | **Deprecated** — use `guardrailVersion`. Used only when `guardrailVersion` resolves to nothing. |
+| `localGuardrailID` | string | No | – | **Deprecated** — use `guardrailID`. Retained so attachments authored against previous versions keep working unchanged; remove it when migrating. |
+| `localGuardrailVersion` | string | No | – | **Deprecated** — use `guardrailVersion`. Retained so attachments authored against previous versions keep working unchanged; remove it when migrating. |
 | `awsAuth` | object | No | `system` | AWS identity for this attachment. Omitting it uses the gateway-wide identity. See below. |
 | `request` | object | See note | – | Request-phase validation configuration. |
 | `response` | object | See note | – | Response-phase validation configuration. |
