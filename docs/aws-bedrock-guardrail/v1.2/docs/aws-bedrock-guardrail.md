@@ -49,12 +49,14 @@ The policy uses a two-level configuration. Every parameter can be set gateway-wi
 
 Each allowlist restricts what a policy attachment may select. An empty or unset allowlist places no restriction. Allowlists are checked against the **effective** value, so when you set one you must include the gateway's own default.
 
+`allowedRegions` and `allowedRoleARNs` accept a single trailing `*` as a prefix match. `allowedGuardrailIDs` and `allowedAuthTypes` are exact-match only.
+
 | Parameter | Type | Description |
 | --------- | ---- | ----------- |
-| `allowedRegions` | string[] | Permitted values for the effective `region`. |
-| `allowedGuardrailIDs` | string[] | Permitted values for the effective `guardrailID`. |
-| `allowedRoleARNs` | string[] | Permitted values for the effective role ARN. An entry ending in `*` matches any ARN with that prefix. |
-| `allowedAuthTypes` | string[] | Permitted values for the **effective** `authenticationType`. An attachment that omits `awsAuth` resolves to `system`, so include `system` unless every attachment sets one explicitly. Omit `iam-user-access-key` to forbid attachment-level long-lived credentials while leaving every other parameter configurable per attachment. |
+| `allowedRegions` | string[] | Permitted values for the effective `region`. An entry ending in `*` matches any region with that prefix, e.g. `us-east-*`. |
+| `allowedGuardrailIDs` | string[] | Permitted values for the effective `guardrailID`. Exact matches only. |
+| `allowedRoleARNs` | string[] | Permitted values for the effective role ARN. An entry ending in `*` matches any ARN with that prefix. Cross-account patterns need one entry per account. |
+| `allowedAuthTypes` | string[] | Permitted values for the **effective** `authenticationType`. Exact matches only. An attachment that omits `awsAuth` resolves to `system`, so include `system` unless every attachment sets one explicitly. Omit `iam-user-access-key` to forbid attachment-level long-lived credentials while leaving every other parameter configurable per attachment. |
 
 #### Sample System Configuration
 
@@ -75,8 +77,8 @@ awsbedrock_role_external_id  = ""
 # Optional. Empty means unrestricted.
 awsbedrock_allowed_regions       = ["us-east-1", "eu-west-1"]
 awsbedrock_allowed_guardrail_ids = ["your-guardrail-id"]
-awsbedrock_allowed_role_arns     = ["arn:aws:iam::*:role/wso2-gw-guardrail-*"]
-awsbedrock_allowed_auth_types    = ["irsa", "sts-assume-role", "default-credential-chain"]
+awsbedrock_allowed_role_arns     = ["arn:aws:iam::444455556666:role/wso2-gw-guardrail-*"]
+awsbedrock_allowed_auth_types    = ["system", "irsa", "sts-assume-role", "default-credential-chain"]
 ```
 
 ### User Parameters (API Definition)
@@ -104,9 +106,20 @@ At least one of `request` or `response` must be provided.
 
 #### `awsAuth` — per-attachment AWS identity
 
-`awsAuth` is optional and defaults to `system`. If not set gateway-wide credential settings from `config.toml` are used, exactly as before.
+`awsAuth` is optional and defaults to `system`. If it is not set, the gateway-wide credential settings from `config.toml` are used, exactly as before.
 
-`authenticationType: system` states that deferral explicitly. Every other mode is self-contained: the attachment supplies its complete credential configuration and all gateway-wide credential settings are ignored.
+`authenticationType: system` states that deferral explicitly. **Every other mode ignores the gateway-wide credential settings entirely** — `awsbedrock_access_key_id`, `awsbedrock_role_arn` and the rest are not consulted, and cannot be mixed with what the attachment supplies.
+
+What each mode does use instead differs, and only one of them is fully described by the attachment:
+
+| Mode | Identity comes from | Attachment supplies |
+| ---- | ------------------- | ------------------- |
+| `irsa` | The gateway pod's projected service-account token (`AWS_WEB_IDENTITY_TOKEN_FILE`) | Optionally `awsRoleARN`; otherwise the injected `AWS_ROLE_ARN` is used |
+| `sts-assume-role` | The role named in `awsRoleARN`, assumed from a **base** identity | The target role and its external ID. The base identity is either the static key given here, or — if none is given — the gateway's own runtime credentials, which on EKS means its IRSA identity |
+| `default-credential-chain` | Whatever the AWS SDK resolves at runtime: environment, instance profile, ECS task role, or IRSA | Nothing |
+| `iam-user-access-key` | The key and secret in the attachment | Everything |
+
+So "self-contained" applies strictly only to `iam-user-access-key`. The others are self-contained with respect to *gateway-wide configuration*, while still relying on the runtime identity of the gateway process. That is the point of `sts-assume-role` with no static key: the pod's IRSA identity assumes the tenant's role, and no credential material appears in the API definition at all.
 
 One case is rejected rather than defaulted: an `awsAuth` block carrying credential fields but no `authenticationType`. Defaulting it to `system` would silently ignore those fields, leaving an attachment that looks like it configures an identity while the gateway-wide one is in use. Name the mode instead.
 
@@ -442,8 +455,8 @@ An operator allows per-attachment identity but not per-attachment long-lived sec
 ```toml
 awsbedrock_allowed_regions       = ["us-east-1", "eu-west-1"]
 awsbedrock_allowed_guardrail_ids = ["gr-default", "gr-eu-strict", "gr-tenant-a"]
-awsbedrock_allowed_role_arns     = ["arn:aws:iam::*:role/wso2-gw-guardrail-*"]
-awsbedrock_allowed_auth_types    = ["irsa", "sts-assume-role", "default-credential-chain"]
+awsbedrock_allowed_role_arns     = ["arn:aws:iam::444455556666:role/wso2-gw-guardrail-*"]
+awsbedrock_allowed_auth_types    = ["system", "irsa", "sts-assume-role", "default-credential-chain"]
 ```
 
 An attachment selecting `iam-user-access-key`, a region outside the list, or a role ARN outside the prefix is rejected at deploy time.
@@ -456,7 +469,7 @@ An attachment selecting `iam-user-access-key`, a region outside the list, or a r
 2. **Guardrail evaluation**: Calls `ApplyGuardrail` with the effective region, guardrail ID, and version, using the identity resolved from `awsAuth` or the gateway-wide settings.
 3. **PII processing**: With `redactPII: false`, masks PII with placeholders for later restoration. With `redactPII: true`, replaces PII with `*****` permanently.
 4. **Violation handling**: Blocks and returns HTTP `422` when Bedrock reports a violation.
-5. **Error strategy**: Applies `passthroughOnError` to transient failures only.
+5. **Error strategy**: When `passthroughOnError` is `true`, the request proceeds on any failure — JSONPath extraction, credential resolution, the Bedrock call, and response evaluation alike. When `false` (the default), each of those blocks with HTTP 422.
 
 #### Response Phase
 

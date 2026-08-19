@@ -403,7 +403,7 @@ func TestAllowlists_RestrictEffectiveValues(t *testing.T) {
 		{
 			name: "role ARN outside allowedRoleARNs",
 			params: map[string]interface{}{
-				"allowedRoleARNs": []interface{}{"arn:aws:iam::*:role/wso2-gw-guardrail-*"},
+				"allowedRoleARNs": []interface{}{"arn:aws:iam::444455556666:role/wso2-gw-guardrail-*"},
 				"awsAuth": map[string]interface{}{
 					"authenticationType": AuthTypeSTSAssumeRole,
 					"awsRoleARN":         "arn:aws:iam::444455556666:role/some-other-role",
@@ -947,7 +947,7 @@ func TestAllowlist_IRSAEnvironmentRoleIsChecked(t *testing.T) {
 	t.Setenv(envWebIdentityTokenFile, t.TempDir()+"/token")
 	t.Setenv(envRoleARN, envARN)
 
-	restrictive := []interface{}{"arn:aws:iam::*:role/permitted-only-*"}
+	restrictive := []interface{}{"arn:aws:iam::367134611783:role/permitted-only-*"}
 
 	expectGetPolicyError(t, paramsWith(map[string]interface{}{
 		"allowedRoleARNs": restrictive,
@@ -972,4 +972,82 @@ func TestSystemLevel_MalformedValuesAreRejected(t *testing.T) {
 		"awsRoleARN":    "arn:aws:iam::111122223333:role/gw",
 		"awsRoleRegion": "Not A Region",
 	}), "not a valid AWS region")
+}
+
+func TestAllowlist_RejectsWildcardThatIsNotTrailing(t *testing.T) {
+	// "*" is a prefix marker, not a glob. An entry with "*" in the middle
+	// matches no real value, so every deployment would be refused with a
+	// message about the value rather than the configuration. Reject the entry.
+	expectGetPolicyError(t, paramsWith(map[string]interface{}{
+		"allowedRoleARNs": []interface{}{"arn:aws:iam::*:role/team-*"},
+		"awsAuth": map[string]interface{}{
+			"authenticationType": AuthTypeSTSAssumeRole,
+			"awsRoleARN":         "arn:aws:iam::444455556666:role/team-a",
+		},
+	}), "'*' is only supported as the final character")
+
+	// A trailing wildcard still works.
+	mustGetPolicy(t, paramsWith(map[string]interface{}{
+		"allowedRoleARNs": []interface{}{"arn:aws:iam::444455556666:role/team-*"},
+		"awsAuth": map[string]interface{}{
+			"authenticationType": AuthTypeSTSAssumeRole,
+			"awsRoleARN":         "arn:aws:iam::444455556666:role/team-a",
+		},
+	}))
+}
+
+func TestAWSAuth_ModesThatIgnoreStaticKeysRejectThem(t *testing.T) {
+	// irsa and default-credential-chain never sign with a static key, so
+	// accepting one would leave an attachment that looks configured while a
+	// different identity is used.
+	t.Setenv(envWebIdentityTokenFile, t.TempDir()+"/token")
+	t.Setenv(envRoleARN, "arn:aws:iam::367134611783:role/irsa")
+
+	for _, mode := range []string{AuthTypeIRSA, AuthTypeDefaultCredentialChain} {
+		t.Run(mode, func(t *testing.T) {
+			expectGetPolicyError(t, paramsWith(map[string]interface{}{
+				"awsAuth": map[string]interface{}{
+					"authenticationType": mode,
+					"awsAccessKeyID":     "AKIAEXAMPLE",
+					"awsSecretAccessKey": "shh",
+				},
+			}), "never signs with a static key")
+		})
+	}
+}
+
+func TestAllowlist_WildcardsRejectedOnNonPrefixLists(t *testing.T) {
+	// Only allowedRoleARNs treats a trailing "*" as a prefix. On the other
+	// lists it is a literal that matches nothing, which would refuse every
+	// deployment while pointing at the value rather than the configuration.
+	for _, tc := range []struct{ list, entry string }{
+		{"allowedGuardrailIDs", "gr-*"},
+		{"allowedAuthTypes", "s*"},
+	} {
+		t.Run(tc.list, func(t *testing.T) {
+			expectGetPolicyError(t, paramsWith(map[string]interface{}{
+				tc.list: []interface{}{tc.entry},
+			}), "does not support wildcards")
+		})
+	}
+}
+
+func TestAllowlist_RegionSupportsTrailingWildcard(t *testing.T) {
+	// "us-east-*" is a natural way to permit a whole region family.
+	mustGetPolicy(t, paramsWith(map[string]interface{}{
+		"region":         "us-east-1",
+		"allowedRegions": []interface{}{"us-east-*"},
+	}))
+
+	// It is still a prefix, not a glob: a different family is refused.
+	expectGetPolicyError(t, paramsWith(map[string]interface{}{
+		"region":         "eu-west-1",
+		"allowedRegions": []interface{}{"us-east-*"},
+	}), "is not permitted")
+
+	// And a non-trailing wildcard remains a configuration error.
+	expectGetPolicyError(t, paramsWith(map[string]interface{}{
+		"region":         "us-east-1",
+		"allowedRegions": []interface{}{"us-*-1"},
+	}), "'*' is only supported as the final character")
 }

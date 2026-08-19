@@ -315,8 +315,10 @@ systemParameters:
         type: string
       description: |
         If non-empty, restricts the effective guardrail region to one of these
-        values. Must include the gateway-wide region when set. Empty (default)
-        places no restriction.
+        values. An entry ending in "*" matches any region with that prefix, for
+        example "us-east-*"; "*" in any other position is rejected as invalid
+        configuration. Must include the gateway-wide region when set. Empty
+        (default) places no restriction.
       "wso2/defaultValue": "${config.awsbedrock_allowed_regions}"
     allowedGuardrailIDs:
       type: array
@@ -324,8 +326,8 @@ systemParameters:
         type: string
       description: |
         If non-empty, restricts the effective guardrail identifier to one of
-        these values. Must include the gateway-wide guardrail ID when set.
-        Empty (default) places no restriction.
+        these values. Exact matches only. Must include the gateway-wide
+        guardrail ID when set. Empty (default) places no restriction.
       "wso2/defaultValue": "${config.awsbedrock_allowed_guardrail_ids}"
     allowedRoleARNs:
       type: array
@@ -333,8 +335,9 @@ systemParameters:
         type: string
       description: |
         If non-empty, restricts the effective role ARN to one of these values.
-        An entry ending in "*" matches any ARN with that prefix. Must cover the
-        gateway-wide role ARN when set. Empty (default) places no restriction.
+        An entry ending in "*" matches any ARN with that prefix. "*" is only
+        honoured as the final character. Must cover the gateway-wide 
+        role ARN when set. Empty (default) places no restriction.
       "wso2/defaultValue": "${config.awsbedrock_allowed_role_arns}"
     allowedAuthTypes:
       type: array

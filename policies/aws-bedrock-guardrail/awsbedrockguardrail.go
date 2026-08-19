@@ -159,7 +159,12 @@ func GetPolicy(
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 
-	if err := checkAllowlist(params, "allowedRegions", "region", region, false); err != nil {
+	// Regions and role ARNs accept a trailing "*" as a prefix: "us-east-*" and
+	// one ARN prefix per account are both natural to write. Guardrail IDs are
+	// opaque strings where a prefix means nothing, and authenticationType is a
+	// short enum where "s*" would silently widen to both "system" and
+	// "sts-assume-role" - so those two stay exact.
+	if err := checkAllowlist(params, "allowedRegions", "region", region, true); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	if err := checkAllowlist(params, "allowedGuardrailIDs", "guardrailID", guardrailID, false); err != nil {
@@ -550,9 +555,15 @@ func validateCredentialFields(authType string, creds credentialFields) error {
 		if creds.roleExternalID != "" {
 			return fmt.Errorf("'awsAuth.awsRoleExternalID' is not supported when authenticationType is %q, because AssumeRoleWithWebIdentity does not accept an external ID", AuthTypeIRSA)
 		}
+		if err := rejectStaticCredentials(creds, AuthTypeIRSA); err != nil {
+			return err
+		}
 	case AuthTypeDefaultCredentialChain:
-		// No credential fields apply: resolution is delegated entirely to the
-		// AWS SDK's default provider chain.
+		// Resolution is delegated entirely to the AWS SDK's default provider
+		// chain, so any key configured here would be parsed and then ignored.
+		if err := rejectStaticCredentials(creds, AuthTypeDefaultCredentialChain); err != nil {
+			return err
+		}
 	case AuthTypeSystem:
 		// Handled before this point: credential fields are rejected outright and
 		// the gateway-wide configuration supplies the identity.
@@ -596,6 +607,24 @@ func validateCredentialFormats(creds credentialFields) error {
 	}
 	if creds.roleSessionName != "" && !roleSessionNamePattern.MatchString(creds.roleSessionName) {
 		return fmt.Errorf("'awsRoleSessionName' must match [\\w+=,.@-]{2,64}: %q", creds.roleSessionName)
+	}
+	return nil
+}
+
+// rejectStaticCredentials refuses a key/secret pair on the modes that never sign
+// with one. Accepting them silently would leave an attachment that looks like it
+// configures an identity while a different one is used - the same class of
+// invisible misconfiguration rejectCredentialFieldsForSystem removes for
+// "system".
+func rejectStaticCredentials(creds credentialFields, authType string) error {
+	for name, value := range map[string]string{
+		"awsAccessKeyID":     creds.accessKeyID,
+		"awsSecretAccessKey": creds.secretAccessKey,
+		"awsSessionToken":    creds.sessionToken,
+	} {
+		if value != "" {
+			return fmt.Errorf("'awsAuth.%s' cannot be set when authenticationType is %q: that mode never signs with a static key", name, authType)
+		}
 	}
 	return nil
 }
@@ -686,6 +715,20 @@ func checkAllowlist(params map[string]interface{}, allowlistKey, valueName, valu
 	}
 	if len(allowed) == 0 {
 		return nil
+	}
+	for _, entry := range allowed {
+		// A "*" that is not a wildcard in this position is a literal, so the
+		// entry silently matches nothing and refuses every deployment with a
+		// message about the value rather than the configuration. Fail on the
+		// configuration instead.
+		if i := strings.Index(entry, "*"); i != -1 {
+			switch {
+			case !allowPrefix:
+				return fmt.Errorf("'%s' entry %q is invalid: this list does not support wildcards, list each value in full", allowlistKey, entry)
+			case i != len(entry)-1:
+				return fmt.Errorf("'%s' entry %q is invalid: '*' is only supported as the final character, where it matches a prefix. List each value in full, or use a single trailing '*'", allowlistKey, entry)
+			}
+		}
 	}
 	for _, entry := range allowed {
 		if entry == value {
