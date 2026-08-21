@@ -31,7 +31,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/wso2/api-platform/sdk/core/utils/cache"
-	xoauth2 "golang.org/x/oauth2"
 )
 
 // localTokenCacheKey is the sole key ever used in a redisCachingTokenSource's
@@ -254,7 +253,7 @@ func oauth2ConfigDiscriminator(p oauth2Params) string {
 }
 
 // cachedToken is the JSON shape stored in Redis - just the fields needed to
-// reconstruct an xoauth2.Token.
+// reconstruct a Token.
 type cachedToken struct {
 	AccessToken  string    `json:"access_token"`
 	TokenType    string    `json:"token_type"`
@@ -262,14 +261,14 @@ type cachedToken struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-// tokenProvider is satisfied by redisCachingTokenSource. Token() mirrors
-// xoauth2.TokenSource; Purge clears both cache tiers (see OnResponseHeaders).
+// tokenProvider is satisfied by redisCachingTokenSource - TokenSource plus
+// Purge, which clears both cache tiers (see OnResponseHeaders).
 type tokenProvider interface {
-	Token() (*xoauth2.Token, error)
+	Token() (*Token, error)
 	Purge()
 }
 
-// redisCachingTokenSource wraps a real, IDP-fetching xoauth2.TokenSource with a
+// redisCachingTokenSource wraps a real, IDP-fetching TokenSource with a
 // cache of up to two tiers: (1) a per-process in-memory token, always active, and
 // (2) a shared Redis entry that lets every replica reuse the same token and
 // survives a restart - opt-in via cacheStrategy: redis (redisClient is nil and
@@ -280,7 +279,7 @@ type redisCachingTokenSource struct {
 	// inner is read/written under mu (mu guards only inner - localCache is its
 	// own thread-safe SDK cache) - Purge() replaces it with a freshly-built
 	// one. Always a *resilientTokenSource wrapping buildTokenSource's raw output.
-	inner xoauth2.TokenSource
+	inner TokenSource
 
 	// params is what inner was built from, retained so Purge() can rebuild it.
 	params oauth2Params
@@ -309,7 +308,7 @@ type redisCachingTokenSource struct {
 	// support isn't used (ttl=0, never expires per the cache's own check) -
 	// tokenFreshEnough applies the dynamic, per-token expiryBuffer margin on
 	// every read instead, which a single fixed cache-wide TTL can't express.
-	localCache *cache.InMemoryCache[xoauth2.Token]
+	localCache *cache.InMemoryCache[Token]
 
 	// redisKey is fixed at construction from oauth2ConfigDiscriminator - it
 	// depends only on the config, never anything request-time.
@@ -321,7 +320,7 @@ type redisCachingTokenSource struct {
 // rebuild inner later. The Redis client is only constructed when cp.strategy is
 // CacheStrategyRedis - under the default memory strategy, every Redis-tier path is
 // skipped.
-func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
+func newRedisCachingTokenSource(inner TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
 	var client *redis.Client
 	if cp.strategy == CacheStrategyRedis {
 		// created/pingErr deliberately ignored: this policy's own failOpen/
@@ -353,19 +352,18 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oau
 		writeTimeout: cp.redis.writeTimeout,
 		defaultTTL:   p.tokenTTLFallback,
 		expiryBuffer: p.expiryBuffer,
-		localCache:   cache.NewInMemoryCache[xoauth2.Token]("oauth2-generator-local-token", 1, 0, cache.LRUEvictionPolicy, slog.Default()),
+		localCache:   cache.NewInMemoryCache[Token]("oauth2-generator-local-token", 1, 0, cache.LRUEvictionPolicy, slog.Default()),
 	}
 }
 
 // tokenFreshEnough reports whether tok is both present and far enough from
-// its own expiry to still be trusted - the buffer-aware counterpart to
-// xoauth2.Token.Valid(), which only ever applies the library's own
-// hardcoded, non-configurable 10s margin. A zero Expiry mirrors Valid()'s
-// own convention (never expires) - by the time a token reaches either cache
-// tier it has already been normalized away from zero (see Token()'s
-// defaultTTL fallback), so this only matters for a token handed in directly
-// by a test or future caller.
-func tokenFreshEnough(tok *xoauth2.Token, buffer time.Duration) bool {
+// its own expiry to still be trusted, using our own configurable buffer
+// rather than a hardcoded margin. A zero Expiry is treated as "never
+// expires" - by the time a token reaches either cache tier it has already
+// been normalized away from zero (see Token()'s defaultTTL fallback), so
+// this only matters for a token handed in directly by a test or future
+// caller.
+func tokenFreshEnough(tok *Token, buffer time.Duration) bool {
 	if tok == nil || tok.AccessToken == "" {
 		return false
 	}
@@ -378,11 +376,11 @@ func tokenFreshEnough(tok *xoauth2.Token, buffer time.Duration) bool {
 // newResilientInner wraps a raw buildTokenSource output with retry (see
 // resilientTokenSource) - a small helper so both newRedisCachingTokenSource and
 // Purge() build it identically.
-func newResilientInner(raw xoauth2.TokenSource, p oauth2Params) xoauth2.TokenSource {
+func newResilientInner(raw TokenSource, p oauth2Params) TokenSource {
 	return &resilientTokenSource{inner: raw, maxRetries: p.tokenRequestMaxRetries}
 }
 
-func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
+func (s *redisCachingTokenSource) Token() (*Token, error) {
 	if tok := s.localToken(); tok != nil {
 		return tok, nil
 	}
@@ -405,10 +403,12 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 		return nil, err
 	}
 	if tok.Expiry.IsZero() {
-		// Some IdPs omit expires_in, leaving Expiry zero; Token.Valid() treats that
-		// as already-expired, so this fallback is what makes it cacheable at all.
-		// Mutate a copy - tok may be handed to a concurrent caller by ReuseTokenSource
-		// with no lock held over it.
+		// Some IdPs omit expires_in, leaving Expiry zero - tokenFreshEnough
+		// would treat that as "never expires" forever, and saveToRedis has no
+		// usable expiry to derive a TTL from (time.Until would be deeply
+		// negative), so it would never get written to Redis at all. Bounding
+		// it to defaultTTL here fixes both. Mutate a copy - tok may be handed
+		// to a concurrent caller by reuseTokenSource with no lock held over it.
 		fixed := *tok
 		fixed.Expiry = time.Now().Add(s.defaultTTL)
 		tok = &fixed
@@ -427,7 +427,7 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 	return tok, nil
 }
 
-func (s *redisCachingTokenSource) localToken() *xoauth2.Token {
+func (s *redisCachingTokenSource) localToken() *Token {
 	tok, ok := s.localCache.Get(context.Background(), localTokenCacheKey)
 	if !ok || !tokenFreshEnough(&tok, s.expiryBuffer) {
 		return nil
@@ -435,11 +435,11 @@ func (s *redisCachingTokenSource) localToken() *xoauth2.Token {
 	return &tok
 }
 
-func (s *redisCachingTokenSource) setLocal(tok *xoauth2.Token) {
+func (s *redisCachingTokenSource) setLocal(tok *Token) {
 	_ = s.localCache.Set(context.Background(), localTokenCacheKey, *tok) // never errors - see InMemoryCache.Set
 }
 
-func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
+func (s *redisCachingTokenSource) getInner() TokenSource {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.inner
@@ -447,8 +447,8 @@ func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
 
 // Purge clears both cache tiers so the next Token() call fetches fresh - used when
 // the upstream rejects the token this policy just injected (see OnResponseHeaders).
-// Clearing local/Redis alone isn't enough: inner is typically an
-// xoauth2.ReuseTokenSource that keeps reusing its own cached token regardless, until
+// Clearing local/Redis alone isn't enough: inner is typically a
+// reuseTokenSource that keeps reusing its own cached token regardless, until
 // its own Expiry - only replacing inner with a freshly-built one actually forces a
 // real fetch. Rebuilding via buildTokenSource(s.params) can only fail on an
 // unsupported grantType, already rejected at construction - if it fails here
@@ -474,7 +474,7 @@ func (s *redisCachingTokenSource) Purge() {
 	}
 }
 
-func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {
+func (s *redisCachingTokenSource) getFromRedis() (*Token, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.readTimeout)
 	defer cancel()
 
@@ -491,7 +491,7 @@ func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {
 		return nil, fmt.Errorf("failed to decode cached token: %w", err)
 	}
 
-	tok := &xoauth2.Token{
+	tok := &Token{
 		AccessToken:  ct.AccessToken,
 		TokenType:    ct.TokenType,
 		RefreshToken: ct.RefreshToken,
@@ -509,7 +509,7 @@ func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {
 	return tok, nil
 }
 
-func (s *redisCachingTokenSource) saveToRedis(tok *xoauth2.Token) error {
+func (s *redisCachingTokenSource) saveToRedis(tok *Token) error {
 	ttl := time.Until(tok.Expiry)
 	if ttl <= 0 {
 		// No usable expiry to derive a TTL from - nothing safe to cache.

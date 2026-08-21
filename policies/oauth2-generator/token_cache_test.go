@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	xoauth2 "golang.org/x/oauth2"
 )
 
 // ─── test helpers ────────────────────────────────────────────────────────────
@@ -38,11 +37,11 @@ import (
 // than just happening to return the right value.
 type stubTokenSource struct {
 	calls int
-	token *xoauth2.Token
+	token *Token
 	err   error
 }
 
-func (s *stubTokenSource) Token() (*xoauth2.Token, error) {
+func (s *stubTokenSource) Token() (*Token, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err
@@ -51,7 +50,7 @@ func (s *stubTokenSource) Token() (*xoauth2.Token, error) {
 }
 
 // mustNewRedisCachingTokenSource wraps newRedisCachingTokenSource for tests.
-func mustNewRedisCachingTokenSource(t *testing.T, inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
+func mustNewRedisCachingTokenSource(t *testing.T, inner TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
 	t.Helper()
 	return newRedisCachingTokenSource(inner, cp, p)
 }
@@ -255,7 +254,7 @@ func TestBuildRedisKey_OmitsEmptyDiscriminator(t *testing.T) {
 
 func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.T) {
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
 
@@ -278,7 +277,7 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 
 // TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis locks in that Purge
 // clears both cache tiers AND rebuilds inner via buildTokenSource, not just
-// local/Redis: inner is typically an xoauth2.ReuseTokenSource that keeps
+// local/Redis: inner is typically a reuseTokenSource that keeps
 // reusing its own cached token until that token's own Expiry regardless of
 // local/Redis, so a stub inner (which has no such internal cache) would
 // pass even if Purge() only cleared local/Redis and left the real
@@ -351,7 +350,7 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 // token_cache.go's Token()) and every request would refetch from the IdP.
 func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *testing.T) {
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
+	inner := &stubTokenSource{token: &Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
 
 	const fallbackTTL = 42 * time.Minute
 	params := testParams(func(p *oauth2Params) { p.tokenTTLFallback = fallbackTTL })
@@ -391,7 +390,7 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 
 func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-used", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "should-not-be-used", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
 	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(testParams()))
 	cached, _ := json.Marshal(cachedToken{AccessToken: "cached-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)})
@@ -415,7 +414,7 @@ func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 
 func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *testing.T) {
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
 
@@ -437,8 +436,8 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 // exact same API.
 func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *testing.T) {
 	mr := miniredis.RunT(t)
-	innerA := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-provider-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	innerB := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-provider-b", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	innerA := &stubTokenSource{token: &Token{AccessToken: "token-for-provider-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	innerB := &stubTokenSource{token: &Token{AccessToken: "token-for-provider-b", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
 	paramsA := testParams(func(p *oauth2Params) { p.clientID = "provider-a-client" })
 	paramsB := testParams(func(p *oauth2Params) { p.clientID = "provider-b-client" })
@@ -473,7 +472,7 @@ func TestRedisCachingTokenSource_RedisKeyFixedAtConstruction(t *testing.T) {
 	// anything request-time - it never needs to move over the instance's
 	// lifetime.
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	params := testParams()
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params).(*redisCachingTokenSource)
@@ -496,7 +495,7 @@ func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.
 	rp := testRedisParams(mr, FailureModeOpen)
 	mr.Close() // simulate redis being unreachable
 
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
 
 	tok, err := src.Token()
@@ -516,7 +515,7 @@ func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallbac
 	rp := testRedisParams(mr, FailureModeClosed)
 	mr.Close() // simulate redis being unreachable
 
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
 
 	_, err := src.Token()
@@ -549,34 +548,30 @@ func TestTokenFreshEnough_Nil_IsNotFresh(t *testing.T) {
 }
 
 func TestTokenFreshEnough_EmptyAccessToken_IsNotFresh(t *testing.T) {
-	tok := &xoauth2.Token{Expiry: time.Now().Add(time.Hour)}
+	tok := &Token{Expiry: time.Now().Add(time.Hour)}
 	if tokenFreshEnough(tok, time.Minute) {
 		t.Error("expected a token with no AccessToken to never be fresh enough")
 	}
 }
 
 func TestTokenFreshEnough_ZeroExpiry_IsFresh(t *testing.T) {
-	tok := &xoauth2.Token{AccessToken: "tok"} // Expiry left zero - "never expires", mirrors Token.Valid()
+	tok := &Token{AccessToken: "tok"} // Expiry left zero - treated as "never expires"
 	if !tokenFreshEnough(tok, time.Minute) {
-		t.Error("expected a zero-Expiry token to be treated as fresh, same as Token.Valid()")
+		t.Error("expected a zero-Expiry token to be treated as fresh")
 	}
 }
 
 func TestTokenFreshEnough_WithinBuffer_IsNotFresh(t *testing.T) {
 	// Expires in 15s; a 30s buffer means this is "not fresh enough" even
-	// though the token itself, per Token.Valid()'s own hardcoded 10s margin,
-	// would still be considered valid.
-	tok := &xoauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(15 * time.Second)}
+	// though the token hasn't actually expired yet.
+	tok := &Token{AccessToken: "tok", Expiry: time.Now().Add(15 * time.Second)}
 	if tokenFreshEnough(tok, 30*time.Second) {
 		t.Error("expected a token expiring within the buffer window to not be fresh enough")
-	}
-	if !tok.Valid() {
-		t.Fatal("test setup invariant broken: expected the raw token to still satisfy Token.Valid() at this margin")
 	}
 }
 
 func TestTokenFreshEnough_OutsideBuffer_IsFresh(t *testing.T) {
-	tok := &xoauth2.Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}
+	tok := &Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}
 	if !tokenFreshEnough(tok, 30*time.Second) {
 		t.Error("expected a token expiring well outside the buffer window to be fresh enough")
 	}
@@ -589,7 +584,7 @@ func TestTokenFreshEnough_OutsideBuffer_IsFresh(t *testing.T) {
 // backend a credential that's about to expire mid-flight).
 func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
 	mr := miniredis.RunT(t)
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}}
 
 	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
@@ -605,7 +600,7 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 	// The just-fetched token's 5s remaining TTL is inside the 30s
 	// expiryBuffer, so the next call must not be served from the local
 	// cache - it should fall through to a second inner fetch.
-	inner.token = &xoauth2.Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
+	inner.token = &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
 	tok, err = src.Token()
 	if err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
@@ -631,7 +626,7 @@ func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t 
 		t.Fatalf("failed to seed miniredis: %v", err)
 	}
 
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
 
 	tok, err := src.Token()
@@ -647,15 +642,13 @@ func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t 
 }
 
 // TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch is
-// the end-to-end regression test for the actual bug this feature fixes:
-// without wrapping the token-endpoint source in
-// xoauth2.ReuseTokenSourceWithExpiry(expiryBuffer), the library's own
-// ReuseTokenSource (hardcoded to a 10s margin) would keep silently handing
-// back the same soon-to-expire token whenever the outer cache's larger
-// expiryBuffer decided to fall through and re-fetch - defeating the whole
-// feature the moment expiryBuffer exceeds 10s. This uses the real
-// buildTokenSource path (not stubTokenSource) against an httptest server so
-// that library-internal caching is actually exercised.
+// the end-to-end regression test confirming buildTokenSource's real
+// construction path (not stubTokenSource) actually threads expiryBuffer
+// into reuseTokenSource, rather than some hardcoded margin - a fixed,
+// non-configurable buffer would keep silently handing back the same
+// soon-to-expire token whenever the outer cache's larger expiryBuffer
+// decided to fall through and re-fetch. Uses a real httptest server so the
+// full path, not a stub, is what's actually exercised.
 func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *testing.T) {
 	mr := miniredis.RunT(t)
 
@@ -741,7 +734,7 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 			writeTimeout:      50 * time.Millisecond,
 		},
 	}
-	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "tok", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	inner := &stubTokenSource{token: &Token{AccessToken: "tok", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, cp, testParams()).(*redisCachingTokenSource)
 
 	if src.redisClient != nil {

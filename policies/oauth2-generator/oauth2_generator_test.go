@@ -30,13 +30,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	xoauth2 "golang.org/x/oauth2"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -79,8 +78,8 @@ type fakeTokenSource struct {
 	purgeCalls int
 }
 
-func (f *fakeTokenSource) Token() (*xoauth2.Token, error) {
-	return &xoauth2.Token{AccessToken: "unused"}, nil
+func (f *fakeTokenSource) Token() (*Token, error) {
+	return &Token{AccessToken: "unused"}, nil
 }
 
 func (f *fakeTokenSource) Purge() {
@@ -1009,66 +1008,59 @@ func TestClientCredentials_EndToEnd_ParamsReachTokenEndpoint(t *testing.T) {
 	}
 }
 
-// ─── headerInjectingRoundTripper / tokenRequestHeaders ───────────────────────
+// ─── doTokenRequest / tokenRequestHeaders ────────────────────────────────────
 
-// recordingRoundTripper is a minimal http.RoundTripper test double that
-// records the last request it saw and returns a canned response, without
-// actually dialing anything.
-type recordingRoundTripper struct {
-	lastRequest *http.Request
-}
+func TestDoTokenRequest_AddsConfiguredHeaders(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Api-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "tok", "token_type": "Bearer"})
+	}))
+	defer server.Close()
 
-func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	r.lastRequest = req
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       http.NoBody,
-	}, nil
-}
-
-func TestHeaderInjectingRoundTripper_AddsConfiguredHeaders(t *testing.T) {
-	next := &recordingRoundTripper{}
-	rt := &headerInjectingRoundTripper{headers: map[string]string{"X-Api-Key": "secret-123"}, next: next}
-
-	req, _ := http.NewRequest(http.MethodPost, "https://idp.example.com/token", nil)
-	if _, err := rt.RoundTrip(req); err != nil {
+	form := url.Values{"grant_type": {GrantTypeClientCredentials}}
+	if _, err := doTokenRequest(context.Background(), server.Client(), server.URL, authStyleInHeader,
+		"id", "secret", form, map[string]string{"X-Api-Key": "secret-123"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := next.lastRequest.Header.Get("X-Api-Key"); got != "secret-123" {
-		t.Errorf("expected X-Api-Key header to reach the wrapped RoundTripper, got %q", got)
+	if got != "secret-123" {
+		t.Errorf("expected X-Api-Key header to reach the token endpoint, got %q", got)
 	}
 }
 
-// TestHeaderInjectingRoundTripper_IgnoresAuthorizationAndContentType locks
-// in the safety guard: letting tokenRequestHeaders override either would
+// TestDoTokenRequest_IgnoresAuthorizationAndContentTypeOverrides locks in
+// the safety guard: letting tokenRequestHeaders override either would
 // silently break client_secret_basic (which sets Authorization itself) or
 // corrupt the form-encoded request body.
-func TestHeaderInjectingRoundTripper_IgnoresAuthorizationAndContentType(t *testing.T) {
-	next := &recordingRoundTripper{}
-	rt := &headerInjectingRoundTripper{
-		headers: map[string]string{
+func TestDoTokenRequest_IgnoresAuthorizationAndContentTypeOverrides(t *testing.T) {
+	var gotAuth, gotContentType, gotAllowed string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		gotAllowed = r.Header.Get("X-Allowed")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"access_token": "tok", "token_type": "Bearer"})
+	}))
+	defer server.Close()
+
+	form := url.Values{"grant_type": {GrantTypeClientCredentials}}
+	if _, err := doTokenRequest(context.Background(), server.Client(), server.URL, authStyleInHeader,
+		"real-id", "real-secret", form, map[string]string{
 			"Authorization": "Bearer should-not-apply",
 			"Content-Type":  "application/json",
 			"X-Allowed":     "yes",
-		},
-		next: next,
-	}
-
-	req, _ := http.NewRequest(http.MethodPost, "https://idp.example.com/token", nil)
-	req.Header.Set("Authorization", "Basic original-creds")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if _, err := rt.RoundTrip(req); err != nil {
+		}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := next.lastRequest.Header.Get("Authorization"); got != "Basic original-creds" {
-		t.Errorf("expected the original Authorization header to survive untouched, got %q", got)
+	if !strings.HasPrefix(gotAuth, "Basic ") {
+		t.Errorf("expected the real client_secret_basic Authorization header to survive, got %q", gotAuth)
 	}
-	if got := next.lastRequest.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
-		t.Errorf("expected the original Content-Type header to survive untouched, got %q", got)
+	if gotContentType != "application/x-www-form-urlencoded" {
+		t.Errorf("expected the real Content-Type to survive, got %q", gotContentType)
 	}
-	if got := next.lastRequest.Header.Get("X-Allowed"); got != "yes" {
-		t.Errorf("expected a non-reserved header to still be applied, got %q", got)
+	if gotAllowed != "yes" {
+		t.Errorf("expected a non-reserved header to still be applied, got %q", gotAllowed)
 	}
 }
 
@@ -1115,9 +1107,8 @@ func TestClientCredentials_EndToEnd_HeadersReachTokenEndpoint(t *testing.T) {
 }
 
 // TestPasswordGrant_ScopeReachesTokenEndpoint locks in that
-// "tokenRequestParams.scope" is honored for the password grant - mapped to
-// xoauth2.Config.Scopes, the one extensibility point
-// xoauth2.Config.PasswordCredentialsToken actually has (see
+// "tokenRequestParams.scope" is honored for the password grant - the one
+// tokenRequestParams entry fetchPasswordToken forwards (see
 // buildTokenSource).
 func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	var gotScope string
@@ -1167,8 +1158,7 @@ func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 // "tokenRequestParams" entry other than "scope" stays scoped to client_credentials
 // (see oauth2Params.customParams) - setting one alongside grantType:
 // password must not error, but must also not reach the token endpoint,
-// since xoauth2.Config.PasswordCredentialsToken has no hook to forward
-// anything but scope.
+// since fetchPasswordToken has no hook to forward anything but scope.
 func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
 	var gotResource string
 	var sawResourceKey bool
@@ -1382,9 +1372,9 @@ func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
 func TestOnRequestHeaders_Success(t *testing.T) {
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*Token, error) {
 		calls++
-		return &xoauth2.Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
+		return &Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
 	}
 
 	reqCtx := newRequestHeaderCtx()
@@ -1422,9 +1412,9 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*Token, error) {
 		calls++
-		return &xoauth2.Token{AccessToken: "reused-token"}, nil
+		return &Token{AccessToken: "reused-token"}, nil
 	}
 
 	for i := 0; i < 3; i++ {
@@ -1441,7 +1431,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 
 func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*Token, error) {
 		return nil, errors.New("token endpoint returned invalid_client")
 	}
 
@@ -1469,8 +1459,8 @@ func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 
 func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*xoauth2.Token, error) {
-		return &xoauth2.Token{AccessToken: "abc123"}, nil
+	p.tokenFunc = func() (*Token, error) {
+		return &Token{AccessToken: "abc123"}, nil
 	}
 
 	reqCtx := newRequestHeaderCtx()
@@ -1671,12 +1661,12 @@ func TestIsRetryableTokenError(t *testing.T) {
 		want bool
 	}{
 		{"plain network error", errors.New("dial tcp: connection refused"), true},
-		{"429 too many requests", &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusTooManyRequests}}, true},
-		{"500 internal server error", &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusInternalServerError}}, true},
-		{"503 service unavailable", &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable}}, true},
-		{"400 invalid_request", &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_request"}, false},
-		{"401 invalid_client", &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusUnauthorized}, ErrorCode: "invalid_client"}, false},
-		{"RetrieveError with no response", &xoauth2.RetrieveError{ErrorCode: "invalid_client"}, true},
+		{"429 too many requests", &TokenError{StatusCode: http.StatusTooManyRequests}, true},
+		{"500 internal server error", &TokenError{StatusCode: http.StatusInternalServerError}, true},
+		{"503 service unavailable", &TokenError{StatusCode: http.StatusServiceUnavailable}, true},
+		{"400 invalid_request", &TokenError{StatusCode: http.StatusBadRequest, ErrorCode: "invalid_request"}, false},
+		{"401 invalid_client", &TokenError{StatusCode: http.StatusUnauthorized, ErrorCode: "invalid_client"}, false},
+		{"403 forbidden", &TokenError{StatusCode: http.StatusForbidden, ErrorCode: "access_denied"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1707,11 +1697,11 @@ func TestRetryBackoff_WithinExpectedBounds(t *testing.T) {
 type flakyTokenSource struct {
 	failTimes int
 	calls     int
-	token     *xoauth2.Token
+	token     *Token
 	failErr   error
 }
 
-func (f *flakyTokenSource) Token() (*xoauth2.Token, error) {
+func (f *flakyTokenSource) Token() (*Token, error) {
 	f.calls++
 	if f.calls <= f.failTimes {
 		return nil, f.failErr
@@ -1719,10 +1709,10 @@ func (f *flakyTokenSource) Token() (*xoauth2.Token, error) {
 	return f.token, nil
 }
 
-var errTransient = &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable}}
+var errTransient = &TokenError{StatusCode: http.StatusServiceUnavailable}
 
 func TestResilientTokenSource_RetriesTransientFailureThenSucceeds(t *testing.T) {
-	inner := &flakyTokenSource{failTimes: 2, failErr: errTransient, token: &xoauth2.Token{AccessToken: "eventually-ok"}}
+	inner := &flakyTokenSource{failTimes: 2, failErr: errTransient, token: &Token{AccessToken: "eventually-ok"}}
 	src := &resilientTokenSource{inner: inner, maxRetries: 2}
 
 	tok, err := src.Token()
@@ -1750,7 +1740,7 @@ func TestResilientTokenSource_GivesUpAfterMaxRetries(t *testing.T) {
 }
 
 func TestResilientTokenSource_NonRetryableErrorStopsImmediately(t *testing.T) {
-	nonRetryable := &xoauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_request"}
+	nonRetryable := &TokenError{StatusCode: http.StatusBadRequest, ErrorCode: "invalid_request"}
 	inner := &flakyTokenSource{failTimes: 100, failErr: nonRetryable}
 	src := &resilientTokenSource{inner: inner, maxRetries: 2}
 

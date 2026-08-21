@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -36,24 +37,19 @@ import (
 	"sync"
 	"time"
 
-	xoauth2 "golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
-
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 const (
 	// defaultTokenRequestTimeout bounds how long a single token-endpoint
-	// HTTP call is allowed to take. Without this, golang.org/x/oauth2 falls
-	// back to http.DefaultClient, which has no timeout at all, so a hung
-	// IdP would block a token fetch indefinitely.
+	// HTTP call is allowed to take, via the *http.Client we build ourselves
+	// (see buildTokenSource) - a hung IdP must not block a token fetch
+	// indefinitely.
 	defaultTokenRequestTimeout = 10 * time.Second
 
 	// defaultTokenTTLFallback is applied when the token endpoint's response
-	// omits expires_in. golang.org/x/oauth2 leaves Token.Expiry as the zero
-	// value in that case, which Token.Valid() always treats as
-	// already-expired - without this fallback, the token would never be
-	// cached and every request would refetch it.
+	// omits expires_in - without this, a token with a zero Expiry would
+	// never be treated as cacheable (see tokenFreshEnough).
 	defaultTokenTTLFallback = time.Hour
 
 	// defaultHeaderName is the header the generated credential is injected
@@ -81,10 +77,16 @@ const (
 	// defaultExpiryBuffer is how far ahead of a token's actual expiry it's
 	// treated as no-longer-fresh, both by the caching layer (token_cache.go's
 	// tokenFreshEnough) and by the token-endpoint source itself (via
-	// xoauth2.ReuseTokenSourceWithExpiry below) - see expiryBuffer's field
-	// comment. 30s comfortably covers a request's own in-flight time to the
-	// backend, well beyond golang.org/x/oauth2's own hardcoded 10s default.
+	// reuseTokenSource below) - see expiryBuffer's field comment. 30s
+	// comfortably covers a request's own in-flight time to the backend.
 	defaultExpiryBuffer = 30 * time.Second
+
+	// maxTokenResponseBytes bounds how much of a token-endpoint response
+	// body is read, regardless of what the server claims via
+	// Content-Length - a misbehaving IdP must not be able to exhaust memory
+	// via an oversized response (see file-access.md's stream-limit
+	// directive). Token responses are always small; this is generous.
+	maxTokenResponseBytes = 1 << 20 // 1MiB
 )
 
 // defaultPurgeStatusCodes is applied when tokenPurgeStatusCodes is
@@ -127,6 +129,243 @@ const (
 	ClientAuthMethodPost = "client_secret_post"
 )
 
+// Token is the subset of an RFC 6749 §5.1 token response this policy needs.
+type Token struct {
+	AccessToken  string
+	TokenType    string
+	RefreshToken string
+	Expiry       time.Time
+}
+
+// TokenSource supplies the current access token, fetching or reusing a
+// cached one as it sees fit - satisfied by tokenFetcherFunc,
+// reuseTokenSource, resilientTokenSource, and redisCachingTokenSource
+// (token_cache.go).
+type TokenSource interface {
+	Token() (*Token, error)
+}
+
+// TokenError represents an RFC 6749 §5.2 error response FROM the token
+// endpoint - the request reached the IdP and was explicitly rejected, as
+// opposed to a network-level failure (DNS, connection refused, timeout)
+// that never got a response at all, or a malformed 200 response (see
+// doTokenRequest's missing-access_token check, deliberately a plain error
+// instead of *TokenError - retrying a malformed-but-200 response is exactly
+// as likely to help as retrying anything else transient).
+type TokenError struct {
+	StatusCode       int
+	ErrorCode        string
+	ErrorDescription string
+}
+
+func (e *TokenError) Error() string {
+	switch {
+	case e.ErrorDescription != "":
+		return fmt.Sprintf("token endpoint returned %d %s: %s", e.StatusCode, e.ErrorCode, e.ErrorDescription)
+	case e.ErrorCode != "":
+		return fmt.Sprintf("token endpoint returned %d %s", e.StatusCode, e.ErrorCode)
+	default:
+		return fmt.Sprintf("token endpoint returned status %d", e.StatusCode)
+	}
+}
+
+// clientAuthStyle mirrors clientAuthMethod as a type doTokenRequest can
+// switch on - see authStyleFor.
+type clientAuthStyle int
+
+const (
+	authStyleInHeader  clientAuthStyle = iota // client_secret_basic: HTTP Basic auth
+	authStyleInParams                         // client_secret_post: client_id/client_secret as form fields
+)
+
+// authStyleFor maps clientAuthMethod to the style doTokenRequest consumes.
+// validateAndExtractParams already rejects any other value, so the default
+// case covers only ClientAuthMethodBasic.
+func authStyleFor(method string) clientAuthStyle {
+	if method == ClientAuthMethodPost {
+		return authStyleInParams
+	}
+	return authStyleInHeader
+}
+
+// tokenJSON is the raw shape of an RFC 6749 §5.1 token response.
+// ExpiresIn is left as json.RawMessage rather than int64 because some IdPs
+// send it as a JSON string instead of a number - see expiresInSeconds.
+type tokenJSON struct {
+	AccessToken  string          `json:"access_token"`
+	TokenType    string          `json:"token_type"`
+	RefreshToken string          `json:"refresh_token"`
+	ExpiresIn    json.RawMessage `json:"expires_in"`
+}
+
+func (t tokenJSON) expiresInSeconds() (int64, bool) {
+	if len(t.ExpiresIn) == 0 {
+		return 0, false
+	}
+	var n int64
+	if err := json.Unmarshal(t.ExpiresIn, &n); err == nil {
+		return n, true
+	}
+	var s string
+	if err := json.Unmarshal(t.ExpiresIn, &s); err == nil {
+		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// doTokenRequest POSTs form to tokenEndpoint (RFC 6749 §4.3/§4.4's shared
+// wire shape) and parses the response. style selects how the client
+// authenticates: authStyleInHeader adds an HTTP Basic header (RFC 6749
+// Appendix B - client_id/client_secret are form-urlencoded BEFORE being
+// combined into the Basic credential, so a raw base64(id+":"+secret)
+// would mishandle any id/secret containing a colon or other reserved
+// character); authStyleInParams instead adds client_id/client_secret
+// directly to form. extraHeaders is applied last, skipping
+// Authorization/Content-Type so it can never override the client-auth or
+// body-encoding headers set above.
+func doTokenRequest(ctx context.Context, httpClient *http.Client, tokenEndpoint string, style clientAuthStyle,
+	clientID, clientSecret string, form url.Values, extraHeaders map[string]string) (*Token, error) {
+	if style == authStyleInParams {
+		form.Set("client_id", clientID)
+		form.Set("client_secret", clientSecret)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	for k, v := range extraHeaders {
+		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	if style == authStyleInHeader {
+		req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(clientSecret))
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading token response: %w", err)
+	}
+	if len(body) > maxTokenResponseBytes {
+		return nil, fmt.Errorf("token response exceeded %d bytes", maxTokenResponseBytes)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		tokErr := &TokenError{StatusCode: resp.StatusCode}
+		var errBody struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		if json.Unmarshal(body, &errBody) == nil {
+			tokErr.ErrorCode = errBody.Error
+			tokErr.ErrorDescription = errBody.ErrorDescription
+		}
+		return nil, tokErr
+	}
+
+	var parsed tokenJSON
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("decoding token response: %w", err)
+	}
+	if parsed.AccessToken == "" {
+		return nil, fmt.Errorf("token endpoint response is missing access_token")
+	}
+
+	tok := &Token{
+		AccessToken:  parsed.AccessToken,
+		TokenType:    parsed.TokenType,
+		RefreshToken: parsed.RefreshToken,
+	}
+	if tok.TokenType == "" {
+		tok.TokenType = "Bearer"
+	}
+	if secs, ok := parsed.expiresInSeconds(); ok {
+		tok.Expiry = time.Now().Add(time.Duration(secs) * time.Second)
+	}
+	return tok, nil
+}
+
+// fetchClientCredentialsToken implements RFC 6749 §4.4. tokenRequestParams
+// (e.g. scope, audience) is forwarded verbatim into the request body.
+func fetchClientCredentialsToken(ctx context.Context, httpClient *http.Client, p oauth2Params, style clientAuthStyle) (*Token, error) {
+	form := toURLValues(p.tokenRequestParams)
+	if form == nil {
+		form = url.Values{}
+	}
+	form.Set("grant_type", GrantTypeClientCredentials)
+	return doTokenRequest(ctx, httpClient, p.tokenEndpoint, style, p.clientID, p.clientSecret, form, p.tokenRequestHeaders)
+}
+
+// fetchPasswordToken implements the Resource Owner Password Credentials
+// grant (RFC 6749 §4.3). scope is the only tokenRequestParams entry this
+// grant honors - space-delimited per RFC 6749 §3.3; everything else
+// (audience, resource, ...) has no effect, matching client_credentials'
+// EndpointParams-equivalent but restricted to what this grant actually
+// supports.
+func fetchPasswordToken(ctx context.Context, httpClient *http.Client, p oauth2Params, style clientAuthStyle) (*Token, error) {
+	form := url.Values{}
+	form.Set("grant_type", GrantTypePassword)
+	form.Set("username", p.username)
+	form.Set("password", p.password)
+	if scope := strings.Fields(p.tokenRequestParams["scope"]); len(scope) > 0 {
+		form.Set("scope", strings.Join(scope, " "))
+	}
+	return doTokenRequest(ctx, httpClient, p.tokenEndpoint, style, p.clientID, p.clientSecret, form, p.tokenRequestHeaders)
+}
+
+// tokenFetcherFunc adapts a plain fetch function to TokenSource - see
+// buildTokenSource.
+type tokenFetcherFunc func() (*Token, error)
+
+func (f tokenFetcherFunc) Token() (*Token, error) { return f() }
+
+// reuseTokenSource wraps a raw, IdP-fetching TokenSource with mutex-guarded
+// reuse: the same token is served on every call until it's within buffer of
+// its own expiry, at which point the next caller performs a single
+// refetch while holding the lock - every other concurrent caller queues
+// behind that same mutex rather than firing a duplicate request, and sees
+// the now-fresh token once it's released. Mirrors
+// golang.org/x/oauth2's own reuseTokenSource, with our own configurable
+// buffer instead of its hardcoded, non-configurable 10s one - see
+// oauth2Params.expiryBuffer's field comment for why this must match the
+// caching layer's own threshold.
+type reuseTokenSource struct {
+	mu     sync.Mutex
+	fresh  TokenSource
+	tok    *Token
+	buffer time.Duration
+}
+
+func newReuseTokenSource(fresh TokenSource, buffer time.Duration) *reuseTokenSource {
+	return &reuseTokenSource{fresh: fresh, buffer: buffer}
+}
+
+func (s *reuseTokenSource) Token() (*Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tokenFreshEnough(s.tok, s.buffer) {
+		return s.tok, nil
+	}
+	tok, err := s.fresh.Token()
+	if err != nil {
+		return nil, err
+	}
+	s.tok = tok
+	return tok, nil
+}
+
 // oauth2Params bundles all extracted, validated policy params. Passed as a
 // single struct (rather than positional args) now that the set has grown
 // with grantType-conditional fields (username/password) — positional args
@@ -146,14 +385,14 @@ type oauth2Params struct {
 	username         string
 	password         string
 
-	// For client_credentials, EndpointParams carries the whole map into the token
-	// request body. For password, only "scope" has any effect (mapped to
-	// Config.Scopes) - every other key is ignored - see buildTokenSource.
+	// For client_credentials, tokenRequestParams carries the whole map into the
+	// token request body. For password, only "scope" has any effect - see
+	// fetchClientCredentialsToken/fetchPasswordToken.
 	tokenRequestParams map[string]string
 
 	// Extra HTTP headers sent with the token-endpoint request, on top of
 	// clientAuthMethod/the grant's own headers. "Authorization"/"Content-Type"
-	// are dropped rather than honored - see headerInjectingRoundTripper.
+	// are dropped rather than honored - see doTokenRequest.
 	tokenRequestHeaders map[string]string
 
 	// requestTimeout bounds the token-endpoint HTTP call - see
@@ -169,12 +408,11 @@ type oauth2Params struct {
 	// expires mid-flight or a hair before the backend even sees it. Applied
 	// both to the caching layer's own local/Redis freshness check
 	// (token_cache.go's tokenFreshEnough) and to the token-endpoint source's
-	// own reuse behavior (see buildTokenSource's use of
-	// xoauth2.ReuseTokenSourceWithExpiry) - both must agree on the same
-	// threshold, or the cache layer would decide a token is stale while the
-	// token source itself still considers its own cached copy fresh and
-	// hands back the very token being avoided. Unused when bearerToken is
-	// set - see defaultExpiryBuffer.
+	// own reuse behavior (see buildTokenSource's use of reuseTokenSource) -
+	// both must agree on the same threshold, or the cache layer would decide
+	// a token is stale while the token source itself still considers its own
+	// cached copy fresh and hands back the very token being avoided. Unused
+	// when bearerToken is set - see defaultExpiryBuffer.
 	expiryBuffer time.Duration
 
 	// purgeStatusCodes are the upstream response status codes that purge the
@@ -237,7 +475,7 @@ type Policy struct {
 	// tests override this to avoid a real network call to a token endpoint,
 	// mirroring the retrieveCredentialsFunc pattern used in the
 	// aws-authentication policy.
-	tokenFunc func() (*xoauth2.Token, error)
+	tokenFunc func() (*Token, error)
 
 	// purgeStatusCodes are the upstream response status codes that purge the
 	// cached token via tokenSource.Purge() - see OnResponseHeaders. Empty
@@ -247,15 +485,15 @@ type Policy struct {
 }
 
 // staticTokenSource always returns the same configured token, no endpoint call or
-// caching involved. Expiry is left at its zero value deliberately - Token.expired()
+// caching involved. Expiry is left at its zero value deliberately - tokenFreshEnough
 // treats that as "never expires", right for a credential with no expiry of its own.
 // Purge is a no-op: nothing cached to clear, no fresher token to fetch.
 type staticTokenSource struct {
 	bearerToken string
 }
 
-func (s *staticTokenSource) Token() (*xoauth2.Token, error) {
-	return &xoauth2.Token{AccessToken: s.bearerToken, TokenType: "Bearer"}, nil
+func (s *staticTokenSource) Token() (*Token, error) {
+	return &Token{AccessToken: s.bearerToken, TokenType: "Bearer"}, nil
 }
 
 func (s *staticTokenSource) Purge() {}
@@ -324,85 +562,35 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	return pol, nil
 }
 
-// buildTokenSource constructs the token source for the given grantType.
-// This is the extension point for future grants: each grant gets its own
-// case here, building whatever xoauth2.TokenSource fits that grant's flow.
-func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
-	authStyle := authStyleFor(p.clientAuthMethod)
+// buildTokenSource constructs the token source for the given grantType,
+// wrapping the raw HTTP-fetching function (fetchClientCredentialsToken/
+// fetchPasswordToken) in reuseTokenSource for mutex-safe caching. This is
+// the extension point for future grants: each grant gets its own case here.
+func buildTokenSource(p oauth2Params) (TokenSource, error) {
+	style := authStyleFor(p.clientAuthMethod)
 
-	// Both grants forward ctx down to internal.RetrieveToken, which resolves
-	// the *http.Client via internal.ContextClient(ctx) - falling back to
-	// http.DefaultClient (no timeout) if unset. Injecting a bounded client
-	// here, once, covers both grants; the Transport itself is shared across
-	// policy instances/rebuilds - see getOrCreateTokenEndpointTransport.
+	// The Transport itself is shared across policy instances/rebuilds - see
+	// getOrCreateTokenEndpointTransport. The *http.Client (and its Timeout)
+	// is rebuilt here each time, which is cheap - only the Transport (and
+	// its connection pool) needs to be shared.
 	transport, err := getOrCreateTokenEndpointTransport(p)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token endpoint transport config: %w", err)
 	}
-	// Neither Config type exposes a hook for arbitrary extra headers (unlike
-	// EndpointParams for body fields), so tokenRequestHeaders needs a
-	// RoundTripper wrapper instead.
-	var roundTripper http.RoundTripper = transport
-	if len(p.tokenRequestHeaders) > 0 {
-		roundTripper = &headerInjectingRoundTripper{headers: p.tokenRequestHeaders, next: transport}
-	}
-	httpClient := &http.Client{Timeout: p.requestTimeout, Transport: roundTripper}
-	ctx := context.WithValue(context.Background(), xoauth2.HTTPClient, httpClient)
+	httpClient := &http.Client{Timeout: p.requestTimeout, Transport: transport}
 
 	switch p.grantType {
 	case GrantTypeClientCredentials:
-		cfg := &clientcredentials.Config{
-			ClientID:     p.clientID,
-			ClientSecret: p.clientSecret,
-			TokenURL:     p.tokenEndpoint,
-			AuthStyle:    authStyle,
-			// EndpointParams carries tokenRequestParams (e.g. scope) verbatim into
-			// the token request body - golang.org/x/oauth2/clientcredentials
-			// exposes this hook directly, so client_credentials keeps using
-			// the library's own request/response handling untouched.
-			EndpointParams: toURLValues(p.tokenRequestParams),
-		}
-		// cfg.TokenSource(ctx) would wrap this in the library's own
-		// ReuseTokenSource, hardcoded to a 10s early-expiry buffer - not
-		// configurable, and not the same threshold the caching layer uses
-		// (see expiryBuffer's field comment). cfg.Token(ctx) is the same
-		// underlying fetch with no caching of its own, so wrapping it
-		// ourselves in ReuseTokenSourceWithExpiry(p.expiryBuffer) gets the
-		// identical single-flight/mutex behavior with a matching threshold.
-		raw := tokenFetcherFunc(func() (*xoauth2.Token, error) { return cfg.Token(ctx) })
-		return xoauth2.ReuseTokenSourceWithExpiry(nil, raw, p.expiryBuffer), nil
+		raw := tokenFetcherFunc(func() (*Token, error) {
+			return fetchClientCredentialsToken(context.Background(), httpClient, p, style)
+		})
+		return newReuseTokenSource(raw, p.expiryBuffer), nil
 
 	case GrantTypePassword:
-		cfg := &xoauth2.Config{
-			ClientID:     p.clientID,
-			ClientSecret: p.clientSecret,
-			Endpoint: xoauth2.Endpoint{
-				TokenURL:  p.tokenEndpoint,
-				AuthStyle: authStyle,
-			},
-		}
-		// PasswordCredentialsToken hardcodes grant_type/username/password plus
-		// scope (if Config.Scopes is set) - scope is the only
-		// tokenRequestParams entry this grant can honor; anything else
-		// (audience, resource, ...) has no effect. Space-delimited per RFC
-		// 6749 Section 3.3.
-		if scope := p.tokenRequestParams["scope"]; scope != "" {
-			cfg.Scopes = strings.Fields(scope)
-		}
-		src := &passwordTokenSource{
-			ctx:      ctx,
-			cfg:      cfg,
-			username: p.username,
-			password: p.password,
-		}
-		// TokenSource(ctx, initialToken) only refreshes via refresh_token,
-		// which the password grant's response may not include, so
-		// passwordTokenSource re-authenticates directly instead.
-		// ReuseTokenSourceWithExpiry gives it the same caching/mutex-safety
-		// clientcredentials gets internally, using the same configurable
-		// expiryBuffer threshold rather than the library's hardcoded 10s
-		// default.
-		return xoauth2.ReuseTokenSourceWithExpiry(nil, src, p.expiryBuffer), nil
+		raw := tokenFetcherFunc(func() (*Token, error) {
+			return fetchPasswordToken(context.Background(), httpClient, p, style)
+		})
+		return newReuseTokenSource(raw, p.expiryBuffer), nil
 
 	default:
 		// Unreachable - validateAndExtractParams already rejects any other
@@ -410,15 +598,6 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		return nil, fmt.Errorf("unsupported grantType %q", p.grantType)
 	}
 }
-
-// tokenFetcherFunc adapts a plain fetch function to xoauth2.TokenSource, so a
-// Config's uncached single-shot Token(ctx) method (rather than its own
-// TokenSource(ctx), which bundles in the library's hardcoded-10s
-// ReuseTokenSource) can be wrapped in our own ReuseTokenSourceWithExpiry -
-// see buildTokenSource's client_credentials case.
-type tokenFetcherFunc func() (*xoauth2.Token, error)
-
-func (f tokenFetcherFunc) Token() (*xoauth2.Token, error) { return f() }
 
 // tokenEndpointTransportKey identifies a distinct token-endpoint HTTP
 // client configuration. tlsCACertHash hashes the CA cert's CONTENT, not its
@@ -532,37 +711,14 @@ func loadCACertPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// headerInjectingRoundTripper adds tokenRequestHeaders to every request before
-// delegating to next - the only interception point available, since neither Config
-// type exposes a hook for arbitrary headers. "Authorization"/"Content-Type" are
-// never set here even if present: both are already managed by clientAuthMethod and
-// the grant's own request encoding, and overriding either would break the request.
-type headerInjectingRoundTripper struct {
-	headers map[string]string
-	next    http.RoundTripper
-}
-
-func (h *headerInjectingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Clone rather than mutate: req is owned by the caller (golang.org/x/oauth2's
-	// internal.RetrieveToken), which may reuse or inspect it after this call.
-	req = req.Clone(req.Context())
-	for k, v := range h.headers {
-		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Type") {
-			continue
-		}
-		req.Header.Set(k, v)
-	}
-	return h.next.RoundTrip(req)
-}
-
-// resilientTokenSource wraps a real, IDP-fetching xoauth2.TokenSource with bounded
+// resilientTokenSource wraps a real, IDP-fetching TokenSource with bounded
 // retry, for transient failures only - see isRetryableTokenError.
 type resilientTokenSource struct {
-	inner      xoauth2.TokenSource
+	inner      TokenSource
 	maxRetries int
 }
 
-func (r *resilientTokenSource) Token() (*xoauth2.Token, error) {
+func (r *resilientTokenSource) Token() (*Token, error) {
 	var lastErr error
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -580,18 +736,16 @@ func (r *resilientTokenSource) Token() (*xoauth2.Token, error) {
 	return nil, lastErr
 }
 
-// isRetryableTokenError classifies a token-fetch error as worth retrying. An
-// *xoauth2.RetrieveError is only retryable on 429/5xx - a 4xx like invalid_client is
-// a rejected request retrying can't fix. Any other error (DNS, connection refused,
-// TLS, deadline exceeded) never reached the IdP at all, so it's treated as transient.
+// isRetryableTokenError classifies a token-fetch error as worth retrying. A
+// *TokenError is only retryable on 429/5xx - a 4xx like invalid_client is a
+// rejected request retrying can't fix. Any other error (DNS, connection
+// refused, TLS, deadline exceeded, or a malformed-but-200 response - see
+// doTokenRequest) never got a definitive rejection FROM the IdP, so it's
+// treated as transient.
 func isRetryableTokenError(err error) bool {
-	var retrieveErr *xoauth2.RetrieveError
-	if errors.As(err, &retrieveErr) {
-		if retrieveErr.Response == nil {
-			return true
-		}
-		status := retrieveErr.Response.StatusCode
-		return status == http.StatusTooManyRequests || status >= 500
+	var tokErr *TokenError
+	if errors.As(err, &tokErr) {
+		return tokErr.StatusCode == http.StatusTooManyRequests || tokErr.StatusCode >= 500
 	}
 	return true
 }
@@ -610,24 +764,10 @@ func retryBackoff(attempt int) time.Duration {
 	return backoff + jitter
 }
 
-// authStyleFor maps clientAuthMethod to the xoauth2.AuthStyle both Config types
-// consume identically: AuthStyleInHeader sends client_id/secret via HTTP Basic
-// (client_secret_basic); AuthStyleInParams sends them as form fields
-// (client_secret_post). validateAndExtractParams already rejects any other value,
-// so the default case is unreachable.
-func authStyleFor(method string) xoauth2.AuthStyle {
-	switch method {
-	case ClientAuthMethodPost:
-		return xoauth2.AuthStyleInParams
-	default:
-		return xoauth2.AuthStyleInHeader
-	}
-}
-
-// toURLValues converts a flat string map into url.Values, the shape
-// golang.org/x/oauth2/clientcredentials.Config.EndpointParams expects.
-// Returns nil (not an empty, non-nil map) when there's nothing to add, so
-// EndpointParams stays unset rather than an empty-but-present value.
+// toURLValues converts a flat string map into url.Values, the shape a
+// form-encoded token request body needs. Returns nil (not an empty,
+// non-nil map) when there's nothing to add, so callers can tell "no extra
+// params" apart from "an empty-but-present set".
 func toURLValues(m map[string]string) url.Values {
 	if len(m) == 0 {
 		return nil
@@ -637,21 +777,6 @@ func toURLValues(m map[string]string) url.Values {
 		v.Set(key, val)
 	}
 	return v
-}
-
-// passwordTokenSource implements the Resource Owner Password Credentials grant
-// (RFC 6749 Section 4.3). Token() fully re-authenticates on every call - intended
-// to be wrapped in xoauth2.ReuseTokenSource, which only calls through when the
-// cached token is missing or expired.
-type passwordTokenSource struct {
-	ctx      context.Context
-	cfg      *xoauth2.Config
-	username string
-	password string
-}
-
-func (s *passwordTokenSource) Token() (*xoauth2.Token, error) {
-	return s.cfg.PasswordCredentialsToken(s.ctx, s.username, s.password)
 }
 
 // Mode returns the processing mode. Injecting a header needs no body inspection, so
@@ -977,7 +1102,7 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, respCtx *policy.Response
 
 // retrieveToken fetches the current (possibly cached/refreshed) access token
 // from the token source built once in GetPolicy.
-func (p *Policy) retrieveToken() (*xoauth2.Token, error) {
+func (p *Policy) retrieveToken() (*Token, error) {
 	fetch := p.tokenFunc
 	if fetch == nil {
 		fetch = p.tokenSource.Token

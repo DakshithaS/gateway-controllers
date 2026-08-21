@@ -6,7 +6,6 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/wso2/api-platform/sdk/core v0.2.18
-	golang.org/x/oauth2 v0.36.0
 )
 
 require (
