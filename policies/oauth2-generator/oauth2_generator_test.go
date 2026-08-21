@@ -1594,6 +1594,58 @@ func TestBuildTokenEndpointTransport_ValidCACertPath(t *testing.T) {
 	}
 }
 
+// writeCACertAt writes a fresh throwaway self-signed cert to the given
+// path, overwriting whatever was there before - used to simulate a CA cert
+// rotated at the same path (e.g. TESTING.md E.27's regenerated test cert).
+func writeCACertAt(t *testing.T, path string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate test key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "oauth2-generator-test-ca"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IsCA:         true,
+		KeyUsage:     x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("failed to create test certificate: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatalf("failed to write test CA cert: %v", err)
+	}
+}
+
+// TestGetOrCreateTokenEndpointTransport_InvalidatesOnCACertRotation locks in
+// the TESTING.md E.27 regression: a CA cert rewritten at the SAME path
+// (e.g. a regenerated self-signed test cert) must not keep validating
+// against a stale cached *http.Transport built from the old cert content.
+func TestGetOrCreateTokenEndpointTransport_InvalidatesOnCACertRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	writeCACertAt(t, path)
+	p := oauth2Params{tlsCaCertPath: path}
+
+	t1, err := getOrCreateTokenEndpointTransport(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	writeCACertAt(t, path) // rotate: same path, different cert content
+	t2, err := getOrCreateTokenEndpointTransport(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if t1 == t2 {
+		t.Error("expected a CA cert rotated at the same path to invalidate the cached Transport, not reuse the stale one")
+	}
+}
+
 func TestGetOrCreateTokenEndpointTransport_SharesTransportForIdenticalConfig(t *testing.T) {
 	p1 := oauth2Params{proxyURL: "http://shared-proxy:8080"}
 	p2 := oauth2Params{proxyURL: "http://shared-proxy:8080"}

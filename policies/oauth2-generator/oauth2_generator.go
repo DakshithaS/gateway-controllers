@@ -19,8 +19,10 @@ package oauth2generator
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -419,12 +421,13 @@ type tokenFetcherFunc func() (*xoauth2.Token, error)
 func (f tokenFetcherFunc) Token() (*xoauth2.Token, error) { return f() }
 
 // tokenEndpointTransportKey identifies a distinct token-endpoint HTTP
-// client configuration - proxy and TLS settings, the only things that
-// affect the *http.Transport itself (Timeout lives on *http.Client, not
-// the Transport, so it doesn't need to be part of this key).
+// client configuration. tlsCACertHash hashes the CA cert's CONTENT, not its
+// path - a cert rotated at the same path (e.g. a regenerated self-signed
+// test cert) would otherwise keep validating against a stale cached pool
+// (TESTING.md E.27).
 type tokenEndpointTransportKey struct {
 	proxyURL              string
-	tlsCaCertPath         string
+	tlsCACertHash         string
 	tlsInsecureSkipVerify bool
 }
 
@@ -438,11 +441,18 @@ var tokenEndpointTransports = struct {
 }{m: make(map[tokenEndpointTransportKey]*http.Transport)}
 
 // getOrCreateTokenEndpointTransport returns the process-wide shared
-// Transport for this proxy/TLS configuration, building it on first use.
+// Transport for this proxy/TLS configuration, building it on first use. The
+// CA cert is read here for the cache key, then again in
+// buildTokenEndpointTransport on a cache miss.
 func getOrCreateTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
+	certHash, err := hashCACertFile(p.tlsCaCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("tlsCaCertPath: %w", err)
+	}
+
 	key := tokenEndpointTransportKey{
 		proxyURL:              p.proxyURL,
-		tlsCaCertPath:         p.tlsCaCertPath,
+		tlsCACertHash:         certHash,
 		tlsInsecureSkipVerify: p.tlsInsecureSkipVerify,
 	}
 
@@ -459,6 +469,20 @@ func getOrCreateTokenEndpointTransport(p oauth2Params) (*http.Transport, error) 
 	}
 	tokenEndpointTransports.m[key] = t
 	return t, nil
+}
+
+// hashCACertFile returns a hex sha256 of the file's content, or "" when
+// path is empty.
+func hashCACertFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read CA cert file %q: %w", path, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // buildTokenEndpointTransport wires proxyURL and TLS settings into one Transport

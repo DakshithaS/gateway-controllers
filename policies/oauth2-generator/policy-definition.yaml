@@ -242,7 +242,7 @@ systemParameters:
           type: string
           description: Specifies the Redis host name or IP address.
           default: "localhost"
-          "wso2/defaultValue": "${config.policy_configurations.redis.host}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.host}"
 
         port:
           type: integer
@@ -250,17 +250,17 @@ systemParameters:
           minimum: 1
           maximum: 65535
           default: 6379
-          "wso2/defaultValue": "${config.policy_configurations.redis.port}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.port}"
 
         password:
           type: string
           description: Specifies the optional Redis authentication password.
-          "wso2/defaultValue": "${config.policy_configurations.redis.password}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.password}"
 
         username:
           type: string
           description: Specifies the optional Redis ACL username.
-          "wso2/defaultValue": "${config.policy_configurations.redis.username}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.username}"
 
         db:
           type: integer
@@ -268,7 +268,7 @@ systemParameters:
           minimum: 0
           maximum: 15
           default: 0
-          "wso2/defaultValue": "${config.policy_configurations.redis.db}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.db}"
 
         keyPrefix:
           type: string
@@ -285,25 +285,25 @@ systemParameters:
             acquisition failure.
           enum: ["open", "closed"]
           default: "open"
-          "wso2/defaultValue": "${config.policy_configurations.redis.failure_mode}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.failure_mode}"
 
         connectionTimeout:
           type: string
           description: Redis connection timeout, as a Go duration string (e.g. "5s").
           default: "5s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.connection_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.connection_timeout}"
 
         readTimeout:
           type: string
           description: Redis read timeout, as a Go duration string (e.g. "3s").
           default: "3s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.read_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.read_timeout}"
 
         writeTimeout:
           type: string
           description: Redis write timeout, as a Go duration string (e.g. "3s").
           default: "3s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.write_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.write_timeout}"
 
         poolSize:
           type: integer
@@ -312,4 +312,4 @@ systemParameters:
             default (10 x GOMAXPROCS).
           minimum: 0
           default: 0
-          "wso2/defaultValue": "${config.policy_configurations.redis.pool_size}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.pool_size}"
