@@ -1,5 +1,5 @@
 name: oauth2-generator
-version: v0.1.0
+version: v0.9.0
 description: |
   Generates an upstream credential and injects it into a configurable
   request header before forwarding the request to the backend. Configure
@@ -101,9 +101,10 @@ parameters:
       description: |
         Extra form fields merged into the token request body - typically
         scope (e.g. {scope: "read write"}), or IdP-specific params like
-        resource/audience/tenant. Only applies to grantType:
-        client_credentials. Reference a stored secret for any sensitive
-        value - {"someParam": "{{ secret \"handle\" }}"}.
+        resource/audience/tenant. Applies to both grantType:
+        client_credentials and grantType: password. Reference a stored
+        secret for any sensitive value - {"someParam": "{{ secret
+        \"handle\" }}"}.
     tokenRequestHeaders:
       type: object
       x-wso2-policy-advanced-param: true

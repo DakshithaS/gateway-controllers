@@ -309,19 +309,21 @@ func fetchClientCredentialsToken(ctx context.Context, httpClient *http.Client, p
 }
 
 // fetchPasswordToken implements the Resource Owner Password Credentials
-// grant (RFC 6749 §4.3). scope is the only tokenRequestParams entry this
-// grant honors - space-delimited per RFC 6749 §3.3; everything else
-// (audience, resource, ...) has no effect, matching client_credentials'
-// EndpointParams-equivalent but restricted to what this grant actually
-// supports.
+// grant (RFC 6749 §4.3). tokenRequestParams (e.g. scope, audience, resource)
+// is forwarded verbatim into the request body, same as
+// fetchClientCredentialsToken - some legacy IdPs that require the password
+// grant also expect the same extension params they'd accept on
+// client_credentials. grant_type/username/password are set after merging
+// tokenRequestParams so a same-named entry there can never override the
+// real credentials.
 func fetchPasswordToken(ctx context.Context, httpClient *http.Client, p oauth2Params, style clientAuthStyle) (*Token, error) {
-	form := url.Values{}
+	form := toURLValues(p.tokenRequestParams)
+	if form == nil {
+		form = url.Values{}
+	}
 	form.Set("grant_type", GrantTypePassword)
 	form.Set("username", p.username)
 	form.Set("password", p.password)
-	if scope := strings.Fields(p.tokenRequestParams["scope"]); len(scope) > 0 {
-		form.Set("scope", strings.Join(scope, " "))
-	}
 	return doTokenRequest(ctx, httpClient, p.tokenEndpoint, style, p.clientID, p.clientSecret, form, p.tokenRequestHeaders)
 }
 
@@ -385,8 +387,8 @@ type oauth2Params struct {
 	username         string
 	password         string
 
-	// For client_credentials, tokenRequestParams carries the whole map into the
-	// token request body. For password, only "scope" has any effect - see
+	// tokenRequestParams carries the whole map into the token request body,
+	// for both client_credentials and password - see
 	// fetchClientCredentialsToken/fetchPasswordToken.
 	tokenRequestParams map[string]string
 

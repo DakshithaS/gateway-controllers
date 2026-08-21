@@ -1107,9 +1107,8 @@ func TestClientCredentials_EndToEnd_HeadersReachTokenEndpoint(t *testing.T) {
 }
 
 // TestPasswordGrant_ScopeReachesTokenEndpoint locks in that
-// "tokenRequestParams.scope" is honored for the password grant - the one
-// tokenRequestParams entry fetchPasswordToken forwards (see
-// buildTokenSource).
+// "tokenRequestParams.scope" is honored for the password grant, same as
+// every other tokenRequestParams entry (see fetchPasswordToken).
 func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	var gotScope string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1154,12 +1153,12 @@ func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_NonScopeParamsHaveNoEffect locks in that every
-// "tokenRequestParams" entry other than "scope" stays scoped to client_credentials
-// (see oauth2Params.customParams) - setting one alongside grantType:
-// password must not error, but must also not reach the token endpoint,
-// since fetchPasswordToken has no hook to forward anything but scope.
-func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
+// TestPasswordGrant_NonScopeParamsReachTokenEndpoint locks in that a
+// tokenRequestParams entry other than "scope" (e.g. an IdP-specific
+// "resource"/"audience"/"tenant" extension) is forwarded to the token
+// endpoint for the password grant too, same as client_credentials - see
+// fetchPasswordToken.
+func TestPasswordGrant_NonScopeParamsReachTokenEndpoint(t *testing.T) {
 	var gotResource string
 	var sawResourceKey bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1171,7 +1170,7 @@ func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "password-grant-token-no-resource",
+			"access_token": "password-grant-token-with-resource",
 			"token_type":   "Bearer",
 			"expires_in":   300,
 		})
@@ -1197,11 +1196,72 @@ func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
-	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-no-resource" {
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-with-resource" {
 		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
 	}
-	if sawResourceKey {
-		t.Errorf("expected no resource field to reach the token endpoint for the password grant, got %q", gotResource)
+	if !sawResourceKey || gotResource != "https://api.example.com" {
+		t.Errorf("expected resource=%q to reach the token endpoint for the password grant, got present=%v value=%q",
+			"https://api.example.com", sawResourceKey, gotResource)
+	}
+}
+
+// TestPasswordGrant_TokenRequestParamsCannotOverrideCredentials locks in
+// that fetchPasswordToken sets grant_type/username/password AFTER merging
+// tokenRequestParams, so a same-named entry there (accidental or malicious)
+// can never override the real resource-owner credentials or grant type.
+func TestPasswordGrant_TokenRequestParamsCannotOverrideCredentials(t *testing.T) {
+	var gotGrantType, gotUsername, gotPassword string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		gotGrantType = r.PostForm.Get("grant_type")
+		gotUsername = r.PostForm.Get("username")
+		gotPassword = r.PostForm.Get("password")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "password-grant-token-not-overridden",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := passwordGrantParams()
+	params["tokenEndpoint"] = server.URL
+	params["username"] = "resource-owner"
+	params["password"] = "hunter2"
+	params["tokenRequestParams"] = map[string]interface{}{
+		"grant_type": "client_credentials",
+		"username":   "attacker",
+		"password":   "attacker-controlled",
+	}
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-not-overridden" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+	if gotGrantType != GrantTypePassword {
+		t.Errorf("expected grant_type=%q to survive, got %q", GrantTypePassword, gotGrantType)
+	}
+	if gotUsername != "resource-owner" {
+		t.Errorf("expected username=%q to survive, got %q", "resource-owner", gotUsername)
+	}
+	if gotPassword != "hunter2" {
+		t.Errorf("expected password=%q to survive, got %q", "hunter2", gotPassword)
 	}
 }
 

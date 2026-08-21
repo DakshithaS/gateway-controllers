@@ -18,21 +18,25 @@
 package oauth2generator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 // ─── test helpers ────────────────────────────────────────────────────────────
 
 // stubTokenSource is a fake "real" token source (standing in for
-// buildTokenSource's clientcredentials/password fetch) that counts calls so
+// buildTokenSource's client_credentials/password fetch) that counts calls so
 // tests can assert the Redis/local cache actually prevented a fetch, rather
 // than just happening to return the right value.
 type stubTokenSource struct {
@@ -55,21 +59,95 @@ func mustNewRedisCachingTokenSource(t *testing.T, inner TokenSource, cp cachePar
 	return newRedisCachingTokenSource(inner, cp, p)
 }
 
+// testRedisTarget is a real Redis connection for tests that specifically
+// exercise the Redis tier - see newTestRedisTarget. client is for direct
+// seeding/inspection (the same operations miniredis's own methods used to
+// provide); prefix is unique per test so many tests sharing one long-lived
+// Redis instance can never collide or leak state into each other.
+type testRedisTarget struct {
+	host   string
+	port   int
+	prefix string
+	client *redis.Client
+}
+
+// newTestRedisTarget connects to a real Redis instance - REDIS_TEST_ADDR if
+// set, else localhost:6379 (matches docker-compose.yaml's "redis" service).
+// Skips the calling test if nothing is reachable there, so `go test ./...`
+// still passes on a machine with no Redis running; CI provides one via a
+// services: block (see .github/workflows/release-policy.yml).
+func newTestRedisTarget(t *testing.T) *testRedisTarget {
+	t.Helper()
+
+	addr := os.Getenv("REDIS_TEST_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("invalid REDIS_TEST_ADDR %q: %v", addr, err)
+	}
+
+	// MaxRetries: -1 and a short DialTimeout keep an unreachable-Redis skip
+	// fast and quiet - the default retry/backoff behavior is for production
+	// resilience, not for a one-shot reachability probe.
+	client := redis.NewClient(&redis.Options{Addr: addr, DialTimeout: 300 * time.Millisecond, MaxRetries: -1})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		t.Skipf("no real redis reachable at %s for this test (set REDIS_TEST_ADDR, or start one - see docker-compose.yaml's redis service): %v", addr, err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	// Unique per test (name + a fresh nanosecond timestamp, since a test
+	// helper can be called more than once per test) so cleanup below can
+	// never touch another test's keys even if they ran concurrently.
+	prefix := fmt.Sprintf("oauth2-generator-test:%s:%d:", t.Name(), time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		iter := client.Scan(cleanupCtx, 0, prefix+"*", 0).Iterator()
+		for iter.Next(cleanupCtx) {
+			client.Del(cleanupCtx, iter.Val())
+		}
+	})
+
+	return &testRedisTarget{host: host, port: mustAtoi(portStr), prefix: prefix, client: client}
+}
+
 // testRedisParams returns a cacheParams fixture with strategy: redis pointed
-// at mr - for tests that specifically exercise the Redis tier. Tests that
+// at rt - for tests that specifically exercise the Redis tier. Tests that
 // only care about the in-process tier (the default) use testParams() alone
 // and never call this.
-func testRedisParams(mr *miniredis.Miniredis, failureMode string) cacheParams {
+func testRedisParams(rt *testRedisTarget, failureMode string) cacheParams {
 	return cacheParams{
 		strategy: CacheStrategyRedis,
 		redis: redisParams{
-			host:              mr.Host(),
-			port:              mustAtoi(mr.Port()),
-			keyPrefix:         "oauth2-generator:token:v1:",
+			host:              rt.host,
+			port:              rt.port,
+			keyPrefix:         rt.prefix,
 			failureMode:       failureMode,
 			connectionTimeout: time.Second,
 			readTimeout:       time.Second,
 			writeTimeout:      time.Second,
+		},
+	}
+}
+
+// unreachableRedisParams returns a cacheParams fixture pointed at a host
+// that can never answer - for tests simulating Redis being down, which
+// don't need (and shouldn't require) a real Redis instance at all.
+func unreachableRedisParams(failureMode string) cacheParams {
+	return cacheParams{
+		strategy: CacheStrategyRedis,
+		redis: redisParams{
+			host:              "unreachable.invalid",
+			port:              1,
+			keyPrefix:         "oauth2-generator-test:down:",
+			failureMode:       failureMode,
+			connectionTimeout: 50 * time.Millisecond,
+			readTimeout:       50 * time.Millisecond,
+			writeTimeout:      50 * time.Millisecond,
 		},
 	}
 }
@@ -253,10 +331,10 @@ func TestBuildRedisKey_OmitsEmptyDiscriminator(t *testing.T) {
 // ─── redisCachingTokenSource ─────────────────────────────────────────────────
 
 func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
 	tok, err := src.Token()
 	if err != nil {
@@ -269,8 +347,8 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 		t.Errorf("expected exactly 1 inner fetch on cache miss, got %d", inner.calls)
 	}
 
-	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(testParams()))
-	if !mr.Exists(key) {
+	key := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(testParams()))
+	if rt.client.Exists(context.Background(), key).Val() == 0 {
 		t.Errorf("expected token to be written to redis under key %q", key)
 	}
 }
@@ -284,7 +362,7 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 // buildTokenSource-shaped bug in place - this uses a real httptest server
 // through the real buildTokenSource path specifically to catch that.
 func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 
 	var idpCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +385,7 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error building token source: %v", err)
 	}
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
 	tok, err := src.Token()
 	if err != nil {
@@ -319,14 +397,14 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	if idpCalls != 1 {
 		t.Fatalf("expected exactly 1 token-endpoint call to prime the cache, got %d", idpCalls)
 	}
-	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(params))
-	if !mr.Exists(key) {
+	key := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(params))
+	if rt.client.Exists(context.Background(), key).Val() == 0 {
 		t.Fatal("expected the primed token to be present in redis")
 	}
 
 	src.Purge()
 
-	if mr.Exists(key) {
+	if rt.client.Exists(context.Background(), key).Val() != 0 {
 		t.Error("expected Purge to delete the redis cache entry")
 	}
 
@@ -343,18 +421,18 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 }
 
 // TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback locks
-// in the fallback for IdPs that omit expires_in entirely: golang.org/x/oauth2
-// leaves Token.Expiry as the zero value in that case, which Token.Valid()
-// always treats as already-expired - without the fallback, this would mean
-// caching silently never engages (see the comment at its use site in
-// token_cache.go's Token()) and every request would refetch from the IdP.
+// in the fallback for IdPs that omit expires_in entirely: a token response
+// with no expires_in leaves Token.Expiry as the zero value, which without
+// this fallback would mean caching silently never engages (see the comment
+// at its use site in token_cache.go's Token()) and every request would
+// refetch from the IdP.
 func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
 
 	const fallbackTTL = 42 * time.Minute
 	params := testParams(func(p *oauth2Params) { p.tokenTTLFallback = fallbackTTL })
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
 	tok, err := src.Token()
 	if err != nil {
@@ -368,8 +446,8 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 		t.Errorf("expected Expiry within 1s of now+%s, got %s away", fallbackTTL, diff)
 	}
 
-	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(params))
-	ttl := mr.TTL(key)
+	key := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(params))
+	ttl := rt.client.TTL(context.Background(), key).Val()
 	if ttl <= 0 {
 		t.Fatalf("expected a positive TTL on the redis key, got %s - the fallback should make this token cacheable", ttl)
 	}
@@ -389,16 +467,16 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 }
 
 func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "should-not-be-used", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(testParams()))
+	key := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(testParams()))
 	cached, _ := json.Marshal(cachedToken{AccessToken: "cached-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)})
-	if err := mr.Set(key, string(cached)); err != nil {
-		t.Fatalf("failed to seed miniredis: %v", err)
+	if err := rt.client.Set(context.Background(), key, string(cached), 0).Err(); err != nil {
+		t.Fatalf("failed to seed redis: %v", err)
 	}
 
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
 	tok, err := src.Token()
 	if err != nil {
@@ -413,10 +491,10 @@ func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 }
 
 func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
 	for i := 0; i < 5; i++ {
 		if _, err := src.Token(); err != nil {
@@ -435,15 +513,15 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 // write each other's Redis entry, even though both may be attached to the
 // exact same API.
 func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	innerA := &stubTokenSource{token: &Token{AccessToken: "token-for-provider-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	innerB := &stubTokenSource{token: &Token{AccessToken: "token-for-provider-b", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
 	paramsA := testParams(func(p *oauth2Params) { p.clientID = "provider-a-client" })
 	paramsB := testParams(func(p *oauth2Params) { p.clientID = "provider-b-client" })
 
-	srcA := mustNewRedisCachingTokenSource(t, innerA, testRedisParams(mr, FailureModeOpen), paramsA)
-	srcB := mustNewRedisCachingTokenSource(t, innerB, testRedisParams(mr, FailureModeOpen), paramsB)
+	srcA := mustNewRedisCachingTokenSource(t, innerA, testRedisParams(rt, FailureModeOpen), paramsA)
+	srcB := mustNewRedisCachingTokenSource(t, innerB, testRedisParams(rt, FailureModeOpen), paramsB)
 
 	tokA, err := srcA.Token()
 	if err != nil {
@@ -460,8 +538,8 @@ func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *tes
 		t.Errorf("provider B got the wrong token: %q", tokB.AccessToken)
 	}
 
-	keyA := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(paramsA))
-	keyB := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(paramsB))
+	keyA := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(paramsA))
+	keyB := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(paramsB))
 	if keyA == keyB {
 		t.Fatal("expected different oauth2 configs to produce different redis keys")
 	}
@@ -471,13 +549,13 @@ func TestRedisCachingTokenSource_RedisKeyFixedAtConstruction(t *testing.T) {
 	// The key is derived from oauth2Params at construction time, not from
 	// anything request-time - it never needs to move over the instance's
 	// lifetime.
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	params := testParams()
 
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params).(*redisCachingTokenSource)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params).(*redisCachingTokenSource)
 
-	want := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(params))
+	want := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(params))
 	if src.redisKey != want {
 		t.Fatalf("expected redisKey to be set at construction to %q, got %q", want, src.redisKey)
 	}
@@ -491,9 +569,7 @@ func TestRedisCachingTokenSource_RedisKeyFixedAtConstruction(t *testing.T) {
 }
 
 func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rp := testRedisParams(mr, FailureModeOpen)
-	mr.Close() // simulate redis being unreachable
+	rp := unreachableRedisParams(FailureModeOpen)
 
 	inner := &stubTokenSource{token: &Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
@@ -511,9 +587,7 @@ func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.
 }
 
 func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallback(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rp := testRedisParams(mr, FailureModeClosed)
-	mr.Close() // simulate redis being unreachable
+	rp := unreachableRedisParams(FailureModeClosed)
 
 	inner := &stubTokenSource{token: &Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
@@ -528,10 +602,10 @@ func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallbac
 }
 
 func TestRedisCachingTokenSource_InnerError_IsPropagated(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{err: errors.New("token endpoint returned invalid_client")}
 
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), testParams())
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
 	_, err := src.Token()
 	if err == nil {
@@ -583,11 +657,11 @@ func TestTokenFreshEnough_OutsideBuffer_IsFresh(t *testing.T) {
 // literal expiry - the whole point of the feature (avoid handing the
 // backend a credential that's about to expire mid-flight).
 func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}}
 
 	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
 	tok, err := src.Token()
 	if err != nil {
@@ -617,17 +691,17 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 // the Redis-tier equivalent: an entry written by another replica that's now
 // within this replica's expiryBuffer window must not be served as-is.
 func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
 
-	key := buildRedisKey("oauth2-generator:token:v1:", oauth2ConfigDiscriminator(params))
+	key := buildRedisKey(rt.prefix, oauth2ConfigDiscriminator(params))
 	cached, _ := json.Marshal(cachedToken{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)})
-	if err := mr.Set(key, string(cached)); err != nil {
-		t.Fatalf("failed to seed miniredis: %v", err)
+	if err := rt.client.Set(context.Background(), key, string(cached), 0).Err(); err != nil {
+		t.Fatalf("failed to seed redis: %v", err)
 	}
 
 	inner := &stubTokenSource{token: &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
 	tok, err := src.Token()
 	if err != nil {
@@ -650,7 +724,7 @@ func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t 
 // decided to fall through and re-fetch. Uses a real httptest server so the
 // full path, not a stub, is what's actually exercised.
 func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *testing.T) {
-	mr := miniredis.RunT(t)
+	rt := newTestRedisTarget(t)
 
 	var idpCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -676,7 +750,7 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 	if err != nil {
 		t.Fatalf("unexpected error building token source: %v", err)
 	}
-	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(mr, FailureModeOpen), params)
+	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
 	tok, err := src.Token()
 	if err != nil {
@@ -691,8 +765,8 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 
 	// token-1's 5s remaining TTL is inside the 10s expiryBuffer: the outer
 	// cache falls through to inner.Token(), and inner itself - via
-	// ReuseTokenSourceWithExpiry using that same 10s buffer - must perform a
-	// genuine second token-endpoint call rather than replaying token-1.
+	// reuseTokenSource using that same 10s buffer - must perform a genuine
+	// second token-endpoint call rather than replaying token-1.
 	tok, err = src.Token()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -708,8 +782,8 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 // ─── getOrCreateRedisClient ──────────────────────────────────────────────────
 
 func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rp := testRedisParams(mr, FailureModeOpen)
+	rt := newTestRedisTarget(t)
+	rp := testRedisParams(rt, FailureModeOpen)
 
 	src1 := mustNewRedisCachingTokenSource(t, &stubTokenSource{}, rp, testParams()).(*redisCachingTokenSource)
 	src2 := mustNewRedisCachingTokenSource(t, &stubTokenSource{}, rp, testParams()).(*redisCachingTokenSource)
