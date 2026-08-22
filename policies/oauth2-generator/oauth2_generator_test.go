@@ -71,9 +71,7 @@ func newTestPolicy() *Policy {
 	}
 }
 
-// fakeTokenSource is a tokenProvider test double that counts Purge() calls,
-// for OnResponseHeaders tests that only care whether a purge happened, not
-// the real cache mechanics (see token_cache_test.go for those).
+// fakeTokenSource is a tokenProvider test double that counts Purge() calls.
 type fakeTokenSource struct {
 	purgeCalls int
 }
@@ -116,10 +114,7 @@ func TestGetPolicy_ValidParams(t *testing.T) {
 	}
 }
 
-// TestGetPolicy_DefaultCacheStrategy_NeverTouchesRedis locks in that
-// omitting systemParameters entirely (the common case) never constructs a
-// Redis client - cacheStrategy defaults to "memory" - so GetPolicy succeeds
-// with no Redis available at all.
+// Omitting systemParameters entirely must never construct a Redis client - cacheStrategy defaults to "memory".
 func TestGetPolicy_DefaultCacheStrategy_NeverTouchesRedis(t *testing.T) {
 	p, err := GetPolicy(policy.PolicyMetadata{}, validParams())
 	if err != nil {
@@ -162,10 +157,7 @@ func TestGetPolicy_ExplicitGrantType(t *testing.T) {
 }
 
 func TestGetPolicy_UnsupportedGrantType(t *testing.T) {
-	// grantType exists precisely so a future grant can be added without a
-	// schema-breaking change - but until that grant is actually implemented,
-	// an unrecognized value must fail loudly at configuration time, not be
-	// silently treated as client_credentials.
+	// An unrecognized grantType must fail loudly, not silently fall back to client_credentials.
 	params := validParams()
 	params["grantType"] = "authorization_code"
 	_, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -264,12 +256,8 @@ func TestValidateAndExtractParams_TimeoutAndTTLUnparsable_FallsBackToDefault(t *
 	}
 }
 
-// TestValidateAndExtractParams_TimeoutAndTTLNonPositive_FallsBackToDefault
-// locks in that a zero or negative tokenRequestTimeout/defaultTokenTTL falls
-// back to the default rather than being honored as-is - Go's http.Client
-// treats Timeout <= 0 as "no timeout" (reopening the unbounded-hung-IdP case
-// defaultTokenRequestTimeout exists to prevent), and a <= 0 fallback TTL
-// would make a token expire before it's even cached.
+// A zero/negative value must fall back to the default, not be honored as-is - http.Client treats
+// Timeout <= 0 as "no timeout", and a <= 0 TTL would expire a token before it's even cached.
 func TestValidateAndExtractParams_TimeoutAndTTLNonPositive_FallsBackToDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -337,11 +325,7 @@ func TestValidateAndExtractParams_ExpiryBufferUnparsable_FallsBackToDefault(t *t
 	}
 }
 
-// TestValidateAndExtractParams_ExpiryBufferNegative_FallsBackToDefault locks
-// in that a negative buffer (which would invert tokenFreshEnough's check,
-// treating a token as fresh for longer the further past its expiry it gets)
-// is rejected the same way getIntParam already rejects a negative retry
-// count.
+// A negative buffer would invert tokenFreshEnough's check, so it must fall back to the default.
 func TestValidateAndExtractParams_ExpiryBufferNegative_FallsBackToDefault(t *testing.T) {
 	params := validParams()
 	params["expiryBuffer"] = "-5s"
@@ -355,19 +339,11 @@ func TestValidateAndExtractParams_ExpiryBufferNegative_FallsBackToDefault(t *tes
 	}
 }
 
-// TestClientCredentials_TokenRequestTimeout_BoundsHungIdP proves
-// tokenRequestTimeout actually bounds the token-endpoint HTTP call - without
-// it, golang.org/x/oauth2 falls back to http.DefaultClient (Timeout: 0, no
-// bound at all), so a hung IdP would block a token fetch indefinitely.
+// Proves tokenRequestTimeout actually bounds the token-endpoint call, so a hung IdP can't block a fetch indefinitely.
 func TestClientCredentials_TokenRequestTimeout_BoundsHungIdP(t *testing.T) {
 	const idpDelay = 2 * time.Second
 	const configuredTimeout = 100 * time.Millisecond
-	// Generous upper bound: comfortably covers the ~0.5-1s of connection-retry
-	// overhead the "point redis at 127.0.0.1:1" pattern adds on top of
-	// configuredTimeout (see TestPasswordGrant_EndToEnd, which shows the same
-	// overhead), while still being well under idpDelay - so this only passes
-	// if the timeout actually aborted the request rather than waiting out
-	// the full delay.
+	// Comfortably covers the unreachable-Redis retry overhead while staying well under idpDelay.
 	const maxAcceptableElapsed = 1500 * time.Millisecond
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -384,8 +360,7 @@ func TestClientCredentials_TokenRequestTimeout_BoundsHungIdP(t *testing.T) {
 	params := validParams()
 	params["tokenEndpoint"] = server.URL
 	params["tokenRequestTimeout"] = configuredTimeout.String()
-	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
-	// unreachable address here.
+	// Redis pinned unreachable - see TestPasswordGrant_EndToEnd.
 	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -412,9 +387,7 @@ func TestClientCredentials_TokenRequestTimeout_BoundsHungIdP(t *testing.T) {
 	}
 }
 
-// TestClientCredentials_ClientSecretPost_EndToEnd proves clientAuthMethod:
-// client_secret_post actually changes wire behavior for client_credentials -
-// client_id/client_secret arrive as form fields, not a Basic auth header.
+// client_secret_post must send client_id/client_secret as form fields, not a Basic auth header.
 func TestClientCredentials_ClientSecretPost_EndToEnd(t *testing.T) {
 	var gotAuthHeader, gotClientID, gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -437,8 +410,7 @@ func TestClientCredentials_ClientSecretPost_EndToEnd(t *testing.T) {
 	params := validParams()
 	params["tokenEndpoint"] = server.URL
 	params["clientAuthMethod"] = ClientAuthMethodPost
-	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
-	// unreachable address here.
+	// Redis pinned unreachable - see TestPasswordGrant_EndToEnd.
 	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -468,10 +440,7 @@ func TestClientCredentials_ClientSecretPost_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_ClientSecretPost_EndToEnd proves clientAuthMethod:
-// client_secret_post applies identically to the password grant, since both
-// grants route through the same golang.org/x/oauth2 internal AuthStyle
-// handling.
+// client_secret_post must apply identically to the password grant.
 func TestPasswordGrant_ClientSecretPost_EndToEnd(t *testing.T) {
 	var gotAuthHeader, gotClientID, gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -584,12 +553,7 @@ func TestGetPolicy_ClientCredentials_UsernamePasswordNotRequired(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_EndToEnd exercises the real passwordTokenSource against
-// an httptest server simulating a password-grant token endpoint - unlike
-// client_credentials (which delegates entirely to the well-exercised
-// golang.org/x/oauth2/clientcredentials package), the password grant's
-// token-fetch path is new code in this policy, so it's worth a real,
-// non-mocked-tokenFunc test.
+// Exercises the real password-grant token-fetch path end to end against an httptest server.
 func TestPasswordGrant_EndToEnd(t *testing.T) {
 	var gotGrantType, gotUsername, gotPassword string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -613,13 +577,7 @@ func TestPasswordGrant_EndToEnd(t *testing.T) {
 	params["tokenEndpoint"] = server.URL
 	params["username"] = "resource-owner"
 	params["password"] = "hunter2"
-	// Point Redis at a guaranteed-unreachable address. Without this, GetPolicy
-	// defaults to localhost:6379 - if anything is actually listening there in
-	// whatever environment this test runs in (a stray local Redis, a container
-	// left running from manual testing), this test would silently read back a
-	// previously-cached token instead of exercising the real HTTP round trip
-	// it exists to verify, and gotGrantType/gotUsername/gotPassword below
-	// would stay at their zero value with no indication why.
+	// Pin Redis to an unreachable address so this test can't silently read back a stray local Redis's cached token.
 	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -1015,8 +973,7 @@ func TestClientCredentials_EndToEnd_ParamsReachTokenEndpoint(t *testing.T) {
 		"scope":    "read write",
 		"resource": "https://api.example.com",
 	}
-	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
-	// unreachable address here.
+	// Redis pinned unreachable - see TestPasswordGrant_EndToEnd.
 	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -1064,10 +1021,7 @@ func TestDoTokenRequest_AddsConfiguredHeaders(t *testing.T) {
 	}
 }
 
-// TestDoTokenRequest_IgnoresAuthorizationAndContentTypeOverrides locks in
-// the safety guard: letting tokenRequestHeaders override either would
-// silently break client_secret_basic (which sets Authorization itself) or
-// corrupt the form-encoded request body.
+// tokenRequestHeaders must not override Authorization/Content-Type, or it could break client_secret_basic or corrupt the body.
 func TestDoTokenRequest_IgnoresAuthorizationAndContentTypeOverrides(t *testing.T) {
 	var gotAuth, gotContentType, gotAllowed string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1099,10 +1053,7 @@ func TestDoTokenRequest_IgnoresAuthorizationAndContentTypeOverrides(t *testing.T
 	}
 }
 
-// TestClientCredentials_EndToEnd_HeadersReachTokenEndpoint proves
-// tokenRequestHeaders reaches the real token-endpoint HTTP call end to end,
-// through GetPolicy/buildTokenSource, not just the RoundTripper in
-// isolation.
+// Proves tokenRequestHeaders reaches the real token-endpoint call through GetPolicy/buildTokenSource.
 func TestClientCredentials_EndToEnd_HeadersReachTokenEndpoint(t *testing.T) {
 	var gotHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1141,9 +1092,7 @@ func TestClientCredentials_EndToEnd_HeadersReachTokenEndpoint(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_ScopeReachesTokenEndpoint locks in that
-// "tokenRequestParams.scope" is honored for the password grant, same as
-// every other tokenRequestParams entry (see fetchPasswordToken).
+// tokenRequestParams.scope must be honored for the password grant too.
 func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	var gotScope string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1188,11 +1137,7 @@ func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_NonScopeParamsReachTokenEndpoint locks in that a
-// tokenRequestParams entry other than "scope" (e.g. an IdP-specific
-// "resource"/"audience"/"tenant" extension) is forwarded to the token
-// endpoint for the password grant too, same as client_credentials - see
-// fetchPasswordToken.
+// A non-"scope" tokenRequestParams entry (e.g. an IdP-specific "resource") must also reach the password grant.
 func TestPasswordGrant_NonScopeParamsReachTokenEndpoint(t *testing.T) {
 	var gotResource string
 	var sawResourceKey bool
@@ -1240,10 +1185,7 @@ func TestPasswordGrant_NonScopeParamsReachTokenEndpoint(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_TokenRequestParamsCannotOverrideCredentials locks in
-// that fetchPasswordToken sets grant_type/username/password AFTER merging
-// tokenRequestParams, so a same-named entry there (accidental or malicious)
-// can never override the real resource-owner credentials or grant type.
+// A same-named tokenRequestParams entry must never override the real grant_type/username/password.
 func TestPasswordGrant_TokenRequestParamsCannotOverrideCredentials(t *testing.T) {
 	var gotGrantType, gotUsername, gotPassword string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1302,9 +1244,7 @@ func TestPasswordGrant_TokenRequestParamsCannotOverrideCredentials(t *testing.T)
 
 // ─── Mode ────────────────────────────────────────────────────────────────────
 
-// TestMode covers newTestPolicy()'s zero-value purgeStatusCodes (nil, same
-// as an explicit empty list) - response-phase processing must be skipped
-// entirely when there is nothing to purge on.
+// A nil/empty purgeStatusCodes must skip response-phase processing entirely.
 func TestMode(t *testing.T) {
 	p := newTestPolicy()
 	mode := p.Mode()
@@ -1319,10 +1259,7 @@ func TestMode(t *testing.T) {
 	}
 }
 
-// TestMode_PurgeEnabled_ProcessesResponseHeadersOnly locks in that a
-// non-empty purgeStatusCodes turns on response-header processing (needed to
-// read ResponseStatus in OnResponseHeaders) but never the response body -
-// the status code is enough, so this stays safe for streamed responses.
+// A non-empty purgeStatusCodes must turn on response-header processing, but never the response body.
 func TestMode_PurgeEnabled_ProcessesResponseHeadersOnly(t *testing.T) {
 	p := newTestPolicy()
 	p.purgeStatusCodes = map[int]struct{}{http.StatusUnauthorized: {}}
@@ -1394,12 +1331,7 @@ func TestOnResponseHeaders_DisabledWhenPurgeStatusCodesEmpty(t *testing.T) {
 	}
 }
 
-// TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd wires the real
-// redisCachingTokenSource (via GetPolicy, not a fake) through a full
-// prime -> reuse -> upstream-401 -> purge -> refetch cycle, proving
-// OnResponseHeaders actually reaches and clears the same cache
-// OnRequestHeaders reads from - the fake-based tests above only prove
-// OnResponseHeaders calls Purge(), not that the wiring is correct end to end.
+// Wires the real redisCachingTokenSource through a prime -> reuse -> upstream-401 -> purge -> refetch cycle.
 func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
 	var tokenCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1419,8 +1351,7 @@ func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
 
 	params := validParams()
 	params["tokenEndpoint"] = server.URL
-	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
-	// unreachable address here.
+	// Redis pinned unreachable - see TestPasswordGrant_EndToEnd.
 	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
@@ -1500,11 +1431,8 @@ func TestOnRequestHeaders_Success(t *testing.T) {
 	}
 }
 
+// Proves OnRequestHeaders calls through tokenFunc once per request, not more.
 func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
-	// This exercises the policy's own call path, not oauth2.ReuseTokenSource's
-	// internals (already covered by the x/oauth2 package itself) — it proves
-	// OnRequestHeaders calls through tokenFunc once per request rather than
-	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
 	p.tokenFunc = func(context.Context) (*Token, error) {
@@ -1578,10 +1506,7 @@ func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 
 // ─── buildTokenEndpointTransport ─────────────────────────────────────────────
 
-// generateTestCACert generates a throwaway self-signed certificate and
-// returns its PEM-encoded content directly - tlsCaCert holds cert content,
-// not a filesystem path, so tests need no temp file at all, unlike the
-// path-based design this replaced.
+// generateTestCACert returns a throwaway self-signed cert's PEM content directly - tlsCaCert holds content, not a path.
 func generateTestCACert(t *testing.T) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -1637,15 +1562,9 @@ func TestBuildTokenEndpointTransport_InvalidProxyURL(t *testing.T) {
 	}
 }
 
-// TestBuildTokenEndpointTransport_InvalidProxyURL_DoesNotLeakCredentials
-// locks in that a malformed-but-credentialed proxyURL never surfaces its
-// userinfo in the returned error - url.Error's own Error() method embeds its
-// raw input verbatim, which would otherwise leak the credential straight
-// into authFailure's log line (see redactURLCredentials).
+// A malformed-but-credentialed proxyURL must never leak its userinfo into the returned error - see redactURLCredentials.
 func TestBuildTokenEndpointTransport_InvalidProxyURL_DoesNotLeakCredentials(t *testing.T) {
-	// A control character makes url.Parse fail (net/url rejects them
-	// outright) while the credential-bearing userinfo segment is still
-	// present in the input - exactly the shape that would otherwise leak.
+	// A control character makes url.Parse fail while the credential-bearing userinfo is still present.
 	_, err := buildTokenEndpointTransport(oauth2Params{proxyURL: "http://secret-user:secret-pass@proxy.internal:8080/\x7f"})
 	if err == nil {
 		t.Fatal("expected an error for an invalid proxyURL")
@@ -1684,14 +1603,7 @@ func TestRedactURLCredentials(t *testing.T) {
 	}
 }
 
-// TestBuildTokenEndpointTransport_TLSConfigStillSetsProxy locks in the
-// specific regression this function exists to prevent: jwt-auth and
-// opaque-token-auth (sibling policies in this repo) both build a bare
-// &http.Transport{TLSClientConfig: ...} when a custom CA/skip-verify is
-// configured, which leaves Transport.Proxy nil - "never proxy," not
-// "inherit the default" - silently dropping HTTP_PROXY/HTTPS_PROXY support
-// the moment TLS customization is used. Proxy must still be set whenever
-// TLSClientConfig is.
+// Proxy must still be set whenever TLSClientConfig is - jwt-auth/opaque-token-auth both silently dropped proxy support this way.
 func TestBuildTokenEndpointTransport_TLSConfigStillSetsProxy(t *testing.T) {
 	transport, err := buildTokenEndpointTransport(oauth2Params{tlsInsecureSkipVerify: true})
 	if err != nil {
@@ -1721,11 +1633,7 @@ func TestBuildTokenEndpointTransport_ValidCACertContent(t *testing.T) {
 	}
 }
 
-// TestBuildTokenEndpointTransport_MultipleCACertsInOneValue locks in that
-// tlsCaCert supports a bundle - several PEM certificates concatenated into
-// one value (e.g. a private CA plus an intermediate) - since
-// AppendCertsFromPEM parses every CERTIFICATE block it finds, not just the
-// first.
+// tlsCaCert must support a bundle of several concatenated PEM certificates, not just the first.
 func TestBuildTokenEndpointTransport_MultipleCACertsInOneValue(t *testing.T) {
 	bundle := generateTestCACert(t) + generateTestCACert(t)
 	pool, err := parseCACertPool(bundle)
@@ -1739,11 +1647,7 @@ func TestBuildTokenEndpointTransport_MultipleCACertsInOneValue(t *testing.T) {
 
 // ─── getOrCreateTokenEndpointTransport CA cert keying ────────────────────────
 
-// TestGetOrCreateTokenEndpointTransport_DifferentCACertContent_GetsDifferentTransport
-// locks in that the Transport cache key is derived from the CA cert's
-// CONTENT (an already-resolved config value, typically via
-// {{ secret "handle" }}) - two configs with different cert content must
-// never share a cached Transport built from the wrong trust pool.
+// Two configs with different CA cert content must never share a cached Transport built from the wrong trust pool.
 func TestGetOrCreateTokenEndpointTransport_DifferentCACertContent_GetsDifferentTransport(t *testing.T) {
 	p1 := oauth2Params{tlsCaCert: generateTestCACert(t)}
 	p2 := oauth2Params{tlsCaCert: generateTestCACert(t)}
@@ -1762,11 +1666,7 @@ func TestGetOrCreateTokenEndpointTransport_DifferentCACertContent_GetsDifferentT
 	}
 }
 
-// TestGetOrCreateTokenEndpointTransport_SameCACertContent_SharesTransport is
-// the mirror image: byte-identical CA cert content (e.g. two policy
-// instances resolving the same secret handle) must share one Transport, the
-// same connection-pool-reuse guarantee proxyURL already gets (see
-// TestGetOrCreateTokenEndpointTransport_SharesTransportForIdenticalConfig).
+// Byte-identical CA cert content must share one Transport, same as proxyURL already does.
 func TestGetOrCreateTokenEndpointTransport_SameCACertContent_SharesTransport(t *testing.T) {
 	cert := generateTestCACert(t)
 	p1 := oauth2Params{tlsCaCert: cert}
@@ -1841,9 +1741,7 @@ func TestRetryBackoff_WithinExpectedBounds(t *testing.T) {
 
 // ─── resilientTokenSource ────────────────────────────────────────────────────
 
-// flakyTokenSource fails failTimes calls (with failErr) before succeeding
-// with token - a test double for resilientTokenSource's retry path,
-// distinct from stubTokenSource (which never varies its response).
+// flakyTokenSource fails failTimes calls before succeeding with token - a test double for the retry path.
 type flakyTokenSource struct {
 	failTimes int
 	calls     int
@@ -1902,10 +1800,7 @@ func TestResilientTokenSource_NonRetryableErrorStopsImmediately(t *testing.T) {
 	}
 }
 
-// TestResilientTokenSource_ConcurrentCalls_ShareOneFetchAndResult locks in
-// #8's single-flight coalescing on the success path: N concurrent Token()
-// calls that arrive while a fetch is in flight must share that ONE fetch
-// and its result, not each trigger their own.
+// N concurrent Token() calls arriving while a fetch is in flight must share that one fetch and its result.
 func TestResilientTokenSource_ConcurrentCalls_ShareOneFetchAndResult(t *testing.T) {
 	var calls int32
 	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
@@ -1944,14 +1839,7 @@ func TestResilientTokenSource_ConcurrentCalls_ShareOneFetchAndResult(t *testing.
 	}
 }
 
-// TestResilientTokenSource_ConcurrentFailures_ShareOneRetrySequence locks in
-// #8's single-flight coalescing on the failure path - the gap the review
-// specifically flagged: reuseTokenSource's own mutex only coalesces
-// concurrent callers when a fetch SUCCEEDS (nothing gets cached on
-// failure), so without this, every one of N concurrent callers against a
-// failing/slow IdP would run its own full (maxRetries+1)-attempt sequence.
-// With coalescing, at most one sequence's worth of real attempts should
-// occur for all N callers combined.
+// Concurrent callers against a failing IdP must share one retry sequence, not each run their own.
 func TestResilientTokenSource_ConcurrentFailures_ShareOneRetrySequence(t *testing.T) {
 	var calls int32
 	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
@@ -1982,11 +1870,7 @@ func TestResilientTokenSource_ConcurrentFailures_ShareOneRetrySequence(t *testin
 	}
 }
 
-// TestResilientTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWithoutAffectingSharedFetch
-// locks in the specific trade-off documented on resilientTokenSource: a
-// caller that JOINS an already-in-flight sequence bails out promptly on its
-// own ctx expiry (rather than blocking for the full sequence), without
-// aborting that sequence for the owner/other waiters still depending on it.
+// A caller joining an in-flight sequence must bail out on its own ctx expiry without aborting it for others.
 func TestResilientTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWithoutAffectingSharedFetch(t *testing.T) {
 	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
 		time.Sleep(150 * time.Millisecond)

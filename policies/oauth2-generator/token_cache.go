@@ -33,26 +33,18 @@ import (
 	"github.com/wso2/api-platform/sdk/core/utils/cache"
 )
 
-// localTokenCacheKey is the sole key ever used in a redisCachingTokenSource's
-// localCache - each instance holds exactly one credential (its own), so
-// there's nothing to key on beyond a fixed constant.
+// localTokenCacheKey is the only key used in localCache - each instance caches just its own token.
 var localTokenCacheKey = cache.CacheKey{Key: "token"}
 
 const (
-	// FailureModeOpen degrades to fetching directly from the token endpoint
-	// when Redis is unavailable, so authentication keeps working through a
-	// Redis outage.
+	// FailureModeOpen falls back to the token endpoint when Redis is unavailable.
 	FailureModeOpen = "open"
 	// FailureModeClosed treats a Redis error as a token-acquisition failure.
 	FailureModeClosed = "closed"
 
-	// CacheStrategyMemory caches tokens in-process only, per gateway-runtime
-	// replica - no external dependency. The default, and the only tier used
-	// unless CacheStrategyRedis is selected.
+	// CacheStrategyMemory caches tokens in-process only; the default.
 	CacheStrategyMemory = "memory"
-	// CacheStrategyRedis adds a shared Redis tier in front of the token
-	// endpoint - see redisParams. Mirrors Kong's upstream-oauth plugin's
-	// cache_strategy setting.
+	// CacheStrategyRedis adds a shared Redis tier in front of the token endpoint.
 	CacheStrategyRedis = "redis"
 
 	defaultRedisHost              = "localhost"
@@ -63,10 +55,8 @@ const (
 	defaultRedisWriteTimeout      = 3 * time.Second
 )
 
-// redisParams bundles the extracted, validated systemParameters.redis
-// values. All fields have sane defaults (see policy-definition.yaml), so
-// omitting the whole "redis" block is always valid. Only read/used at all
-// when cacheParams.strategy is CacheStrategyRedis - see newRedisCachingTokenSource.
+// redisParams holds the validated systemParameters.redis values; only used when
+// cacheParams.strategy is CacheStrategyRedis.
 type redisParams struct {
 	host              string
 	port              int
@@ -81,18 +71,15 @@ type redisParams struct {
 	poolSize          int
 }
 
-// cacheParams bundles the extracted, validated params that control caching:
-// which tier(s) to use (cacheStrategy, a regular per-config param) and, when
-// it's CacheStrategyRedis, the operator-level systemParameters.redis
-// connection settings.
+// cacheParams bundles which cache tier(s) to use and, for CacheStrategyRedis,
+// the Redis connection settings.
 type cacheParams struct {
 	strategy string
 	redis    redisParams
 }
 
 // extractCacheParams reads cacheStrategy and systemParameters.redis.* from params,
-// falling back to policy-definition.yaml's defaults for anything absent/wrong-typed.
-// Nothing here is required - Redis is opt-in via cacheStrategy, not mandatory.
+// falling back to defaults for anything absent/wrong-typed.
 func extractCacheParams(params map[string]interface{}) cacheParams {
 	return cacheParams{
 		strategy: getNestedStringParam(params, "cacheStrategy", CacheStrategyMemory),
@@ -113,8 +100,7 @@ func extractCacheParams(params map[string]interface{}) cacheParams {
 }
 
 // getNestedParam resolves a dotted key ("redis.host") against params, tolerating
-// either nested maps (params["redis"]["host"]) or a flattened key
-// (params["redis.host"]) - systemParameters can arrive either way.
+// either nested maps or a flattened key.
 func getNestedParam(params map[string]interface{}, dottedKey string) (interface{}, bool) {
 	if v, ok := params[dottedKey]; ok {
 		return v, true
@@ -172,13 +158,8 @@ func getNestedDurationParam(params map[string]interface{}, dottedKey string, def
 	return def
 }
 
-// getNestedPositiveDurationParam is getNestedDurationParam plus a
-// non-positive guard, falling back to def when the parsed duration is <= 0.
-// A zero/negative Redis connection/read/write timeout hands
-// context.WithTimeout an already-expired (or immediately-expiring)
-// deadline, making every Redis operation fail instantly regardless of
-// Redis's actual health - see oauth2_generator.go's getPositiveDurationParam
-// for the identical concern on the token-endpoint side.
+// getNestedPositiveDurationParam falls back to def when the parsed duration
+// is <= 0 - a zero/negative timeout would make every Redis op fail instantly.
 func getNestedPositiveDurationParam(params map[string]interface{}, dottedKey string, def time.Duration) time.Duration {
 	d := getNestedDurationParam(params, dottedKey, def)
 	if d <= 0 {
@@ -187,8 +168,7 @@ func getNestedPositiveDurationParam(params map[string]interface{}, dottedKey str
 	return d
 }
 
-// buildRedisKey scopes the cached token to a config discriminator - see
-// oauth2ConfigDiscriminator.
+// buildRedisKey scopes the cached token key by prefix and config discriminator.
 func buildRedisKey(prefix, discriminator string) string {
 	candidates := []string{strings.TrimSuffix(prefix, ":"), discriminator}
 	var parts []string
@@ -200,9 +180,8 @@ func buildRedisKey(prefix, discriminator string) string {
 	return strings.Join(parts, ":")
 }
 
-// oauth2CacheKeyFields is the subset of oauth2Params that determines what token the
-// endpoint would issue and who's entitled to it. Serialized as a struct (fixed
-// field order) rather than delimiter-joined, so no field combination can collide.
+// oauth2CacheKeyFields is the subset of oauth2Params that determines what token
+// gets issued; serialized as a struct (fixed field order) so no field combination collides.
 type oauth2CacheKeyFields struct {
 	GrantType        string `json:"grantType"`
 	TokenEndpoint    string `json:"tokenEndpoint"`
@@ -210,24 +189,19 @@ type oauth2CacheKeyFields struct {
 	ClientAuthMethod string `json:"clientAuthMethod"`
 	Username         string `json:"username,omitempty"`
 
-	// Params (scope, audience, ...) must be part of the discriminator: a different
-	// scope earns a different key. encoding/json sorts map keys alphabetically, so
-	// this stays stable regardless of map iteration order.
+	// Params (scope, audience, ...) affect what token is issued, so must be part of the key.
 	Params map[string]string `json:"params,omitempty"`
 
-	// Headers (tokenRequestHeaders), for the same reason as Params: a header some
-	// IdPs use to select a sub-tenant/audience changes what token gets minted.
+	// Headers (tokenRequestHeaders) can also affect the issued token; same reason as Params.
 	Headers map[string]string `json:"headers,omitempty"`
 
-	// ClientSecretHash and PasswordHash bind the cache entry to the specific
-	// credential presented - see oauth2ConfigDiscriminator.
+	// ClientSecretHash and PasswordHash bind the entry to the specific credential presented.
 	ClientSecretHash string `json:"clientSecretHash"`
 	PasswordHash     string `json:"passwordHash,omitempty"`
 }
 
-// hashSensitiveValue returns a SHA-256 hex digest of a secret value, so it
-// can be used as part of oauth2ConfigDiscriminator's cache-key material
-// below without the raw secret appearing in it.
+// hashSensitiveValue returns a SHA-256 hex digest so a secret can be used in a
+// cache key without appearing in it.
 func hashSensitiveValue(s string) string {
 	if s == "" {
 		return ""
@@ -237,14 +211,8 @@ func hashSensitiveValue(s string) string {
 }
 
 // oauth2ConfigDiscriminator derives a stable cache-key component from the oauth2
-// config: every field that determines what token the endpoint would issue feeds
-// into the hash, so a rotated clientSecret/password lands on a different key while
-// byte-identical configs share one, regardless of which API/provider they're on.
-//
-// clientSecret/password are hashed with SHA-256 rather than stored raw (Redis key
-// names appear in MONITOR/slowlog output - see hashSensitiveValue above),
-// closing a cross-credential reuse gap: two configs sharing only
-// clientId/tokenEndpoint but different credentials now land on different keys.
+// config, so a rotated clientSecret/password lands on a different key. Secrets are
+// hashed rather than stored raw, since Redis key names appear in MONITOR/slowlog output.
 func oauth2ConfigDiscriminator(p oauth2Params) string {
 	fields := oauth2CacheKeyFields{
 		GrantType:        p.grantType,
@@ -257,8 +225,7 @@ func oauth2ConfigDiscriminator(p oauth2Params) string {
 		ClientSecretHash: hashSensitiveValue(p.clientSecret),
 		PasswordHash:     hashSensitiveValue(p.password),
 	}
-	// Marshaling a struct of plain strings and a map[string]string cannot
-	// fail; the error is only checked to satisfy static analysis.
+	// Marshaling plain strings/maps cannot fail; checked only for lint.
 	data, err := json.Marshal(fields)
 	if err != nil {
 		data = []byte(fmt.Sprintf("%+v", fields))
@@ -276,27 +243,18 @@ type cachedToken struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-// tokenProvider is satisfied by redisCachingTokenSource - TokenSource plus
-// Purge, which clears both cache tiers (see OnResponseHeaders). Purge takes
-// no context deliberately - it's meant to benefit FUTURE requests/replicas,
-// so it must not be tied to (and cut short by) the current request's ctx;
-// see Purge's own comment.
+// tokenProvider is TokenSource plus Purge, which clears both cache tiers.
+// Purge takes no context deliberately - it benefits future requests, not this one.
 type tokenProvider interface {
 	Token(ctx context.Context) (*Token, error)
 	Purge()
 }
 
-// redisCachingTokenSource wraps a real, IDP-fetching TokenSource with a
-// cache of up to two tiers: (1) a per-process in-memory token, always active, and
-// (2) a shared Redis entry that lets every replica reuse the same token and
-// survives a restart - opt-in via cacheStrategy: redis (redisClient is nil and
-// this tier fully skipped under the default cacheStrategy: memory). When active,
-// a Redis error either falls back to the token endpoint (failOpen, the default) or
-// surfaces as a failure, per redis.failureMode.
+// redisCachingTokenSource wraps a real TokenSource with two cache tiers: an
+// always-on in-process token, and an opt-in shared Redis tier (cacheStrategy: redis)
+// that lets replicas reuse the same token and survives a restart.
 type redisCachingTokenSource struct {
-	// inner is read/written under mu (mu guards only inner - localCache is its
-	// own thread-safe SDK cache) - Purge() replaces it with a freshly-built
-	// one. Always a *resilientTokenSource wrapping buildTokenSource's raw output.
+	// inner is read/written under mu; Purge() replaces it with a freshly-built one.
 	inner TokenSource
 
 	// params is what inner was built from, retained so Purge() can rebuild it.
@@ -307,47 +265,30 @@ type redisCachingTokenSource struct {
 	readTimeout  time.Duration
 	writeTimeout time.Duration
 
-	// defaultTTL is applied to a freshly-fetched token whose Expiry is zero - see
-	// its use site in Token().
+	// defaultTTL is applied to a freshly-fetched token whose Expiry is zero.
 	defaultTTL time.Duration
 
-	// expiryBuffer is how far ahead of a token's actual expiry both cache
-	// tiers stop trusting it - see tokenFreshEnough and oauth2Params.expiryBuffer's
-	// field comment for why this must match the threshold buildTokenSource's
-	// inner ReuseTokenSourceWithExpiry uses.
+	// expiryBuffer is how far ahead of expiry both cache tiers stop trusting a
+	// token; must match oauth2Params.expiryBuffer.
 	expiryBuffer time.Duration
 
 	mu sync.Mutex
 
-	// localCache holds this instance's single cached token - a size-1
-	// SDK cache (see backend-jwt/opaque-token-auth for the same package used
-	// for their own, genuinely multi-entry token caches) rather than a
-	// hand-rolled field, for consistency across the policy set. Its own TTL
-	// support isn't used (ttl=0, never expires per the cache's own check) -
-	// tokenFreshEnough applies the dynamic, per-token expiryBuffer margin on
-	// every read instead, which a single fixed cache-wide TTL can't express.
+	// localCache holds this instance's single cached token (size-1 SDK cache).
+	// TTL is unused (ttl=0); tokenFreshEnough applies the dynamic expiryBuffer instead.
 	localCache *cache.InMemoryCache[Token]
 
-	// redisKey is fixed at construction from oauth2ConfigDiscriminator - it
-	// depends only on the config, never anything request-time.
+	// redisKey is fixed at construction from oauth2ConfigDiscriminator.
 	redisKey string
 }
 
-// newRedisCachingTokenSource builds the cache wrapper around inner (built from the
-// same p), deriving the Redis key and TTL fallback and retaining p so Purge() can
-// rebuild inner later. The Redis client is only constructed when cp.strategy is
-// CacheStrategyRedis - under the default memory strategy, every Redis-tier path is
-// skipped.
+// newRedisCachingTokenSource builds the cache wrapper around inner, retaining p so
+// Purge() can rebuild it. The Redis client is only built when cp.strategy is CacheStrategyRedis.
 func newRedisCachingTokenSource(inner TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
 	var client *redis.Client
 	if cp.strategy == CacheStrategyRedis {
-		// created/pingErr deliberately ignored: this policy's own failOpen/
-		// failClosed handling already covers a down Redis at the point of
-		// first real use (getFromRedis/saveToRedis) - adopting
-		// getOrCreateRedisClient's create-time ping-and-fail-fast behavior
-		// too would change *when* a failClosed+Redis-down error surfaces
-		// (at policy-chain-build time instead of first request), a real
-		// behavior change this call site isn't opting into.
+		// created/pingErr ignored: failOpen/failClosed already covers a down
+		// Redis at first real use, not at construction time.
 		client, _, _ = getOrCreateRedisClient(&redis.Options{
 			Addr:         fmt.Sprintf("%s:%d", cp.redis.host, cp.redis.port),
 			Username:     cp.redis.username,
@@ -374,13 +315,8 @@ func newRedisCachingTokenSource(inner TokenSource, cp cacheParams, p oauth2Param
 	}
 }
 
-// tokenFreshEnough reports whether tok is both present and far enough from
-// its own expiry to still be trusted, using our own configurable buffer
-// rather than a hardcoded margin. A zero Expiry is treated as "never
-// expires" - by the time a token reaches either cache tier it has already
-// been normalized away from zero (see Token()'s defaultTTL fallback), so
-// this only matters for a token handed in directly by a test or future
-// caller.
+// tokenFreshEnough reports whether tok is present and far enough from its own
+// expiry to still be trusted. A zero Expiry is treated as "never expires".
 func tokenFreshEnough(tok *Token, buffer time.Duration) bool {
 	if tok == nil || tok.AccessToken == "" {
 		return false
@@ -391,9 +327,7 @@ func tokenFreshEnough(tok *Token, buffer time.Duration) bool {
 	return tok.Expiry.Add(-buffer).After(time.Now())
 }
 
-// newResilientInner wraps a raw buildTokenSource output with retry (see
-// resilientTokenSource) - a small helper so both newRedisCachingTokenSource and
-// Purge() build it identically.
+// newResilientInner wraps raw with retry, shared by newRedisCachingTokenSource and Purge().
 func newResilientInner(raw TokenSource, p oauth2Params) TokenSource {
 	return &resilientTokenSource{inner: raw, maxRetries: p.tokenRequestMaxRetries}
 }
@@ -421,12 +355,9 @@ func (s *redisCachingTokenSource) Token(ctx context.Context) (*Token, error) {
 		return nil, err
 	}
 	if tok.Expiry.IsZero() {
-		// Some IdPs omit expires_in, leaving Expiry zero - tokenFreshEnough
-		// would treat that as "never expires" forever, and saveToRedis has no
-		// usable expiry to derive a TTL from (time.Until would be deeply
-		// negative), so it would never get written to Redis at all. Bounding
-		// it to defaultTTL here fixes both. Mutate a copy - tok may be handed
-		// to a concurrent caller by reuseTokenSource with no lock held over it.
+		// Some IdPs omit expires_in, leaving Expiry zero. Bound it to defaultTTL
+		// so it isn't cached forever and can still be written to Redis.
+		// Mutate a copy - tok may be shared with a concurrent caller.
 		fixed := *tok
 		fixed.Expiry = time.Now().Add(s.defaultTTL)
 		tok = &fixed
@@ -435,10 +366,7 @@ func (s *redisCachingTokenSource) Token(ctx context.Context) (*Token, error) {
 
 	if s.redisClient != nil {
 		if err := s.saveToRedis(tok); err != nil {
-			// Failing to populate the shared cache doesn't invalidate the
-			// token we just successfully obtained - log and continue. This
-			// replica just won't share it with others until a future write
-			// succeeds.
+			// Doesn't invalidate the token we just obtained - log and continue.
 			slog.Warn("OAuth2Generator: failed to write token to redis cache", "error", err)
 		}
 	}
@@ -463,20 +391,10 @@ func (s *redisCachingTokenSource) getInner() TokenSource {
 	return s.inner
 }
 
-// Purge clears both cache tiers so the next Token() call fetches fresh - used when
-// the upstream rejects the token this policy just injected (see OnResponseHeaders).
-// Clearing local/Redis alone isn't enough: inner is typically a
-// reuseTokenSource that keeps reusing its own cached token regardless, until
-// its own Expiry - only replacing inner with a freshly-built one actually forces a
-// real fetch. Rebuilding via buildTokenSource(s.params) can only fail on an
-// unsupported grantType, already rejected at construction - if it fails here
-// anyway, keep the existing inner rather than leave it nil.
-//
-// Deliberately takes no ctx and uses context.Background() (bounded by its
-// own writeTimeout) for the Redis Del below: purging benefits the NEXT
-// request, not the one that triggered it via OnResponseHeaders - tying this
-// to that request's ctx would risk the Del being cancelled by the very
-// response that's about to finish, leaving a stale Redis entry behind.
+// Purge clears both cache tiers and rebuilds inner, so the next Token() call
+// fetches fresh rather than reusing inner's own cached token. Deliberately
+// uses context.Background() (bounded by writeTimeout) since purging benefits
+// the next request, not the one that triggered it.
 func (s *redisCachingTokenSource) Purge() {
 	_ = s.localCache.Delete(context.Background(), localTokenCacheKey)
 
@@ -498,11 +416,8 @@ func (s *redisCachingTokenSource) Purge() {
 	}
 }
 
-// getFromRedis is on the synchronous hot path serving the CURRENT caller's
-// Token() call, so unlike saveToRedis/Purge (which write on behalf of
-// future requests/replicas and deliberately stay on context.Background()),
-// this derives its timeout from the caller's own ctx - no reason to keep
-// waiting on Redis once the caller itself has given up.
+// getFromRedis is on the current caller's hot path, so unlike saveToRedis/Purge
+// it derives its timeout from the caller's own ctx.
 func (s *redisCachingTokenSource) getFromRedis(ctx context.Context) (*Token, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.readTimeout)
 	defer cancel()
@@ -527,22 +442,14 @@ func (s *redisCachingTokenSource) getFromRedis(ctx context.Context) (*Token, err
 		Expiry:       ct.Expiry,
 	}
 	if !tokenFreshEnough(tok, s.expiryBuffer) {
-		// Not just defensive: unlike Valid()'s hardcoded 10s, expiryBuffer
-		// can be large enough that a replica reads this entry, per its own
-		// freshness threshold, well before the Redis TTL naturally expires
-		// it - falling through here (rather than trusting Redis's mere
-		// presence) is what makes that replica refetch instead of serving a
-		// token the caller configured it not to trust anymore.
+		// expiryBuffer can exceed the Redis TTL, so presence alone isn't enough.
 		return nil, nil
 	}
 	return tok, nil
 }
 
-// saveToRedis, like Purge, deliberately uses context.Background() (bounded
-// by writeTimeout) rather than the calling request's ctx - it writes on
-// behalf of every other replica that might reuse this token, so it must not
-// be cut short just because the request that happened to trigger this fetch
-// is finishing.
+// saveToRedis, like Purge, uses context.Background() (bounded by writeTimeout)
+// since it writes on behalf of other replicas, not just the triggering request.
 func (s *redisCachingTokenSource) saveToRedis(tok *Token) error {
 	ttl := time.Until(tok.Expiry)
 	if ttl <= 0 {

@@ -37,10 +37,8 @@ import (
 
 // ─── test helpers ────────────────────────────────────────────────────────────
 
-// stubTokenSource is a fake "real" token source (standing in for
-// buildTokenSource's client_credentials/password fetch) that counts calls so
-// tests can assert the Redis/local cache actually prevented a fetch, rather
-// than just happening to return the right value.
+// stubTokenSource is a fake token source that counts calls, so tests can
+// verify caching actually prevented a fetch.
 type stubTokenSource struct {
 	calls int
 	token *Token
@@ -61,11 +59,8 @@ func mustNewRedisCachingTokenSource(t *testing.T, inner TokenSource, cp cachePar
 	return newRedisCachingTokenSource(inner, cp, p)
 }
 
-// testRedisTarget is a real Redis connection for tests that specifically
-// exercise the Redis tier - see newTestRedisTarget. client is for direct
-// seeding/inspection (the same operations miniredis's own methods used to
-// provide); prefix is unique per test so many tests sharing one long-lived
-// Redis instance can never collide or leak state into each other.
+// testRedisTarget is a real Redis connection for tests exercising the Redis
+// tier; prefix keeps each test's keys isolated.
 type testRedisTarget struct {
 	host   string
 	port   int
@@ -73,11 +68,8 @@ type testRedisTarget struct {
 	client *redis.Client
 }
 
-// newTestRedisTarget connects to a real Redis instance - REDIS_TEST_ADDR if
-// set, else localhost:6379 (matches docker-compose.yaml's "redis" service).
-// Skips the calling test if nothing is reachable there, so `go test ./...`
-// still passes on a machine with no Redis running; CI provides one via a
-// services: block (see .github/workflows/release-policy.yml).
+// newTestRedisTarget connects to REDIS_TEST_ADDR (default localhost:6379),
+// skipping the test if nothing is reachable.
 func newTestRedisTarget(t *testing.T) *testRedisTarget {
 	t.Helper()
 
@@ -90,9 +82,7 @@ func newTestRedisTarget(t *testing.T) *testRedisTarget {
 		t.Fatalf("invalid REDIS_TEST_ADDR %q: %v", addr, err)
 	}
 
-	// MaxRetries: -1 and a short DialTimeout keep an unreachable-Redis skip
-	// fast and quiet - the default retry/backoff behavior is for production
-	// resilience, not for a one-shot reachability probe.
+	// Short timeout, no retries - keep an unreachable-Redis skip fast.
 	client := redis.NewClient(&redis.Options{Addr: addr, DialTimeout: 300 * time.Millisecond, MaxRetries: -1})
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -102,9 +92,7 @@ func newTestRedisTarget(t *testing.T) *testRedisTarget {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	// Unique per test (name + a fresh nanosecond timestamp, since a test
-	// helper can be called more than once per test) so cleanup below can
-	// never touch another test's keys even if they ran concurrently.
+	// Unique per test so cleanup never touches another test's keys.
 	prefix := fmt.Sprintf("oauth2-generator-test:%s:%d:", t.Name(), time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx := context.Background()
@@ -117,10 +105,7 @@ func newTestRedisTarget(t *testing.T) *testRedisTarget {
 	return &testRedisTarget{host: host, port: mustAtoi(portStr), prefix: prefix, client: client}
 }
 
-// testRedisParams returns a cacheParams fixture with strategy: redis pointed
-// at rt - for tests that specifically exercise the Redis tier. Tests that
-// only care about the in-process tier (the default) use testParams() alone
-// and never call this.
+// testRedisParams returns a cacheParams fixture pointed at rt's Redis tier.
 func testRedisParams(rt *testRedisTarget, failureMode string) cacheParams {
 	return cacheParams{
 		strategy: CacheStrategyRedis,
@@ -136,9 +121,7 @@ func testRedisParams(rt *testRedisTarget, failureMode string) cacheParams {
 	}
 }
 
-// unreachableRedisParams returns a cacheParams fixture pointed at a host
-// that can never answer - for tests simulating Redis being down, which
-// don't need (and shouldn't require) a real Redis instance at all.
+// unreachableRedisParams simulates Redis being down, with no real instance needed.
 func unreachableRedisParams(failureMode string) cacheParams {
 	return cacheParams{
 		strategy: CacheStrategyRedis,
@@ -225,14 +208,8 @@ func TestOauth2ConfigDiscriminator_DifferentUsername_ProducesDifferentKey(t *tes
 	}
 }
 
-// TestOauth2ConfigDiscriminator_DifferentClientAuthMethod_ProducesDifferentKey
-// locks in that clientAuthMethod (client_secret_basic vs client_secret_post)
-// is part of the discriminator: it's plausible for two configs to share
-// every other field yet differ only in how credentials are presented to the
-// token endpoint (e.g. one IdP integration migrating from Basic auth to
-// POST body auth) - those requests aren't necessarily equivalent from the
-// IdP's perspective, so treating them as separate cache entries is the safe
-// default.
+// clientAuthMethod must be part of the discriminator - two configs differing
+// only in how credentials are presented shouldn't share a cache entry.
 func TestOauth2ConfigDiscriminator_DifferentClientAuthMethod_ProducesDifferentKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientAuthMethod = ClientAuthMethodBasic }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientAuthMethod = ClientAuthMethodPost }))
@@ -241,13 +218,8 @@ func TestOauth2ConfigDiscriminator_DifferentClientAuthMethod_ProducesDifferentKe
 	}
 }
 
-// TestOauth2ConfigDiscriminator_NilVsEmptyCustomParams_ProducesSameKey locks
-// in that a config with no "tokenRequestParams" set at all (customParams ==
-// nil, the client_credentials/no-scope common case) and one with an
-// explicitly empty "tokenRequestParams": {} are indistinguishable - both
-// mean "no extra token-request fields" and must land on the same cache
-// entry, not two different ones for what is operationally the same
-// configuration.
+// nil and explicitly-empty tokenRequestParams both mean "no extra fields" and
+// must produce the same key.
 func TestOauth2ConfigDiscriminator_NilVsEmptyCustomParams_ProducesSameKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.tokenRequestParams = nil }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.tokenRequestParams = map[string]string{} }))
@@ -256,11 +228,8 @@ func TestOauth2ConfigDiscriminator_NilVsEmptyCustomParams_ProducesSameKey(t *tes
 	}
 }
 
-// TestOauth2ConfigDiscriminator_DifferentScope_ProducesDifferentKey locks in
-// the exact bug this discriminator fixes: a proxy's primary provider and an
-// additionalProviders entry can share clientId/tokenEndpoint but request
-// different scopes (or point at genuinely different providers) - those must
-// never share a cached token.
+// Two configs sharing clientId/tokenEndpoint but requesting different scopes
+// must never share a cached token.
 func TestOauth2ConfigDiscriminator_DifferentScope_ProducesDifferentKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.tokenRequestParams = map[string]string{"scope": "read"} }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.tokenRequestParams = map[string]string{"scope": "write"} }))
@@ -283,15 +252,8 @@ func TestOauth2ConfigDiscriminator_ParamsKeyOrder_ProducesSameKey(t *testing.T) 
 	}
 }
 
-// TestOauth2ConfigDiscriminator_DifferentClientSecret_ProducesDifferentKey is
-// the regression test for a real bug found via a live end-to-end run: a
-// second LlmProvider registered with the same clientId/tokenEndpoint as an
-// existing one but a deliberately wrong clientSecret (to test that bad
-// credentials are rejected) was instead served the OTHER provider's
-// legitimately-cached token from Redis and spuriously succeeded - because an
-// earlier version of oauth2ConfigDiscriminator deliberately left clientSecret
-// out of the key. clientId and tokenEndpoint alone do not prove two configs
-// are the same authorized caller.
+// Regression test: clientSecret must be part of the discriminator, or a wrong
+// secret could be served another config's cached token.
 func TestOauth2ConfigDiscriminator_DifferentClientSecret_ProducesDifferentKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientSecret = "secret-1" }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientSecret = "secret-2" }))
@@ -300,10 +262,7 @@ func TestOauth2ConfigDiscriminator_DifferentClientSecret_ProducesDifferentKey(t 
 	}
 }
 
-// TestOauth2ConfigDiscriminator_DifferentPassword_ProducesDifferentKey is the
-// password-grant equivalent of the clientSecret regression above: a wrong
-// resource-owner password must not be able to borrow a cached token obtained
-// with the correct one.
+// Password-grant equivalent of the clientSecret regression above.
 func TestOauth2ConfigDiscriminator_DifferentPassword_ProducesDifferentKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.password = "hunter2" }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.password = "wrong-password" }))
@@ -355,14 +314,8 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 	}
 }
 
-// TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis locks in that Purge
-// clears both cache tiers AND rebuilds inner via buildTokenSource, not just
-// local/Redis: inner is typically a reuseTokenSource that keeps
-// reusing its own cached token until that token's own Expiry regardless of
-// local/Redis, so a stub inner (which has no such internal cache) would
-// pass even if Purge() only cleared local/Redis and left the real
-// buildTokenSource-shaped bug in place - this uses a real httptest server
-// through the real buildTokenSource path specifically to catch that.
+// Purge must rebuild inner via buildTokenSource too, not just clear
+// local/Redis - uses a real httptest server to catch that.
 func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	rt := newTestRedisTarget(t)
 
@@ -422,12 +375,8 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	}
 }
 
-// TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback locks
-// in the fallback for IdPs that omit expires_in entirely: a token response
-// with no expires_in leaves Token.Expiry as the zero value, which without
-// this fallback would mean caching silently never engages (see the comment
-// at its use site in token_cache.go's Token()) and every request would
-// refetch from the IdP.
+// Verifies the defaultTTL fallback when an IdP omits expires_in, leaving
+// Expiry zero - without it, caching would silently never engage.
 func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *testing.T) {
 	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
@@ -457,9 +406,7 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 		t.Errorf("expected redis TTL within 1s of %s, got %s", fallbackTTL, ttl)
 	}
 
-	// Second call should be served from the (now-valid) local cache, not
-	// trigger a second inner fetch - proving the fallback actually restored
-	// caching rather than just avoiding a crash.
+	// Second call should be served from the local cache, not refetch.
 	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
@@ -508,12 +455,8 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 	}
 }
 
-// TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries is the
-// regression test for the cross-provider cache collision bug: two policy
-// instances backed by different oauth2 credentials (as a proxy's primary
-// provider and an additionalProviders entry would be) must never read or
-// write each other's Redis entry, even though both may be attached to the
-// exact same API.
+// Regression test: two policy instances with different credentials must
+// never read/write each other's Redis entry, even on the same API.
 func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *testing.T) {
 	rt := newTestRedisTarget(t)
 	innerA := &stubTokenSource{token: &Token{AccessToken: "token-for-provider-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
@@ -548,9 +491,7 @@ func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *tes
 }
 
 func TestRedisCachingTokenSource_RedisKeyFixedAtConstruction(t *testing.T) {
-	// The key is derived from oauth2Params at construction time, not from
-	// anything request-time - it never needs to move over the instance's
-	// lifetime.
+	// The key is fixed at construction and never changes over the instance's lifetime.
 	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	params := testParams()
@@ -653,11 +594,8 @@ func TestTokenFreshEnough_OutsideBuffer_IsFresh(t *testing.T) {
 	}
 }
 
-// TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch
-// locks in that the in-process tier re-fetches once a cached token enters
-// its configured expiryBuffer window, rather than serving it until its
-// literal expiry - the whole point of the feature (avoid handing the
-// backend a credential that's about to expire mid-flight).
+// The in-process tier must refetch once a cached token enters its
+// expiryBuffer window, not serve it until literal expiry.
 func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
 	rt := newTestRedisTarget(t)
 	inner := &stubTokenSource{token: &Token{AccessToken: "soon-to-expire", TokenType: "Bearer", Expiry: time.Now().Add(5 * time.Second)}}
@@ -673,9 +611,7 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 		t.Fatalf("unexpected access token on first call: %q", tok.AccessToken)
 	}
 
-	// The just-fetched token's 5s remaining TTL is inside the 30s
-	// expiryBuffer, so the next call must not be served from the local
-	// cache - it should fall through to a second inner fetch.
+	// 5s remaining TTL is inside the 30s expiryBuffer, so this must refetch.
 	inner.token = &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
 	tok, err = src.Token(context.Background())
 	if err != nil {
@@ -689,9 +625,8 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 	}
 }
 
-// TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch is
-// the Redis-tier equivalent: an entry written by another replica that's now
-// within this replica's expiryBuffer window must not be served as-is.
+// Redis-tier equivalent: an entry within this replica's expiryBuffer window
+// must not be served as-is.
 func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t *testing.T) {
 	rt := newTestRedisTarget(t)
 	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
@@ -717,14 +652,8 @@ func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t 
 	}
 }
 
-// TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch is
-// the end-to-end regression test confirming buildTokenSource's real
-// construction path (not stubTokenSource) actually threads expiryBuffer
-// into reuseTokenSource, rather than some hardcoded margin - a fixed,
-// non-configurable buffer would keep silently handing back the same
-// soon-to-expire token whenever the outer cache's larger expiryBuffer
-// decided to fall through and re-fetch. Uses a real httptest server so the
-// full path, not a stub, is what's actually exercised.
+// End-to-end test confirming buildTokenSource's real construction path
+// threads expiryBuffer into reuseTokenSource, using a real httptest server.
 func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *testing.T) {
 	rt := newTestRedisTarget(t)
 
@@ -765,10 +694,8 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 		t.Fatalf("expected exactly 1 token-endpoint call to prime the cache, got %d", idpCalls)
 	}
 
-	// token-1's 5s remaining TTL is inside the 10s expiryBuffer: the outer
-	// cache falls through to inner.Token(context.Background()), and inner itself - via
-	// reuseTokenSource using that same 10s buffer - must perform a genuine
-	// second token-endpoint call rather than replaying token-1.
+	// token-1's 5s TTL is inside the 10s expiryBuffer, so inner must also
+	// perform a genuine second fetch rather than replaying token-1.
 	tok, err = src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -872,11 +799,8 @@ func TestKeyedSingleton_FailedBuildIsNotCached(t *testing.T) {
 	}
 }
 
-// TestKeyedSingleton_ConcurrentBuildsForSameKey_AllCallersSeeOneWinner locks
-// in getOrCreate's documented race resolution: when multiple callers race to
-// build the same not-yet-cached key, build may run more than once, but every
-// caller ends up observing the exact same single winning value - never a
-// mix of different pointers for what should be one shared singleton.
+// When multiple callers race to build the same key, every caller must end up
+// observing the same single winning value.
 func TestKeyedSingleton_ConcurrentBuildsForSameKey_AllCallersSeeOneWinner(t *testing.T) {
 	r := newKeyedSingleton[string, *int]()
 
@@ -912,10 +836,7 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 	cp := cacheParams{
 		strategy: CacheStrategyMemory,
 		redis: redisParams{
-			// Deliberately unreachable - if cacheStrategy: memory ever
-			// dialed Redis despite the strategy, using this host would
-			// surface as an error or a fallback rather than silently
-			// succeeding via the in-process tier alone.
+			// Deliberately unreachable, to prove memory strategy never dials Redis.
 			host:              "unreachable.invalid",
 			port:              1,
 			connectionTimeout: 50 * time.Millisecond,
@@ -941,8 +862,7 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 		t.Errorf("expected exactly one inner fetch, got %d", inner.calls)
 	}
 
-	// Second call should be served from the in-process tier without
-	// refetching - the only tier active under memory strategy.
+	// Second call should be served from the in-process tier without refetching.
 	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
@@ -1018,13 +938,8 @@ func TestExtractCacheParams_DurationParsing(t *testing.T) {
 	}
 }
 
-// TestExtractCacheParams_NonPositiveTimeouts_FallBackToDefault locks in that
-// a zero or negative redis.connectionTimeout/readTimeout/writeTimeout falls
-// back to its default rather than being honored as-is - handing
-// context.WithTimeout a <= 0 duration produces an already-expired deadline,
-// making every Redis operation fail instantly regardless of Redis's actual
-// health (see oauth2_generator_test.go's identical concern for
-// tokenRequestTimeout/defaultTokenTTL).
+// A zero or negative redis timeout falls back to its default rather than
+// producing an already-expired context deadline.
 func TestExtractCacheParams_NonPositiveTimeouts_FallBackToDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
