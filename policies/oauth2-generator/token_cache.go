@@ -104,9 +104,9 @@ func extractCacheParams(params map[string]interface{}) cacheParams {
 			db:                getNestedIntParam(params, "redis.db", 0),
 			keyPrefix:         getNestedStringParam(params, "redis.keyPrefix", defaultRedisKeyPrefix),
 			failureMode:       getNestedStringParam(params, "redis.failureMode", FailureModeOpen),
-			connectionTimeout: getNestedDurationParam(params, "redis.connectionTimeout", defaultRedisConnectionTimeout),
-			readTimeout:       getNestedDurationParam(params, "redis.readTimeout", defaultRedisReadTimeout),
-			writeTimeout:      getNestedDurationParam(params, "redis.writeTimeout", defaultRedisWriteTimeout),
+			connectionTimeout: getNestedPositiveDurationParam(params, "redis.connectionTimeout", defaultRedisConnectionTimeout),
+			readTimeout:       getNestedPositiveDurationParam(params, "redis.readTimeout", defaultRedisReadTimeout),
+			writeTimeout:      getNestedPositiveDurationParam(params, "redis.writeTimeout", defaultRedisWriteTimeout),
 			poolSize:          getNestedIntParam(params, "redis.poolSize", 0),
 		},
 	}
@@ -170,6 +170,21 @@ func getNestedDurationParam(params map[string]interface{}, dottedKey string, def
 		}
 	}
 	return def
+}
+
+// getNestedPositiveDurationParam is getNestedDurationParam plus a
+// non-positive guard, falling back to def when the parsed duration is <= 0.
+// A zero/negative Redis connection/read/write timeout hands
+// context.WithTimeout an already-expired (or immediately-expiring)
+// deadline, making every Redis operation fail instantly regardless of
+// Redis's actual health - see oauth2_generator.go's getPositiveDurationParam
+// for the identical concern on the token-endpoint side.
+func getNestedPositiveDurationParam(params map[string]interface{}, dottedKey string, def time.Duration) time.Duration {
+	d := getNestedDurationParam(params, dottedKey, def)
+	if d <= 0 {
+		return def
+	}
+	return d
 }
 
 // buildRedisKey scopes the cached token to a config discriminator - see
@@ -262,9 +277,12 @@ type cachedToken struct {
 }
 
 // tokenProvider is satisfied by redisCachingTokenSource - TokenSource plus
-// Purge, which clears both cache tiers (see OnResponseHeaders).
+// Purge, which clears both cache tiers (see OnResponseHeaders). Purge takes
+// no context deliberately - it's meant to benefit FUTURE requests/replicas,
+// so it must not be tied to (and cut short by) the current request's ctx;
+// see Purge's own comment.
 type tokenProvider interface {
-	Token() (*Token, error)
+	Token(ctx context.Context) (*Token, error)
 	Purge()
 }
 
@@ -350,7 +368,7 @@ func newRedisCachingTokenSource(inner TokenSource, cp cacheParams, p oauth2Param
 		failOpen:     cp.redis.failureMode != FailureModeClosed,
 		readTimeout:  cp.redis.readTimeout,
 		writeTimeout: cp.redis.writeTimeout,
-		defaultTTL:   p.tokenTTLFallback,
+		defaultTTL:   p.defaultTokenTTL,
 		expiryBuffer: p.expiryBuffer,
 		localCache:   cache.NewInMemoryCache[Token]("oauth2-generator-local-token", 1, 0, cache.LRUEvictionPolicy, slog.Default()),
 	}
@@ -380,13 +398,13 @@ func newResilientInner(raw TokenSource, p oauth2Params) TokenSource {
 	return &resilientTokenSource{inner: raw, maxRetries: p.tokenRequestMaxRetries}
 }
 
-func (s *redisCachingTokenSource) Token() (*Token, error) {
+func (s *redisCachingTokenSource) Token(ctx context.Context) (*Token, error) {
 	if tok := s.localToken(); tok != nil {
 		return tok, nil
 	}
 
 	if s.redisClient != nil {
-		tok, err := s.getFromRedis()
+		tok, err := s.getFromRedis(ctx)
 		switch {
 		case err != nil && !s.failOpen:
 			return nil, fmt.Errorf("redis token cache unavailable: %w", err)
@@ -398,7 +416,7 @@ func (s *redisCachingTokenSource) Token() (*Token, error) {
 		}
 	}
 
-	tok, err := s.getInner().Token()
+	tok, err := s.getInner().Token(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +471,12 @@ func (s *redisCachingTokenSource) getInner() TokenSource {
 // real fetch. Rebuilding via buildTokenSource(s.params) can only fail on an
 // unsupported grantType, already rejected at construction - if it fails here
 // anyway, keep the existing inner rather than leave it nil.
+//
+// Deliberately takes no ctx and uses context.Background() (bounded by its
+// own writeTimeout) for the Redis Del below: purging benefits the NEXT
+// request, not the one that triggered it via OnResponseHeaders - tying this
+// to that request's ctx would risk the Del being cancelled by the very
+// response that's about to finish, leaving a stale Redis entry behind.
 func (s *redisCachingTokenSource) Purge() {
 	_ = s.localCache.Delete(context.Background(), localTokenCacheKey)
 
@@ -474,8 +498,13 @@ func (s *redisCachingTokenSource) Purge() {
 	}
 }
 
-func (s *redisCachingTokenSource) getFromRedis() (*Token, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.readTimeout)
+// getFromRedis is on the synchronous hot path serving the CURRENT caller's
+// Token() call, so unlike saveToRedis/Purge (which write on behalf of
+// future requests/replicas and deliberately stay on context.Background()),
+// this derives its timeout from the caller's own ctx - no reason to keep
+// waiting on Redis once the caller itself has given up.
+func (s *redisCachingTokenSource) getFromRedis(ctx context.Context) (*Token, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.readTimeout)
 	defer cancel()
 
 	val, err := s.redisClient.Get(ctx, s.redisKey).Result()
@@ -509,6 +538,11 @@ func (s *redisCachingTokenSource) getFromRedis() (*Token, error) {
 	return tok, nil
 }
 
+// saveToRedis, like Purge, deliberately uses context.Background() (bounded
+// by writeTimeout) rather than the calling request's ctx - it writes on
+// behalf of every other replica that might reuse this token, so it must not
+// be cut short just because the request that happened to trigger this fetch
+// is finishing.
 func (s *redisCachingTokenSource) saveToRedis(tok *Token) error {
 	ttl := time.Until(tok.Expiry)
 	if ttl <= 0 {

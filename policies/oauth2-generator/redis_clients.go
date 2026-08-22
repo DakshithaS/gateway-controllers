@@ -27,6 +27,58 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// keyedSingleton is a process-wide registry of shared values, built once per
+// distinct key and kept for the life of the process - the pattern both
+// redisClients below and the token-endpoint transport registry
+// (oauth2_generator.go) need, previously hand-rolled independently by each
+// (and already drifted: one released its lock before slow work, the other
+// didn't).
+//
+// build is always called OUTSIDE the lock, so a slow or blocking build (a
+// disk read, a network dial/ping) for one key can never stall get-or-create
+// calls for a different key, or even a concurrent call for the SAME key that
+// only needs to read the map. A benign race where two callers build
+// concurrently for the same not-yet-cached key is resolved by discarding the
+// loser's build in favor of whichever finished first - never by serializing
+// builds behind the lock.
+type keyedSingleton[K comparable, V any] struct {
+	mu sync.Mutex
+	m  map[K]V
+}
+
+func newKeyedSingleton[K comparable, V any]() *keyedSingleton[K, V] {
+	return &keyedSingleton[K, V]{m: make(map[K]V)}
+}
+
+// getOrCreate returns the cached value for key, or the result of calling
+// build (outside the lock) on a miss. created reports whether THIS call's
+// build won the race and became the shared value - false both on a
+// pre-existing hit and when a concurrent builder for the same key won
+// instead, in which case that concurrent builder's value is returned. A
+// failed build is never cached; the next caller for the same key retries it.
+func (r *keyedSingleton[K, V]) getOrCreate(key K, build func() (V, error)) (value V, created bool, err error) {
+	r.mu.Lock()
+	if v, ok := r.m[key]; ok {
+		r.mu.Unlock()
+		return v, false, nil
+	}
+	r.mu.Unlock()
+
+	v, err := build()
+	if err != nil {
+		var zero V
+		return zero, false, err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.m[key]; ok {
+		return existing, false, nil
+	}
+	r.m[key] = v
+	return v, true, nil
+}
+
 // redisConnKey identifies a distinct Redis connection configuration. Two policy
 // instances with identical connection settings share one *redis.Client (one pool).
 //
@@ -46,11 +98,10 @@ type redisConnKey struct {
 
 // redisClients is the process-wide registry of shared Redis clients. Without it,
 // GetPolicy creates a new *redis.Client (a whole connection pool) per policy instance
-// and per config reload, leaking pools and exploding Redis connections at scale.
-var redisClients = struct {
-	mu sync.Mutex
-	m  map[redisConnKey]*redis.Client
-}{m: make(map[redisConnKey]*redis.Client)}
+// and per config reload, leaking pools and exploding Redis connections at scale. See
+// keyedSingleton above for the shared get-or-create pattern - also used by
+// oauth2_generator.go's token-endpoint transport registry.
+var redisClients = newKeyedSingleton[redisConnKey, *redis.Client]()
 
 func hashRedisPassword(p string) string {
 	if p == "" {
@@ -90,23 +141,19 @@ func getOrCreateRedisClient(opts *redis.Options, pingTimeout time.Duration) (cli
 		poolSize:     opts.PoolSize,
 	}
 
-	// Lock guards only the map lookup/insert, never the ping below - mu is
-	// process-wide, so holding it during a slow/down connection's ping
-	// would stall every other caller's get-or-create too. A concurrent
-	// caller for the same key may see the just-inserted client before this
-	// ping finishes - fine, since a reused client is already "assumed
-	// healthy" regardless of timing, never gated on this call's pingErr.
-	redisClients.mu.Lock()
-	if c, ok := redisClients.m[key]; ok {
-		redisClients.mu.Unlock()
-		return c, false, nil
+	// getOrCreate's build (redis.NewClient) never blocks - go-redis dials
+	// lazily - so the client is registered well before the ping below runs.
+	// A concurrent caller for the same key may see the just-inserted client
+	// before this ping finishes - fine, since a reused client is already
+	// "assumed healthy" regardless of timing, never gated on this call's
+	// pingErr. Only the call that actually inserted it (created) pings.
+	client, created, _ = redisClients.getOrCreate(key, func() (*redis.Client, error) {
+		return redis.NewClient(opts), nil
+	})
+	if created {
+		ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+		defer cancel()
+		pingErr = client.Ping(ctx).Err()
 	}
-	c := redis.NewClient(opts)
-	redisClients.m[key] = c
-	redisClients.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
-	defer cancel()
-	pingErr = c.Ping(ctx).Err()
-	return c, true, pingErr
+	return client, created, pingErr
 }

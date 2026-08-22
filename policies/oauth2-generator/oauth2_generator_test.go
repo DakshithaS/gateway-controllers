@@ -31,9 +31,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,7 +78,7 @@ type fakeTokenSource struct {
 	purgeCalls int
 }
 
-func (f *fakeTokenSource) Token() (*Token, error) {
+func (f *fakeTokenSource) Token(context.Context) (*Token, error) {
 	return &Token{AccessToken: "unused"}, nil
 }
 
@@ -222,11 +222,11 @@ func TestValidateAndExtractParams_TimeoutAndTTLDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.requestTimeout != defaultTokenRequestTimeout {
-		t.Errorf("expected requestTimeout to default to %s, got %s", defaultTokenRequestTimeout, p.requestTimeout)
+	if p.tokenRequestTimeout != defaultTokenRequestTimeout {
+		t.Errorf("expected tokenRequestTimeout to default to %s, got %s", defaultTokenRequestTimeout, p.tokenRequestTimeout)
 	}
-	if p.tokenTTLFallback != defaultTokenTTLFallback {
-		t.Errorf("expected tokenTTLFallback to default to %s, got %s", defaultTokenTTLFallback, p.tokenTTLFallback)
+	if p.defaultTokenTTL != defaultTokenTTLFallback {
+		t.Errorf("expected defaultTokenTTL to default to %s, got %s", defaultTokenTTLFallback, p.defaultTokenTTL)
 	}
 }
 
@@ -239,11 +239,11 @@ func TestValidateAndExtractParams_TimeoutAndTTLExplicitOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.requestTimeout != 2500*time.Millisecond {
-		t.Errorf("unexpected requestTimeout: %s", p.requestTimeout)
+	if p.tokenRequestTimeout != 2500*time.Millisecond {
+		t.Errorf("unexpected tokenRequestTimeout: %s", p.tokenRequestTimeout)
 	}
-	if p.tokenTTLFallback != 30*time.Minute {
-		t.Errorf("unexpected tokenTTLFallback: %s", p.tokenTTLFallback)
+	if p.defaultTokenTTL != 30*time.Minute {
+		t.Errorf("unexpected defaultTokenTTL: %s", p.defaultTokenTTL)
 	}
 }
 
@@ -256,11 +256,46 @@ func TestValidateAndExtractParams_TimeoutAndTTLUnparsable_FallsBackToDefault(t *
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.requestTimeout != defaultTokenRequestTimeout {
-		t.Errorf("expected unparsable tokenRequestTimeout to fall back to default %s, got %s", defaultTokenRequestTimeout, p.requestTimeout)
+	if p.tokenRequestTimeout != defaultTokenRequestTimeout {
+		t.Errorf("expected unparsable tokenRequestTimeout to fall back to default %s, got %s", defaultTokenRequestTimeout, p.tokenRequestTimeout)
 	}
-	if p.tokenTTLFallback != defaultTokenTTLFallback {
-		t.Errorf("expected unparsable defaultTokenTTL to fall back to default %s, got %s", defaultTokenTTLFallback, p.tokenTTLFallback)
+	if p.defaultTokenTTL != defaultTokenTTLFallback {
+		t.Errorf("expected unparsable defaultTokenTTL to fall back to default %s, got %s", defaultTokenTTLFallback, p.defaultTokenTTL)
+	}
+}
+
+// TestValidateAndExtractParams_TimeoutAndTTLNonPositive_FallsBackToDefault
+// locks in that a zero or negative tokenRequestTimeout/defaultTokenTTL falls
+// back to the default rather than being honored as-is - Go's http.Client
+// treats Timeout <= 0 as "no timeout" (reopening the unbounded-hung-IdP case
+// defaultTokenRequestTimeout exists to prevent), and a <= 0 fallback TTL
+// would make a token expire before it's even cached.
+func TestValidateAndExtractParams_TimeoutAndTTLNonPositive_FallsBackToDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{"zero", "0s"},
+		{"negative", "-1s"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			params := validParams()
+			params["tokenRequestTimeout"] = tt.value
+			params["defaultTokenTTL"] = tt.value
+
+			p, err := validateAndExtractParams(params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.tokenRequestTimeout != defaultTokenRequestTimeout {
+				t.Errorf("expected non-positive tokenRequestTimeout %q to fall back to default %s, got %s",
+					tt.value, defaultTokenRequestTimeout, p.tokenRequestTimeout)
+			}
+			if p.defaultTokenTTL != defaultTokenTTLFallback {
+				t.Errorf("expected non-positive defaultTokenTTL %q to fall back to default %s, got %s",
+					tt.value, defaultTokenTTLFallback, p.defaultTokenTTL)
+			}
+		})
 	}
 }
 
@@ -708,7 +743,7 @@ func TestGetPolicy_StaticToken_ValidParams(t *testing.T) {
 	if len(oa.purgeStatusCodes) != 0 {
 		t.Errorf("expected purgeStatusCodes to be forced empty for the static-token path, got %v", oa.purgeStatusCodes)
 	}
-	tok, err := oa.tokenFunc()
+	tok, err := oa.tokenFunc(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error fetching the static token: %v", err)
 	}
@@ -1432,7 +1467,7 @@ func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
 func TestOnRequestHeaders_Success(t *testing.T) {
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*Token, error) {
+	p.tokenFunc = func(context.Context) (*Token, error) {
 		calls++
 		return &Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
 	}
@@ -1472,7 +1507,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*Token, error) {
+	p.tokenFunc = func(context.Context) (*Token, error) {
 		calls++
 		return &Token{AccessToken: "reused-token"}, nil
 	}
@@ -1491,7 +1526,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 
 func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*Token, error) {
+	p.tokenFunc = func(context.Context) (*Token, error) {
 		return nil, errors.New("token endpoint returned invalid_client")
 	}
 
@@ -1519,7 +1554,7 @@ func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 
 func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*Token, error) {
+	p.tokenFunc = func(context.Context) (*Token, error) {
 		return &Token{AccessToken: "abc123"}, nil
 	}
 
@@ -1543,17 +1578,18 @@ func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 
 // ─── buildTokenEndpointTransport ─────────────────────────────────────────────
 
-// writeTestCACert generates a throwaway self-signed certificate and writes
-// it to a PEM file under t.TempDir(), for tests that need a real,
-// parseable CA cert path rather than just exercising the error paths.
-func writeTestCACert(t *testing.T) string {
+// generateTestCACert generates a throwaway self-signed certificate and
+// returns its PEM-encoded content directly - tlsCaCert holds cert content,
+// not a filesystem path, so tests need no temp file at all, unlike the
+// path-based design this replaced.
+func generateTestCACert(t *testing.T) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate test key: %v", err)
 	}
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: "oauth2-generator-test-ca"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
@@ -1564,12 +1600,7 @@ func writeTestCACert(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("failed to create test certificate: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "ca.pem")
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		t.Fatalf("failed to write test CA cert: %v", err)
-	}
-	return path
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 func TestBuildTokenEndpointTransport_DefaultsToProxyFromEnvironment(t *testing.T) {
@@ -1581,7 +1612,7 @@ func TestBuildTokenEndpointTransport_DefaultsToProxyFromEnvironment(t *testing.T
 		t.Fatal("expected a default Proxy func (http.ProxyFromEnvironment) to always be set")
 	}
 	if transport.TLSClientConfig != nil {
-		t.Errorf("expected no TLSClientConfig when neither tlsCaCertPath nor tlsInsecureSkipVerify is set, got %+v", transport.TLSClientConfig)
+		t.Errorf("expected no TLSClientConfig when neither tlsCaCert nor tlsInsecureSkipVerify is set, got %+v", transport.TLSClientConfig)
 	}
 }
 
@@ -1606,6 +1637,53 @@ func TestBuildTokenEndpointTransport_InvalidProxyURL(t *testing.T) {
 	}
 }
 
+// TestBuildTokenEndpointTransport_InvalidProxyURL_DoesNotLeakCredentials
+// locks in that a malformed-but-credentialed proxyURL never surfaces its
+// userinfo in the returned error - url.Error's own Error() method embeds its
+// raw input verbatim, which would otherwise leak the credential straight
+// into authFailure's log line (see redactURLCredentials).
+func TestBuildTokenEndpointTransport_InvalidProxyURL_DoesNotLeakCredentials(t *testing.T) {
+	// A control character makes url.Parse fail (net/url rejects them
+	// outright) while the credential-bearing userinfo segment is still
+	// present in the input - exactly the shape that would otherwise leak.
+	_, err := buildTokenEndpointTransport(oauth2Params{proxyURL: "http://secret-user:secret-pass@proxy.internal:8080/\x7f"})
+	if err == nil {
+		t.Fatal("expected an error for an invalid proxyURL")
+	}
+	if strings.Contains(err.Error(), "secret-user") || strings.Contains(err.Error(), "secret-pass") {
+		t.Errorf("expected proxyURL credentials to be redacted from the error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("expected a [REDACTED] marker in the error, got: %v", err)
+	}
+}
+
+// ─── redactURLCredentials ────────────────────────────────────────────────────
+
+func TestRedactURLCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no url", "just a plain error message", "just a plain error message"},
+		{"url with no credentials", "dial tcp proxy.internal:8080: connection refused", "dial tcp proxy.internal:8080: connection refused"},
+		{
+			"credentials embedded in a wrapped parse error",
+			`parse "http://user:pass@proxy.internal:8080/x": net/url: invalid control character in URL`,
+			`parse "http://[REDACTED]@proxy.internal:8080/x": net/url: invalid control character in URL`,
+		},
+		{"bare credentialed url", "https://alice:s3cr3t@idp.example.com/token", "https://[REDACTED]@idp.example.com/token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactURLCredentials(tt.in); got != tt.want {
+				t.Errorf("redactURLCredentials(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildTokenEndpointTransport_TLSConfigStillSetsProxy locks in the
 // specific regression this function exists to prevent: jwt-auth and
 // opaque-token-auth (sibling policies in this repo) both build a bare
@@ -1627,72 +1705,84 @@ func TestBuildTokenEndpointTransport_TLSConfigStillSetsProxy(t *testing.T) {
 	}
 }
 
-func TestBuildTokenEndpointTransport_InvalidCACertPath(t *testing.T) {
-	if _, err := buildTokenEndpointTransport(oauth2Params{tlsCaCertPath: "/nonexistent/path/ca.pem"}); err == nil {
-		t.Fatal("expected an error for a missing CA cert file")
+func TestBuildTokenEndpointTransport_InvalidCACertContent(t *testing.T) {
+	if _, err := buildTokenEndpointTransport(oauth2Params{tlsCaCert: "not a valid PEM certificate"}); err == nil {
+		t.Fatal("expected an error for content with no valid PEM certificate in it")
 	}
 }
 
-func TestBuildTokenEndpointTransport_ValidCACertPath(t *testing.T) {
-	certPath := writeTestCACert(t)
-	transport, err := buildTokenEndpointTransport(oauth2Params{tlsCaCertPath: certPath})
+func TestBuildTokenEndpointTransport_ValidCACertContent(t *testing.T) {
+	transport, err := buildTokenEndpointTransport(oauth2Params{tlsCaCert: generateTestCACert(t)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if transport.TLSClientConfig == nil || transport.TLSClientConfig.RootCAs == nil {
-		t.Fatal("expected RootCAs to be populated from the CA cert file")
+		t.Fatal("expected RootCAs to be populated from the CA cert content")
 	}
 }
 
-// writeCACertAt writes a fresh throwaway self-signed cert to the given
-// path, overwriting whatever was there before - used to simulate a CA cert
-// rotated at the same path (e.g. TESTING.md E.27's regenerated test cert).
-func writeCACertAt(t *testing.T, path string) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate test key: %v", err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      pkix.Name{CommonName: "oauth2-generator-test-ca"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		IsCA:         true,
-		KeyUsage:     x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("failed to create test certificate: %v", err)
-	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		t.Fatalf("failed to write test CA cert: %v", err)
-	}
-}
-
-// TestGetOrCreateTokenEndpointTransport_InvalidatesOnCACertRotation locks in
-// the TESTING.md E.27 regression: a CA cert rewritten at the SAME path
-// (e.g. a regenerated self-signed test cert) must not keep validating
-// against a stale cached *http.Transport built from the old cert content.
-func TestGetOrCreateTokenEndpointTransport_InvalidatesOnCACertRotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ca.pem")
-	writeCACertAt(t, path)
-	p := oauth2Params{tlsCaCertPath: path}
-
-	t1, err := getOrCreateTokenEndpointTransport(p)
+// TestBuildTokenEndpointTransport_MultipleCACertsInOneValue locks in that
+// tlsCaCert supports a bundle - several PEM certificates concatenated into
+// one value (e.g. a private CA plus an intermediate) - since
+// AppendCertsFromPEM parses every CERTIFICATE block it finds, not just the
+// first.
+func TestBuildTokenEndpointTransport_MultipleCACertsInOneValue(t *testing.T) {
+	bundle := generateTestCACert(t) + generateTestCACert(t)
+	pool, err := parseCACertPool(bundle)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(pool.Subjects()) != 2 { //nolint:staticcheck // Subjects() is deprecated but still the simplest way to assert count in a test
+		t.Errorf("expected both concatenated certificates to be parsed into the pool, got %d", len(pool.Subjects()))
+	}
+}
 
-	writeCACertAt(t, path) // rotate: same path, different cert content
-	t2, err := getOrCreateTokenEndpointTransport(p)
+// ─── getOrCreateTokenEndpointTransport CA cert keying ────────────────────────
+
+// TestGetOrCreateTokenEndpointTransport_DifferentCACertContent_GetsDifferentTransport
+// locks in that the Transport cache key is derived from the CA cert's
+// CONTENT (an already-resolved config value, typically via
+// {{ secret "handle" }}) - two configs with different cert content must
+// never share a cached Transport built from the wrong trust pool.
+func TestGetOrCreateTokenEndpointTransport_DifferentCACertContent_GetsDifferentTransport(t *testing.T) {
+	p1 := oauth2Params{tlsCaCert: generateTestCACert(t)}
+	p2 := oauth2Params{tlsCaCert: generateTestCACert(t)}
+
+	t1, err := getOrCreateTokenEndpointTransport(p1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t2, err := getOrCreateTokenEndpointTransport(p2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if t1 == t2 {
-		t.Error("expected a CA cert rotated at the same path to invalidate the cached Transport, not reuse the stale one")
+		t.Error("expected two configs with different CA cert content to get different *http.Transport values, not share one")
+	}
+}
+
+// TestGetOrCreateTokenEndpointTransport_SameCACertContent_SharesTransport is
+// the mirror image: byte-identical CA cert content (e.g. two policy
+// instances resolving the same secret handle) must share one Transport, the
+// same connection-pool-reuse guarantee proxyURL already gets (see
+// TestGetOrCreateTokenEndpointTransport_SharesTransportForIdenticalConfig).
+func TestGetOrCreateTokenEndpointTransport_SameCACertContent_SharesTransport(t *testing.T) {
+	cert := generateTestCACert(t)
+	p1 := oauth2Params{tlsCaCert: cert}
+	p2 := oauth2Params{tlsCaCert: cert}
+
+	t1, err := getOrCreateTokenEndpointTransport(p1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t2, err := getOrCreateTokenEndpointTransport(p2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if t1 != t2 {
+		t.Error("expected two configs with identical CA cert content to share one *http.Transport")
 	}
 }
 
@@ -1761,7 +1851,7 @@ type flakyTokenSource struct {
 	failErr   error
 }
 
-func (f *flakyTokenSource) Token() (*Token, error) {
+func (f *flakyTokenSource) Token(context.Context) (*Token, error) {
 	f.calls++
 	if f.calls <= f.failTimes {
 		return nil, f.failErr
@@ -1775,7 +1865,7 @@ func TestResilientTokenSource_RetriesTransientFailureThenSucceeds(t *testing.T) 
 	inner := &flakyTokenSource{failTimes: 2, failErr: errTransient, token: &Token{AccessToken: "eventually-ok"}}
 	src := &resilientTokenSource{inner: inner, maxRetries: 2}
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1791,7 +1881,7 @@ func TestResilientTokenSource_GivesUpAfterMaxRetries(t *testing.T) {
 	inner := &flakyTokenSource{failTimes: 100, failErr: errTransient}
 	src := &resilientTokenSource{inner: inner, maxRetries: 2}
 
-	if _, err := src.Token(); err == nil {
+	if _, err := src.Token(context.Background()); err == nil {
 		t.Fatal("expected an error after exhausting all retries")
 	}
 	if inner.calls != 3 {
@@ -1804,10 +1894,131 @@ func TestResilientTokenSource_NonRetryableErrorStopsImmediately(t *testing.T) {
 	inner := &flakyTokenSource{failTimes: 100, failErr: nonRetryable}
 	src := &resilientTokenSource{inner: inner, maxRetries: 2}
 
-	if _, err := src.Token(); err == nil {
+	if _, err := src.Token(context.Background()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if inner.calls != 1 {
 		t.Errorf("expected exactly 1 attempt - a non-retryable error must not be retried, got %d calls", inner.calls)
+	}
+}
+
+// TestResilientTokenSource_ConcurrentCalls_ShareOneFetchAndResult locks in
+// #8's single-flight coalescing on the success path: N concurrent Token()
+// calls that arrive while a fetch is in flight must share that ONE fetch
+// and its result, not each trigger their own.
+func TestResilientTokenSource_ConcurrentCalls_ShareOneFetchAndResult(t *testing.T) {
+	var calls int32
+	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // wide join window for every goroutine below
+		return &Token{AccessToken: "shared-token"}, nil
+	})
+	src := &resilientTokenSource{inner: inner, maxRetries: 2}
+
+	const n = 20
+	results := make([]*Token, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = src.Token(context.Background())
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("expected exactly 1 real fetch shared across %d concurrent callers, got %d", n, got)
+	}
+	for i := range results {
+		if errs[i] != nil {
+			t.Errorf("caller %d: unexpected error: %v", i, errs[i])
+		}
+		if results[i] == nil || results[i].AccessToken != "shared-token" {
+			t.Errorf("caller %d: unexpected result: %+v", i, results[i])
+		}
+	}
+}
+
+// TestResilientTokenSource_ConcurrentFailures_ShareOneRetrySequence locks in
+// #8's single-flight coalescing on the failure path - the gap the review
+// specifically flagged: reuseTokenSource's own mutex only coalesces
+// concurrent callers when a fetch SUCCEEDS (nothing gets cached on
+// failure), so without this, every one of N concurrent callers against a
+// failing/slow IdP would run its own full (maxRetries+1)-attempt sequence.
+// With coalescing, at most one sequence's worth of real attempts should
+// occur for all N callers combined.
+func TestResilientTokenSource_ConcurrentFailures_ShareOneRetrySequence(t *testing.T) {
+	var calls int32
+	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // wide join window for every goroutine below
+		return nil, errTransient
+	})
+	src := &resilientTokenSource{inner: inner, maxRetries: 2}
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := src.Token(context.Background()); err == nil {
+				t.Error("expected an error - inner always fails")
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got == 0 || got > 3 {
+		t.Errorf("expected between 1 and 3 real fetch attempts (1 initial + up to 2 retries) shared across %d concurrent callers, got %d", n, got)
+	}
+}
+
+// TestResilientTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWithoutAffectingSharedFetch
+// locks in the specific trade-off documented on resilientTokenSource: a
+// caller that JOINS an already-in-flight sequence bails out promptly on its
+// own ctx expiry (rather than blocking for the full sequence), without
+// aborting that sequence for the owner/other waiters still depending on it.
+func TestResilientTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWithoutAffectingSharedFetch(t *testing.T) {
+	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		time.Sleep(150 * time.Millisecond)
+		return &Token{AccessToken: "slow-token"}, nil
+	})
+	src := &resilientTokenSource{inner: inner, maxRetries: 0}
+
+	var ownerTok *Token
+	var ownerErr error
+	ownerDone := make(chan struct{})
+	go func() {
+		defer close(ownerDone)
+		ownerTok, ownerErr = src.Token(context.Background())
+	}()
+
+	time.Sleep(20 * time.Millisecond) // let the owner start and register inFlight
+
+	joinerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := src.Token(joinerCtx)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the joining caller to get context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected the joining caller to return promptly on its own ctx expiry, took %s", elapsed)
+	}
+
+	<-ownerDone
+	if ownerErr != nil || ownerTok == nil || ownerTok.AccessToken != "slow-token" {
+		t.Errorf("expected the owner's shared fetch to still complete successfully despite the joiner's ctx expiring, got tok=%+v err=%v", ownerTok, ownerErr)
 	}
 }

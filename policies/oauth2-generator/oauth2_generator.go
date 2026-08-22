@@ -19,10 +19,8 @@ package oauth2generator
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +29,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,9 +138,10 @@ type Token struct {
 // TokenSource supplies the current access token, fetching or reusing a
 // cached one as it sees fit - satisfied by tokenFetcherFunc,
 // reuseTokenSource, resilientTokenSource, and redisCachingTokenSource
-// (token_cache.go).
+// (token_cache.go). ctx bounds/cancels only the actual network fetch, when
+// one happens - a cache hit returns immediately regardless of ctx.
 type TokenSource interface {
-	Token() (*Token, error)
+	Token(ctx context.Context) (*Token, error)
 }
 
 // TokenError represents an RFC 6749 §5.2 error response FROM the token
@@ -174,8 +173,8 @@ func (e *TokenError) Error() string {
 type clientAuthStyle int
 
 const (
-	authStyleInHeader  clientAuthStyle = iota // client_secret_basic: HTTP Basic auth
-	authStyleInParams                         // client_secret_post: client_id/client_secret as form fields
+	authStyleInHeader clientAuthStyle = iota // client_secret_basic: HTTP Basic auth
+	authStyleInParams                        // client_secret_post: client_id/client_secret as form fields
 )
 
 // authStyleFor maps clientAuthMethod to the style doTokenRequest consumes.
@@ -329,9 +328,9 @@ func fetchPasswordToken(ctx context.Context, httpClient *http.Client, p oauth2Pa
 
 // tokenFetcherFunc adapts a plain fetch function to TokenSource - see
 // buildTokenSource.
-type tokenFetcherFunc func() (*Token, error)
+type tokenFetcherFunc func(ctx context.Context) (*Token, error)
 
-func (f tokenFetcherFunc) Token() (*Token, error) { return f() }
+func (f tokenFetcherFunc) Token(ctx context.Context) (*Token, error) { return f(ctx) }
 
 // reuseTokenSource wraps a raw, IdP-fetching TokenSource with mutex-guarded
 // reuse: the same token is served on every call until it's within buffer of
@@ -354,13 +353,13 @@ func newReuseTokenSource(fresh TokenSource, buffer time.Duration) *reuseTokenSou
 	return &reuseTokenSource{fresh: fresh, buffer: buffer}
 }
 
-func (s *reuseTokenSource) Token() (*Token, error) {
+func (s *reuseTokenSource) Token(ctx context.Context) (*Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if tokenFreshEnough(s.tok, s.buffer) {
 		return s.tok, nil
 	}
-	tok, err := s.fresh.Token()
+	tok, err := s.fresh.Token(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -397,13 +396,13 @@ type oauth2Params struct {
 	// are dropped rather than honored - see doTokenRequest.
 	tokenRequestHeaders map[string]string
 
-	// requestTimeout bounds the token-endpoint HTTP call - see
+	// tokenRequestTimeout bounds the token-endpoint HTTP call - see
 	// defaultTokenRequestTimeout.
-	requestTimeout time.Duration
+	tokenRequestTimeout time.Duration
 
-	// tokenTTLFallback is applied by the caching layer when the token
+	// defaultTokenTTL is applied by the caching layer when the token
 	// endpoint's response omits expires_in - see defaultTokenTTLFallback.
-	tokenTTLFallback time.Duration
+	defaultTokenTTL time.Duration
 
 	// expiryBuffer is how far ahead of a token's actual expiry it's treated
 	// as stale, so a request never gets sent upstream with a credential that
@@ -417,10 +416,10 @@ type oauth2Params struct {
 	// when bearerToken is set - see defaultExpiryBuffer.
 	expiryBuffer time.Duration
 
-	// purgeStatusCodes are the upstream response status codes that purge the
-	// cached token - see OnResponseHeaders and defaultPurgeStatusCodes.
+	// tokenPurgeStatusCodes are the upstream response status codes that purge
+	// the cached token - see OnResponseHeaders and defaultPurgeStatusCodes.
 	// Forced empty by GetPolicy when bearerToken is set - see its comment.
-	purgeStatusCodes map[int]struct{}
+	tokenPurgeStatusCodes map[int]struct{}
 
 	// headerName and valuePrefix control where and how the credential
 	// (fetched or directly-supplied) is injected - see buildHeaderValue.
@@ -428,11 +427,16 @@ type oauth2Params struct {
 	headerName  string
 	valuePrefix string
 
-	// proxyURL/tlsCaCertPath/tlsInsecureSkipVerify configure the
+	// proxyURL/tlsCaCert/tlsInsecureSkipVerify configure the
 	// token-endpoint HTTP client's Transport - see
 	// buildTokenEndpointTransport. Unused when bearerToken is set.
+	//
+	// tlsCaCert is the PEM-encoded CA certificate CONTENT itself (typically
+	// supplied via {{ secret "handle" }}, resolved upstream before this
+	// policy ever sees it), not a filesystem path - there is no gateway
+	// filesystem dependency here, unlike a tlsCaCertPath design would have.
 	proxyURL              string
-	tlsCaCertPath         string
+	tlsCaCert             string
 	tlsInsecureSkipVerify bool
 
 	// tokenRequestMaxRetries bounds resilientTokenSource's retry of the
@@ -477,7 +481,7 @@ type Policy struct {
 	// tests override this to avoid a real network call to a token endpoint,
 	// mirroring the retrieveCredentialsFunc pattern used in the
 	// aws-authentication policy.
-	tokenFunc func() (*Token, error)
+	tokenFunc func(ctx context.Context) (*Token, error)
 
 	// purgeStatusCodes are the upstream response status codes that purge the
 	// cached token via tokenSource.Purge() - see OnResponseHeaders. Empty
@@ -494,11 +498,31 @@ type staticTokenSource struct {
 	bearerToken string
 }
 
-func (s *staticTokenSource) Token() (*Token, error) {
+func (s *staticTokenSource) Token(context.Context) (*Token, error) {
 	return &Token{AccessToken: s.bearerToken, TokenType: "Bearer"}, nil
 }
 
 func (s *staticTokenSource) Purge() {}
+
+// credentialedURLPattern captures a "scheme://" prefix immediately followed
+// by a "userinfo@" segment, so redactURLCredentials can strip just the
+// latter - see that function.
+var credentialedURLPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
+
+// redactURLCredentials scrubs any "scheme://user:pass@" userinfo out of s,
+// replacing it with "[REDACTED]" while leaving the rest of s (host, path,
+// surrounding text) intact for diagnostic value. proxyURL is documented as
+// supporting embedded credentials (e.g. "http://user:pass@proxy.internal:8080"
+// in policy-definition.yaml's own example) and a malformed one round-trips
+// through url.Parse's error message verbatim (see buildTokenEndpointTransport)
+// - this is applied there, and again as defense-in-depth on any error logged
+// by authFailure, so a credential-bearing URL surfacing through a different
+// error path in the future is scrubbed too, not just this one known case.
+// s is returned unchanged if it contains no "scheme://userinfo@" shape - this
+// is a best-effort scrub over free-form error text, not a strict URL parser.
+func redactURLCredentials(s string) string {
+	return credentialedURLPattern.ReplaceAllString(s, "${1}[REDACTED]@")
+}
 
 // buildHeaderValue combines valuePrefix and the credential into the header
 // value to inject - e.g. buildHeaderValue("Bearer", "abc") -> "Bearer abc".
@@ -530,12 +554,12 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	var tokenSource tokenProvider
 	if mode == ModeStaticToken {
 		// Nothing to fetch or cache - the configured token is injected as-is
-		// on every request. Also force purgeStatusCodes off: there is no
+		// on every request. Also force tokenPurgeStatusCodes off: there is no
 		// fresher token to fetch on a rejection, and leaving it configured
 		// would otherwise turn on response-header processing (see Mode())
 		// for a purge that Purge() no-ops anyway.
 		tokenSource = &staticTokenSource{bearerToken: p.bearerToken}
-		p.purgeStatusCodes = map[int]struct{}{}
+		p.tokenPurgeStatusCodes = map[int]struct{}{}
 	} else {
 		innerSource, err := buildTokenSource(p)
 		if err != nil {
@@ -553,7 +577,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		headerName:       p.headerName,
 		valuePrefix:      p.valuePrefix,
 		tokenSource:      tokenSource,
-		purgeStatusCodes: p.purgeStatusCodes,
+		purgeStatusCodes: p.tokenPurgeStatusCodes,
 	}
 	pol.tokenFunc = pol.tokenSource.Token
 
@@ -579,18 +603,18 @@ func buildTokenSource(p oauth2Params) (TokenSource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid token endpoint transport config: %w", err)
 	}
-	httpClient := &http.Client{Timeout: p.requestTimeout, Transport: transport}
+	httpClient := &http.Client{Timeout: p.tokenRequestTimeout, Transport: transport}
 
 	switch p.grantType {
 	case GrantTypeClientCredentials:
-		raw := tokenFetcherFunc(func() (*Token, error) {
-			return fetchClientCredentialsToken(context.Background(), httpClient, p, style)
+		raw := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+			return fetchClientCredentialsToken(ctx, httpClient, p, style)
 		})
 		return newReuseTokenSource(raw, p.expiryBuffer), nil
 
 	case GrantTypePassword:
-		raw := tokenFetcherFunc(func() (*Token, error) {
-			return fetchPasswordToken(context.Background(), httpClient, p, style)
+		raw := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+			return fetchPasswordToken(ctx, httpClient, p, style)
 		})
 		return newReuseTokenSource(raw, p.expiryBuffer), nil
 
@@ -602,68 +626,41 @@ func buildTokenSource(p oauth2Params) (TokenSource, error) {
 }
 
 // tokenEndpointTransportKey identifies a distinct token-endpoint HTTP
-// client configuration. tlsCACertHash hashes the CA cert's CONTENT, not its
-// path - a cert rotated at the same path (e.g. a regenerated self-signed
-// test cert) would otherwise keep validating against a stale cached pool
-// (TESTING.md E.27).
+// client configuration. tlsCACert holds the CA cert's raw PEM content
+// directly (not a hash) - it's a plain, already-resolved config value (via
+// {{ secret "handle" }} or pasted inline), never read from a gateway
+// filesystem, and it's not sensitive the way a client secret is (a CA
+// certificate is inherently public - that's what lets anyone verify a
+// signature made by it), so there's no reason to hash it down before using
+// it as a map key.
 type tokenEndpointTransportKey struct {
 	proxyURL              string
-	tlsCACertHash         string
+	tlsCACert             string
 	tlsInsecureSkipVerify bool
 }
 
 // tokenEndpointTransports is the process-wide registry of shared *http.Transport
 // values for the token-endpoint HTTP client, keyed by proxy/TLS configuration -
 // mirrors redisClients (redis_clients.go), for the same connection-pool-fragmentation
-// reason.
-var tokenEndpointTransports = struct {
-	mu sync.Mutex
-	m  map[tokenEndpointTransportKey]*http.Transport
-}{m: make(map[tokenEndpointTransportKey]*http.Transport)}
+// reason, and shares its keyedSingleton get-or-create pattern (redis_clients.go).
+var tokenEndpointTransports = newKeyedSingleton[tokenEndpointTransportKey, *http.Transport]()
 
 // getOrCreateTokenEndpointTransport returns the process-wide shared
-// Transport for this proxy/TLS configuration, building it on first use. The
-// CA cert is read here for the cache key, then again in
-// buildTokenEndpointTransport on a cache miss.
+// Transport for this proxy/TLS configuration, building it on first use.
 func getOrCreateTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
-	certHash, err := hashCACertFile(p.tlsCaCertPath)
-	if err != nil {
-		return nil, fmt.Errorf("tlsCaCertPath: %w", err)
-	}
-
 	key := tokenEndpointTransportKey{
 		proxyURL:              p.proxyURL,
-		tlsCACertHash:         certHash,
+		tlsCACert:             p.tlsCaCert,
 		tlsInsecureSkipVerify: p.tlsInsecureSkipVerify,
 	}
 
-	tokenEndpointTransports.mu.Lock()
-	defer tokenEndpointTransports.mu.Unlock()
-
-	if t, ok := tokenEndpointTransports.m[key]; ok {
-		return t, nil
-	}
-
-	t, err := buildTokenEndpointTransport(p)
-	if err != nil {
-		return nil, err
-	}
-	tokenEndpointTransports.m[key] = t
-	return t, nil
-}
-
-// hashCACertFile returns a hex sha256 of the file's content, or "" when
-// path is empty.
-func hashCACertFile(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read CA cert file %q: %w", path, err)
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	// build (buildTokenEndpointTransport) runs outside keyedSingleton's lock,
+	// so building this instance's cert pool can never stall every other,
+	// unrelated oauth2-generator policy instance's own get-or-create call.
+	transport, _, err := tokenEndpointTransports.getOrCreate(key, func() (*http.Transport, error) {
+		return buildTokenEndpointTransport(p)
+	})
+	return transport, err
 }
 
 // buildTokenEndpointTransport wires proxyURL and TLS settings into one Transport
@@ -676,19 +673,23 @@ func buildTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
 	if p.proxyURL != "" {
 		proxyURL, err := url.Parse(p.proxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxyURL: %w", err)
+			// url.Error's own Error() embeds the raw input verbatim (see
+			// net/url), which would otherwise leak proxyURL's userinfo
+			// credentials into this error - and from there into
+			// authFailure's log line. Scrub before wrapping, not after.
+			return nil, fmt.Errorf("invalid proxyURL: %s", redactURLCredentials(err.Error()))
 		}
 		proxyFunc = http.ProxyURL(proxyURL)
 	}
 
 	transport := &http.Transport{Proxy: proxyFunc}
 
-	if p.tlsCaCertPath != "" || p.tlsInsecureSkipVerify {
+	if p.tlsCaCert != "" || p.tlsInsecureSkipVerify {
 		tlsConfig := &tls.Config{InsecureSkipVerify: p.tlsInsecureSkipVerify} //nolint:gosec // opt-in, logged at extraction time
-		if p.tlsCaCertPath != "" {
-			pool, err := loadCACertPool(p.tlsCaCertPath)
+		if p.tlsCaCert != "" {
+			pool, err := parseCACertPool(p.tlsCaCert)
 			if err != nil {
-				return nil, fmt.Errorf("tlsCaCertPath: %w", err)
+				return nil, fmt.Errorf("tlsCaCert: %w", err)
 			}
 			tlsConfig.RootCAs = pool
 		}
@@ -698,35 +699,108 @@ func buildTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
 	return transport, nil
 }
 
-// loadCACertPool reads a PEM-encoded CA certificate file and returns a pool
-// containing it, for TLS connections that must trust a private/internal CA
-// - used by buildTokenEndpointTransport above, its only caller.
-func loadCACertPool(path string) (*x509.CertPool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA cert file %q: %w", path, err)
-	}
+// parseCACertPool parses PEM-encoded CA certificate content (already
+// resolved - typically via {{ secret "handle" }} - never read from a
+// gateway filesystem) and returns a pool containing it, for TLS connections
+// that must trust a private/internal CA - used by buildTokenEndpointTransport
+// above, its only caller. The returned pool starts empty (x509.NewCertPool(),
+// not x509.SystemCertPool()) and holds ONLY the certificate(s) from this
+// content - the token endpoint's TLS connection trusts exactly these CA(s)
+// and nothing else, not the system's default public CAs too. This is a
+// deliberate, tighter trust boundary (matching how curl --cacert and most
+// similar tools behave, and WSO2 API Manager's own "dedicated trust store
+// for OAuth token endpoint connections"), not an oversight - see tlsCaCert's
+// description in policy-definition.yaml. AppendCertsFromPEM parses every
+// CERTIFICATE block it finds, so several concatenated certificates (a CA
+// bundle, e.g. a private CA plus an intermediate) are supported in one value.
+func parseCACertPool(pemContent string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, fmt.Errorf("no valid PEM certificates found in %q", path)
+	if !pool.AppendCertsFromPEM([]byte(pemContent)) {
+		return nil, fmt.Errorf("no valid PEM certificates found in tlsCaCert")
 	}
 	return pool, nil
 }
 
 // resilientTokenSource wraps a real, IDP-fetching TokenSource with bounded
 // retry, for transient failures only - see isRetryableTokenError.
+//
+// Concurrent Token() calls are single-flighted: only one goroutine actually
+// runs the retry-with-backoff sequence at a time - every other concurrent
+// caller waits for and shares that same in-flight sequence's result
+// (success OR the eventual error) instead of independently running its own
+// full retry loop. Without this, reuseTokenSource's own mutex (the layer
+// below this one) only coalesces concurrent callers while a fetch
+// SUCCEEDS - nothing gets cached on failure, so every queued caller would,
+// on acquiring that mutex in turn, see "still not fresh" and launch its own
+// complete retry sequence, multiplying load on an IdP that's already
+// struggling by up to (maxRetries+1)x per concurrent caller.
+//
+// The shared sequence runs with the context of whichever caller started it
+// (the "owner") - if a second caller joins an in-flight sequence, IT bails
+// out early (returning ctx.Err()) the moment its own ctx is done, without
+// affecting the still-running shared sequence other callers may also be
+// waiting on. The narrow edge case this doesn't solve: if the OWNER's own
+// ctx is what's cancelled, the underlying HTTP request is cancelled with
+// it (see doTokenRequest's use of http.NewRequestWithContext), which also
+// ends the sequence for every joiner - accepted as a reasonable trade-off
+// rather than running the shared fetch on a caller-independent
+// context.Background() and losing #7's cancellation propagation entirely
+// for the common, no-overlap case.
 type resilientTokenSource struct {
 	inner      TokenSource
 	maxRetries int
+
+	mu       sync.Mutex
+	inFlight *tokenCall // non-nil while a fetch-with-retry sequence is running
 }
 
-func (r *resilientTokenSource) Token() (*Token, error) {
+// tokenCall represents one in-flight (or just-completed) fetch-with-retry
+// sequence, shared by every caller that arrived while it was running.
+type tokenCall struct {
+	done chan struct{}
+	tok  *Token
+	err  error
+}
+
+func (r *resilientTokenSource) Token(ctx context.Context) (*Token, error) {
+	r.mu.Lock()
+	if call := r.inFlight; call != nil {
+		r.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.tok, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	call := &tokenCall{done: make(chan struct{})}
+	r.inFlight = call
+	r.mu.Unlock()
+
+	call.tok, call.err = r.fetchWithRetry(ctx)
+
+	r.mu.Lock()
+	r.inFlight = nil
+	r.mu.Unlock()
+	close(call.done)
+
+	return call.tok, call.err
+}
+
+// fetchWithRetry runs the actual retry-with-backoff sequence - split out of
+// Token() so the single-flight bookkeeping above stays focused on sharing,
+// not retrying.
+func (r *resilientTokenSource) fetchWithRetry(ctx context.Context) (*Token, error) {
 	var lastErr error
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(retryBackoff(attempt))
+			select {
+			case <-time.After(retryBackoff(attempt)):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-		tok, err := r.inner.Token()
+		tok, err := r.inner.Token(ctx)
 		if err == nil {
 			return tok, nil
 		}
@@ -898,6 +972,23 @@ func getDurationParam(params map[string]interface{}, key string, def time.Durati
 	return def
 }
 
+// getPositiveDurationParam is getDurationParam plus a non-positive guard,
+// falling back to def when the parsed duration is <= 0. Some durations have
+// no safe zero-or-negative interpretation: http.Client treats Timeout <= 0
+// as "no timeout" (reopening the exact unbounded-hung-IdP case
+// defaultTokenRequestTimeout exists to prevent), and a zero/negative
+// fallback TTL would make a token expire before it's even cached. Contrast
+// with expiryBuffer, which has a legitimate meaning at exactly 0 (no
+// early-refresh margin) and so is only guarded against strictly negative
+// values, inline in validateAndExtractParams.
+func getPositiveDurationParam(params map[string]interface{}, key string, def time.Duration) time.Duration {
+	d := getDurationParam(params, key, def)
+	if d <= 0 {
+		return def
+	}
+	return d
+}
+
 // getStringMapParam extracts an optional flat string-to-string map
 // parameter (tokenRequestParams, tokenRequestHeaders) by key. Absent or
 // wrong-shaped input just yields no entries rather than an error, matching
@@ -1033,8 +1124,8 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	}
 	p.tokenRequestParams = getStringMapParam(params, "tokenRequestParams")
 	p.tokenRequestHeaders = getStringMapParam(params, "tokenRequestHeaders")
-	p.requestTimeout = getDurationParam(params, "tokenRequestTimeout", defaultTokenRequestTimeout)
-	p.tokenTTLFallback = getDurationParam(params, "defaultTokenTTL", defaultTokenTTLFallback)
+	p.tokenRequestTimeout = getPositiveDurationParam(params, "tokenRequestTimeout", defaultTokenRequestTimeout)
+	p.defaultTokenTTL = getPositiveDurationParam(params, "defaultTokenTTL", defaultTokenTTLFallback)
 	p.expiryBuffer = getDurationParam(params, "expiryBuffer", defaultExpiryBuffer)
 	if p.expiryBuffer < 0 {
 		// A negative buffer has no sane meaning here (see getIntParam's
@@ -1042,10 +1133,10 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 		// than let it invert the freshness check.
 		p.expiryBuffer = defaultExpiryBuffer
 	}
-	p.purgeStatusCodes = getPurgeStatusCodesParam(params, "tokenPurgeStatusCodes", defaultPurgeStatusCodes)
+	p.tokenPurgeStatusCodes = getPurgeStatusCodesParam(params, "tokenPurgeStatusCodes", defaultPurgeStatusCodes)
 
 	p.proxyURL = getStringParam(params, "proxyURL")
-	p.tlsCaCertPath = getStringParam(params, "tlsCaCertPath")
+	p.tlsCaCert = getStringParam(params, "tlsCaCert")
 	p.tlsInsecureSkipVerify = getBoolParam(params, "tlsInsecureSkipVerify", false)
 	if p.tlsInsecureSkipVerify {
 		slog.Warn("OAuth2Generator: tlsInsecureSkipVerify is enabled - TLS certificate verification for the token endpoint is disabled; this must never be used against a real identity provider")
@@ -1075,7 +1166,7 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 	slog.Debug("OAuth2Generator: authenticating outbound request", "method", reqCtx.Method, "path", reqCtx.Path,
 		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
 
-	tok, err := p.retrieveToken()
+	tok, err := p.retrieveToken(ctx)
 	if err != nil {
 		return p.authFailure(reqCtx.SharedContext, "failed to obtain upstream credential", err)
 	}
@@ -1104,12 +1195,12 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, respCtx *policy.Response
 
 // retrieveToken fetches the current (possibly cached/refreshed) access token
 // from the token source built once in GetPolicy.
-func (p *Policy) retrieveToken() (*Token, error) {
+func (p *Policy) retrieveToken(ctx context.Context) (*Token, error) {
 	fetch := p.tokenFunc
 	if fetch == nil {
 		fetch = p.tokenSource.Token
 	}
-	return fetch()
+	return fetch(ctx)
 }
 
 // authType returns the AuthContext.AuthType value for this instance's mode -
@@ -1150,7 +1241,11 @@ func (p *Policy) authProperties() map[string]string {
 // token endpoint that failed, a gateway-to-backend problem rather than a
 // client-auth rejection.
 func (p *Policy) authFailure(shared *policy.SharedContext, reason string, cause error) policy.RequestHeaderAction {
-	slog.Error("OAuth2Generator: credential acquisition failed", "reason", reason, "error", cause,
+	// redactURLCredentials is defense-in-depth here: the one known path that
+	// could embed a credential (a malformed proxyURL) is already scrubbed at
+	// its source in buildTokenEndpointTransport - this catches any other
+	// error path that might someday surface a credentialed URL too.
+	slog.Error("OAuth2Generator: credential acquisition failed", "reason", reason, "error", redactURLCredentials(cause.Error()),
 		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
 
 	shared.AuthContext = &policy.AuthContext{

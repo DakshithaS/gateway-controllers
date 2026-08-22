@@ -27,6 +27,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,7 +47,7 @@ type stubTokenSource struct {
 	err   error
 }
 
-func (s *stubTokenSource) Token() (*Token, error) {
+func (s *stubTokenSource) Token(context.Context) (*Token, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err
@@ -170,7 +172,7 @@ func testParams(mutate ...func(*oauth2Params)) oauth2Params {
 		clientID:         "client-a",
 		clientSecret:     "s3cr3t",
 		clientAuthMethod: ClientAuthMethodBasic,
-		tokenTTLFallback: defaultTokenTTLFallback,
+		defaultTokenTTL:  defaultTokenTTLFallback,
 	}
 	for _, m := range mutate {
 		m(&p)
@@ -336,7 +338,7 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -387,7 +389,7 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	}
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error priming the cache: %v", err)
 	}
@@ -408,7 +410,7 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 		t.Error("expected Purge to delete the redis cache entry")
 	}
 
-	tok, err = src.Token()
+	tok, err = src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -431,10 +433,10 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 	inner := &stubTokenSource{token: &Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
 
 	const fallbackTTL = 42 * time.Minute
-	params := testParams(func(p *oauth2Params) { p.tokenTTLFallback = fallbackTTL })
+	params := testParams(func(p *oauth2Params) { p.defaultTokenTTL = fallbackTTL })
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -458,7 +460,7 @@ func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *test
 	// Second call should be served from the (now-valid) local cache, not
 	// trigger a second inner fetch - proving the fallback actually restored
 	// caching rather than just avoiding a crash.
-	if _, err := src.Token(); err != nil {
+	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
 	if inner.calls != 1 {
@@ -478,7 +480,7 @@ func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -497,7 +499,7 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
 	for i := 0; i < 5; i++ {
-		if _, err := src.Token(); err != nil {
+		if _, err := src.Token(context.Background()); err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i, err)
 		}
 	}
@@ -523,11 +525,11 @@ func TestRedisCachingTokenSource_DifferentConfigs_GetIsolatedCacheEntries(t *tes
 	srcA := mustNewRedisCachingTokenSource(t, innerA, testRedisParams(rt, FailureModeOpen), paramsA)
 	srcB := mustNewRedisCachingTokenSource(t, innerB, testRedisParams(rt, FailureModeOpen), paramsB)
 
-	tokA, err := srcA.Token()
+	tokA, err := srcA.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	tokB, err := srcB.Token()
+	tokB, err := srcB.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -560,7 +562,7 @@ func TestRedisCachingTokenSource_RedisKeyFixedAtConstruction(t *testing.T) {
 		t.Fatalf("expected redisKey to be set at construction to %q, got %q", want, src.redisKey)
 	}
 
-	if _, err := src.Token(); err != nil {
+	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if src.redisKey != want {
@@ -574,7 +576,7 @@ func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.
 	inner := &stubTokenSource{token: &Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("expected failureMode=open to fall back to the inner source, got error: %v", err)
 	}
@@ -592,7 +594,7 @@ func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallbac
 	inner := &stubTokenSource{token: &Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, rp, testParams())
 
-	_, err := src.Token()
+	_, err := src.Token(context.Background())
 	if err == nil {
 		t.Fatal("expected an error when redis is down and failureMode is closed")
 	}
@@ -607,7 +609,7 @@ func TestRedisCachingTokenSource_InnerError_IsPropagated(t *testing.T) {
 
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), testParams())
 
-	_, err := src.Token()
+	_, err := src.Token(context.Background())
 	if err == nil {
 		t.Fatal("expected the inner source's error to propagate")
 	}
@@ -663,7 +665,7 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 	params := testParams(func(p *oauth2Params) { p.expiryBuffer = 30 * time.Second })
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -675,7 +677,7 @@ func TestRedisCachingTokenSource_LocalCache_WithinExpiryBuffer_TriggersRefetch(t
 	// expiryBuffer, so the next call must not be served from the local
 	// cache - it should fall through to a second inner fetch.
 	inner.token = &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
-	tok, err = src.Token()
+	tok, err = src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
@@ -703,7 +705,7 @@ func TestRedisCachingTokenSource_RedisRead_WithinExpiryBuffer_TriggersRefetch(t 
 	inner := &stubTokenSource{token: &Token{AccessToken: "freshly-refetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -752,7 +754,7 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 	}
 	src := mustNewRedisCachingTokenSource(t, inner, testRedisParams(rt, FailureModeOpen), params)
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error priming the cache: %v", err)
 	}
@@ -764,10 +766,10 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 	}
 
 	// token-1's 5s remaining TTL is inside the 10s expiryBuffer: the outer
-	// cache falls through to inner.Token(), and inner itself - via
+	// cache falls through to inner.Token(context.Background()), and inner itself - via
 	// reuseTokenSource using that same 10s buffer - must perform a genuine
 	// second token-endpoint call rather than replaying token-1.
-	tok, err = src.Token()
+	tok, err = src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -793,6 +795,119 @@ func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
 	}
 }
 
+// ─── keyedSingleton ───────────────────────────────────────────────────────────
+
+func TestKeyedSingleton_SecondCallForSameKeyReusesFirstValue(t *testing.T) {
+	r := newKeyedSingleton[string, *int]()
+	var builds int32
+
+	build := func() (*int, error) {
+		atomic.AddInt32(&builds, 1)
+		v := 42
+		return &v, nil
+	}
+
+	v1, created1, err := r.getOrCreate("a", build)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !created1 {
+		t.Error("expected the first call for a new key to report created=true")
+	}
+
+	v2, created2, err := r.getOrCreate("a", build)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created2 {
+		t.Error("expected the second call for the same key to report created=false")
+	}
+	if v1 != v2 {
+		t.Error("expected the second call to reuse the exact same value, not build a new one")
+	}
+	if builds != 1 {
+		t.Errorf("expected build to run exactly once, got %d", builds)
+	}
+}
+
+func TestKeyedSingleton_DifferentKeysBuildIndependently(t *testing.T) {
+	r := newKeyedSingleton[string, string]()
+
+	va, _, err := r.getOrCreate("a", func() (string, error) { return "value-a", nil })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	vb, _, err := r.getOrCreate("b", func() (string, error) { return "value-b", nil })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if va != "value-a" || vb != "value-b" {
+		t.Errorf("expected independent values per key, got %q and %q", va, vb)
+	}
+}
+
+func TestKeyedSingleton_FailedBuildIsNotCached(t *testing.T) {
+	r := newKeyedSingleton[string, string]()
+	wantErr := errors.New("build failed")
+
+	_, created, err := r.getOrCreate("a", func() (string, error) { return "", wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the build error to be returned, got %v", err)
+	}
+	if created {
+		t.Error("expected created=false on a failed build")
+	}
+
+	// A retry for the same key must attempt to build again, not serve a
+	// cached empty value from the failed attempt.
+	v, created, err := r.getOrCreate("a", func() (string, error) { return "value-a", nil })
+	if err != nil {
+		t.Fatalf("unexpected error on retry: %v", err)
+	}
+	if !created {
+		t.Error("expected the retry to report created=true - a failed build must not have been cached")
+	}
+	if v != "value-a" {
+		t.Errorf("expected the retry's value to be returned, got %q", v)
+	}
+}
+
+// TestKeyedSingleton_ConcurrentBuildsForSameKey_AllCallersSeeOneWinner locks
+// in getOrCreate's documented race resolution: when multiple callers race to
+// build the same not-yet-cached key, build may run more than once, but every
+// caller ends up observing the exact same single winning value - never a
+// mix of different pointers for what should be one shared singleton.
+func TestKeyedSingleton_ConcurrentBuildsForSameKey_AllCallersSeeOneWinner(t *testing.T) {
+	r := newKeyedSingleton[string, *int]()
+
+	const n = 50
+	results := make([]*int, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			v, _, err := r.getOrCreate("shared", func() (*int, error) {
+				val := 1
+				return &val, nil
+			})
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			results[i] = v
+		}(i)
+	}
+	wg.Wait()
+
+	first := results[0]
+	for i, v := range results {
+		if v != first {
+			t.Errorf("caller %d observed a different value pointer than caller 0 - not a single shared singleton", i)
+		}
+	}
+}
+
 func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.T) {
 	cp := cacheParams{
 		strategy: CacheStrategyMemory,
@@ -815,7 +930,7 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 		t.Fatal("expected cacheStrategy: memory to never construct a redis client")
 	}
 
-	tok, err := src.Token()
+	tok, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error with an unreachable redis host configured under memory strategy: %v", err)
 	}
@@ -828,7 +943,7 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 
 	// Second call should be served from the in-process tier without
 	// refetching - the only tier active under memory strategy.
-	if _, err := src.Token(); err != nil {
+	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
 	if inner.calls != 1 {
@@ -900,5 +1015,45 @@ func TestExtractCacheParams_DurationParsing(t *testing.T) {
 	cp := extractCacheParams(params)
 	if cp.redis.connectionTimeout != 250*time.Millisecond {
 		t.Errorf("expected 250ms connectionTimeout, got %v", cp.redis.connectionTimeout)
+	}
+}
+
+// TestExtractCacheParams_NonPositiveTimeouts_FallBackToDefault locks in that
+// a zero or negative redis.connectionTimeout/readTimeout/writeTimeout falls
+// back to its default rather than being honored as-is - handing
+// context.WithTimeout a <= 0 duration produces an already-expired deadline,
+// making every Redis operation fail instantly regardless of Redis's actual
+// health (see oauth2_generator_test.go's identical concern for
+// tokenRequestTimeout/defaultTokenTTL).
+func TestExtractCacheParams_NonPositiveTimeouts_FallBackToDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{"zero", "0s"},
+		{"negative", "-1s"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]interface{}{
+				"redis": map[string]interface{}{
+					"connectionTimeout": tt.value,
+					"readTimeout":       tt.value,
+					"writeTimeout":      tt.value,
+				},
+			}
+			cp := extractCacheParams(params)
+			if cp.redis.connectionTimeout != defaultRedisConnectionTimeout {
+				t.Errorf("expected non-positive connectionTimeout %q to fall back to default %s, got %s",
+					tt.value, defaultRedisConnectionTimeout, cp.redis.connectionTimeout)
+			}
+			if cp.redis.readTimeout != defaultRedisReadTimeout {
+				t.Errorf("expected non-positive readTimeout %q to fall back to default %s, got %s",
+					tt.value, defaultRedisReadTimeout, cp.redis.readTimeout)
+			}
+			if cp.redis.writeTimeout != defaultRedisWriteTimeout {
+				t.Errorf("expected non-positive writeTimeout %q to fall back to default %s, got %s",
+					tt.value, defaultRedisWriteTimeout, cp.redis.writeTimeout)
+			}
+		})
 	}
 }

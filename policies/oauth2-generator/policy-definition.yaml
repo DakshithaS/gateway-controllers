@@ -19,7 +19,7 @@ description: |
   (cacheStrategy). A token rejected by the upstream
   backend (tokenPurgeStatusCodes, default [401]) is purged from cache so
   the next request fetches a fresh one. The token-endpoint call also
-  supports proxy/TLS configuration (proxyURL/tlsCaCertPath/
+  supports proxy/TLS configuration (proxyURL/tlsCaCert/
   tlsInsecureSkipVerify).
 
 parameters:
@@ -138,7 +138,9 @@ parameters:
       description: |
         Maximum time to wait for a single token-endpoint call, as a Go
         duration string (e.g. "10s"). Has no effect when bearerToken is
-        set.
+        set. A zero or negative value falls back to the default rather
+        than being honored as-is (it would otherwise disable the timeout
+        entirely).
       default: "10s"
     defaultTokenTTL:
       type: string
@@ -146,7 +148,10 @@ parameters:
       description: |
         Fallback token lifetime, as a Go duration string (e.g. "1h"),
         used only when the token endpoint's response omits expires_in.
-        Has no effect when bearerToken is set.
+        Has no effect when bearerToken is set. A zero or negative value
+        falls back to the default rather than being honored as-is (it
+        would otherwise make the fetched token expire before it's even
+        cached).
       default: "1h"
     expiryBuffer:
       type: string
@@ -182,14 +187,22 @@ parameters:
         standard HTTP_PROXY/HTTPS_PROXY/NO_PROXY environment variables
         when omitted. Has no effect when bearerToken is set.
       default: ""
-    tlsCaCertPath:
+    tlsCaCert:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        Filesystem path to a PEM-encoded CA certificate to trust for the
-        token endpoint's TLS connection, in addition to the system trust
-        store - for a private/internal CA (on-prem IdPs, TLS-inspecting
-        corporate proxies). Has no effect when bearerToken is set.
+        PEM-encoded CA certificate content to trust for the token
+        endpoint's TLS connection - for a private/internal CA (on-prem
+        IdPs, TLS-inspecting corporate proxies). This is the certificate
+        content itself, not a filesystem path - reference a stored
+        secret rather than pasting it directly: "{{ secret \"handle\" }}".
+        Once set, the token endpoint's TLS connection trusts ONLY the
+        CA(s) given here, not the system's default public CAs as well -
+        if the endpoint's certificate chain also needs a public
+        root/intermediate to validate, concatenate that certificate into
+        this same value too (multiple PEM certificates in one value are
+        supported, to trust more than one CA). Has no effect when
+        bearerToken is set.
       default: ""
     tlsInsecureSkipVerify:
       type: boolean
@@ -219,6 +232,16 @@ parameters:
         Has no effect when bearerToken is set.
       enum: ["memory", "redis"]
       default: "memory"
+  oneOf:
+    - required: ["bearerToken"]
+      not:
+        anyOf:
+          - required: ["tokenEndpoint"]
+          - required: ["clientId"]
+          - required: ["clientSecret"]
+    - required: ["tokenEndpoint", "clientId", "clientSecret"]
+      not:
+        required: ["bearerToken"]
 
 systemParameters:
   type: object
@@ -290,19 +313,28 @@ systemParameters:
 
         connectionTimeout:
           type: string
-          description: Redis connection timeout, as a Go duration string (e.g. "5s").
+          description: |
+            Redis connection timeout, as a Go duration string (e.g. "5s").
+            A zero or negative value falls back to the default rather
+            than being honored as-is.
           default: "5s"
           "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.connection_timeout}"
 
         readTimeout:
           type: string
-          description: Redis read timeout, as a Go duration string (e.g. "3s").
+          description: |
+            Redis read timeout, as a Go duration string (e.g. "3s"). A
+            zero or negative value falls back to the default rather than
+            being honored as-is.
           default: "3s"
           "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.read_timeout}"
 
         writeTimeout:
           type: string
-          description: Redis write timeout, as a Go duration string (e.g. "3s").
+          description: |
+            Redis write timeout, as a Go duration string (e.g. "3s"). A
+            zero or negative value falls back to the default rather than
+            being honored as-is.
           default: "3s"
           "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.write_timeout}"
 
