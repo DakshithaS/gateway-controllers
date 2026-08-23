@@ -93,7 +93,8 @@ func hashRedisPassword(p string) string {
 
 // getOrCreateRedisClient returns the process-wide shared client for these connection
 // settings, creating (and pinging once) it on first use. Clients are never closed -
-// they live for the process lifetime.
+// they live for the process lifetime. pingErr is only meaningful when created is true;
+// a reused client (created == false) always returns a nil pingErr, not a real ping result.
 func getOrCreateRedisClient(opts *redis.Options, pingTimeout time.Duration) (client *redis.Client, created bool, pingErr error) {
 	// TLSConfig/credentials-provider hooks aren't comparable, so bypass the
 	// registry rather than risk reusing a client built for a different config.

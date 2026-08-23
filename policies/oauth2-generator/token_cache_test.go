@@ -252,8 +252,8 @@ func TestOauth2ConfigDiscriminator_ParamsKeyOrder_ProducesSameKey(t *testing.T) 
 	}
 }
 
-// Regression test: clientSecret must be part of the discriminator, or a wrong
-// secret could be served another config's cached token.
+// Regression test for a shipped incident: clientSecret must be part of the discriminator,
+// or a wrong secret could be served another config's cached token (cross-tenant leak).
 func TestOauth2ConfigDiscriminator_DifferentClientSecret_ProducesDifferentKey(t *testing.T) {
 	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientSecret = "secret-1" }))
 	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientSecret = "secret-2" }))

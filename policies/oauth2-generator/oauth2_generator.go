@@ -177,6 +177,8 @@ func (t tokenJSON) expiresInSeconds() (int64, bool) {
 // doTokenRequest POSTs form to tokenEndpoint and parses the response. style selects how the
 // client authenticates (HTTP Basic header vs client_id/client_secret form fields); extraHeaders
 // is applied last, skipping Authorization/Content-Type so it can never override them.
+// clientID/clientSecret are form-urlencoded before being combined into the Basic credential
+// (RFC 6749 Appendix B) - a raw base64(id+":"+secret) would mishandle a colon in either value.
 func doTokenRequest(ctx context.Context, httpClient *http.Client, tokenEndpoint string, style clientAuthStyle,
 	clientID, clientSecret string, form url.Values, extraHeaders map[string]string) (*Token, error) {
 	if style == authStyleInParams {
@@ -536,7 +538,8 @@ func getOrCreateTokenEndpointTransport(p oauth2Params) (*http.Transport, error) 
 
 // buildTokenEndpointTransport wires proxyURL and TLS settings into one Transport, setting Proxy
 // explicitly alongside TLSClientConfig - an unset Transport.Proxy means "never proxy", it does
-// not fall back to ProxyFromEnvironment.
+// not fall back to ProxyFromEnvironment. jwt-auth and opaque-token-auth each lost proxy support
+// this exact way by setting only TLSClientConfig.
 func buildTokenEndpointTransport(p oauth2Params) (*http.Transport, error) {
 	proxyFunc := http.ProxyFromEnvironment
 	if p.proxyURL != "" {
@@ -578,7 +581,9 @@ func parseCACertPool(pemContent string) (*x509.CertPool, error) {
 // resilientTokenSource wraps a real, IDP-fetching TokenSource with bounded retry for transient
 // failures. Concurrent Token() calls are single-flighted: only one goroutine runs the
 // retry-with-backoff sequence at a time, and every other caller shares its result instead of each
-// launching a full retry loop against an already-struggling IdP.
+// launching a full retry loop against an already-struggling IdP. The shared fetch runs on the
+// owner's ctx, so a joiner's own cancellation only affects itself, but the owner's cancellation
+// ends the fetch for every joiner too.
 type resilientTokenSource struct {
 	inner      TokenSource
 	maxRetries int
@@ -781,7 +786,8 @@ func getDurationParam(params map[string]interface{}, key string, def time.Durati
 }
 
 // getPositiveDurationParam is getDurationParam plus a non-positive guard, falling back to def
-// when the parsed duration is <= 0.
+// when the parsed duration is <= 0. expiryBuffer deliberately doesn't use this - 0 is a valid
+// value there (no early-refresh margin), unlike the durations that do.
 func getPositiveDurationParam(params map[string]interface{}, key string, def time.Duration) time.Duration {
 	d := getDurationParam(params, key, def)
 	if d <= 0 {
