@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/wso2/api-platform/sdk/core v0.2.18
+	github.com/wso2/api-platform/sdk/core v0.3.5
 )
 
 require (
