@@ -26,26 +26,6 @@ parameters:
   type: object
   additionalProperties: false
   properties:
-    bearerToken:
-      type: string
-      x-wso2-policy-advanced-param: true
-      minLength: 1
-      description: |
-        A directly supplied, already-valid credential (e.g. a long-lived
-        personal access token) injected as-is. Mutually exclusive with
-        tokenEndpoint/clientId/clientSecret.
-    grantType:
-      type: string
-      x-wso2-policy-advanced-param: false
-      description: |
-        OAuth2 grant type for the token-endpoint path: client_credentials
-        (standard machine-to-machine grant) or password (legacy identity
-        providers only). Defaults to client_credentials. Has no effect
-        when bearerToken is set.
-      enum:
-        - client_credentials
-        - password
-      default: client_credentials
     tokenEndpoint:
       type: string
       x-wso2-policy-advanced-param: false
@@ -60,13 +40,18 @@ parameters:
       description: |
         OAuth2 client ID used to authenticate to the token endpoint.
         Required unless bearerToken is set instead.
-    clientSecret:
+    grantType:
       type: string
-      x-wso2-policy-advanced-param: true
-      minLength: 1
+      x-wso2-policy-advanced-param: false
       description: |
-        OAuth2 client secret paired with clientId. Required unless
-        bearerToken is set instead.
+        OAuth2 grant type for the token-endpoint path: client_credentials
+        (standard machine-to-machine grant) or password (legacy identity
+        providers only). Defaults to client_credentials. Has no effect
+        when bearerToken is set.
+      enum:
+        - client_credentials
+        - password
+      default: client_credentials
     clientAuthMethod:
       type: string
       x-wso2-policy-advanced-param: false
@@ -79,20 +64,6 @@ parameters:
         - client_secret_basic
         - client_secret_post
       default: client_secret_basic
-    username:
-      type: string
-      x-wso2-policy-advanced-param: false
-      minLength: 1
-      description: |
-        Resource owner username. Required when grantType is password;
-        unused otherwise.
-    password:
-      type: string
-      x-wso2-policy-advanced-param: true
-      minLength: 1
-      description: |
-        Resource owner password, paired with username. Required when
-        grantType is password; unused otherwise.
     tokenRequestParams:
       type: object
       x-wso2-policy-advanced-param: false
@@ -105,6 +76,43 @@ parameters:
         client_credentials and grantType: password. Reference a stored
         secret for any sensitive value - {"someParam": "{{ secret
         \"handle\" }}"}.
+    headerName:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        HTTP header the credential is injected into. Applies to both
+        auth paths. Defaults to Authorization.
+      default: "Authorization"
+    bearerToken:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        A directly supplied, already-valid credential (e.g. a long-lived
+        personal access token) injected as-is. Mutually exclusive with
+        tokenEndpoint/clientId/clientSecret.
+    clientSecret:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        OAuth2 client secret paired with clientId. Required unless
+        bearerToken is set instead.
+    username:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Resource owner username. Required when grantType is password;
+        unused otherwise.
+    password:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Resource owner password, paired with username. Required when
+        grantType is password; unused otherwise.
     tokenRequestHeaders:
       type: object
       x-wso2-policy-advanced-param: true
@@ -115,17 +123,9 @@ parameters:
         subscription/API key header some identity providers require.
         Authorization and Content-Type are always ignored if set here.
         Reference a stored secret for any sensitive value.
-    headerName:
-      type: string
-      x-wso2-policy-advanced-param: false
-      minLength: 1
-      description: |
-        HTTP header the credential is injected into. Applies to both
-        auth paths. Defaults to Authorization.
-      default: "Authorization"
     valuePrefix:
       type: string
-      x-wso2-policy-advanced-param: false
+      x-wso2-policy-advanced-param: true
       description: |
         Prefix prepended to the credential value, followed by a single
         space (e.g. "Bearer" produces "Authorization: Bearer
@@ -142,6 +142,16 @@ parameters:
         than being honored as-is (it would otherwise disable the timeout
         entirely).
       default: "10s"
+    tokenRequestMaxRetries:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      minimum: 0
+      description: |
+        Maximum retries after a transient token-endpoint failure -
+        a network-level error or an HTTP 429/5xx from the identity
+        provider. A rejected credential (other 4xx) is never retried.
+        Set to 0 to disable. Has no effect when bearerToken is set.
+      default: 2
     defaultTokenTTL:
       type: string
       x-wso2-policy-advanced-param: true
@@ -178,6 +188,16 @@ parameters:
         6750 Section 3). Set to an empty list to disable. Has no effect
         when bearerToken is set.
       default: [401]
+    cacheStrategy:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        "memory" (default) caches the token in-process only, per
+        gateway-runtime replica. "redis" adds a shared tier in front of
+        the token endpoint (see systemParameters.redis) across replicas.
+        Has no effect when bearerToken is set.
+      enum: ["memory", "redis"]
+      default: "memory"
     proxyURL:
       type: string
       x-wso2-policy-advanced-param: true
@@ -212,36 +232,16 @@ parameters:
         entirely. Only for local/non-production environments. Has no
         effect when bearerToken is set.
       default: false
-    tokenRequestMaxRetries:
-      type: integer
-      x-wso2-policy-advanced-param: true
-      minimum: 0
-      description: |
-        Maximum retries after a transient token-endpoint failure -
-        a network-level error or an HTTP 429/5xx from the identity
-        provider. A rejected credential (other 4xx) is never retried.
-        Set to 0 to disable. Has no effect when bearerToken is set.
-      default: 2
-    cacheStrategy:
-      type: string
-      x-wso2-policy-advanced-param: true
-      description: |
-        "memory" (default) caches the token in-process only, per
-        gateway-runtime replica. "redis" adds a shared tier in front of
-        the token endpoint (see systemParameters.redis) across replicas.
-        Has no effect when bearerToken is set.
-      enum: ["memory", "redis"]
-      default: "memory"
   oneOf:
+    - required: ["tokenEndpoint", "clientId", "clientSecret"]
+      not:
+        required: ["bearerToken"]
     - required: ["bearerToken"]
       not:
         anyOf:
           - required: ["tokenEndpoint"]
           - required: ["clientId"]
           - required: ["clientSecret"]
-    - required: ["tokenEndpoint", "clientId", "clientSecret"]
-      not:
-        required: ["bearerToken"]
 
 systemParameters:
   type: object
