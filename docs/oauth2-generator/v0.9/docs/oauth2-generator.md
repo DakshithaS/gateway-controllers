@@ -28,7 +28,7 @@ in-process, and optionally shared across gateway-runtime replicas via Redis
 (`cacheStrategy: redis`). A token rejected by the upstream backend
 (`tokenPurgeStatusCodes`, default `[401]`) is purged from the cache so the
 next request fetches a fresh one. The token-endpoint call itself also
-supports proxying and custom TLS trust (`proxyURL`/`tlsCaCertPath`/
+supports proxying and custom TLS trust (`proxyURL`/`tlsCaCert`/
 `tlsInsecureSkipVerify`).
 
 ## Features
@@ -45,7 +45,7 @@ supports proxying and custom TLS trust (`proxyURL`/`tlsCaCertPath`/
   `429`, `5xx`), with exponential backoff and jitter
 - Configurable credential injection: any header name, any (or no) scheme
   prefix
-- Proxy (`proxyURL`) and custom TLS trust (`tlsCaCertPath` /
+- Proxy (`proxyURL`) and custom TLS trust (`tlsCaCert` /
   `tlsInsecureSkipVerify`) for the token-endpoint call, independent of the
   proxied request's own upstream connection
 - Extra headers (`tokenRequestHeaders`) and extra grant/body parameters
@@ -65,27 +65,27 @@ fields), and **system parameters**, set by the gateway operator in
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `bearerToken` | string | Conditional | - | Directly supplied credential. Mutually exclusive with `tokenEndpoint`/`clientId`/`clientSecret` — configure exactly one of the two auth paths. When set, every token-endpoint-only parameter below is unused. |
 | `tokenEndpoint` | string | Conditional | - | OAuth2 token endpoint URL. Required (together with `clientId`/`clientSecret`) when `bearerToken` is not set. |
 | `clientId` | string | Conditional | - | OAuth2 client ID. Required with `tokenEndpoint`. |
-| `clientSecret` | string | Conditional | - | OAuth2 client secret. Required with `tokenEndpoint`. Supply either a literal value or a secret reference (e.g. a `secret` template expression). Never returned by the management API on read. |
 | `grantType` | string | No | `"client_credentials"` | OAuth2 grant: `"client_credentials"` (RFC 6749 §4.4, the standard machine-to-machine grant — prefer this whenever the identity provider supports it) or `"password"` (RFC 6749 §4.3, Resource Owner Password Credentials — for bridging to legacy identity providers that only expose this grant; discouraged for new integrations, since it requires handling the resource owner's raw credentials directly). |
-| `username` | string | Conditional | - | Resource owner username. Required when `grantType` is `"password"`. |
-| `password` | string | Conditional | - | Resource owner password. Required when `grantType` is `"password"`. Never returned by the management API on read. |
 | `clientAuthMethod` | string | No | `"client_secret_basic"` | How the client ID/secret are presented to the token endpoint: `"client_secret_basic"` (HTTP Basic `Authorization` header — RFC 6749's preferred convention) or `"client_secret_post"` (as `client_id`/`client_secret` form fields in the request body). |
-| `tokenRequestParams` | object (string map) | No | - | Extra form fields sent with the token request. For `client_credentials`, the whole map is forwarded verbatim (e.g. `scope`, `audience`, `resource`). For `password`, only `scope` has any effect — the grant's own request encoding has no hook for anything else. |
-| `tokenRequestHeaders` | object (string map) | No | - | Extra HTTP headers sent with the token-endpoint request, on top of whatever `clientAuthMethod`/the grant itself already set. `Authorization` and `Content-Type` are dropped if present — both are already managed by `clientAuthMethod` and the grant's own request encoding. |
+| `tokenRequestParams` | object (string map) | No | - | Extra form fields sent with the token request. The whole map is forwarded verbatim as additional form fields for both `client_credentials` (e.g. `scope`, `audience`, `resource`) and `password` |
 | `headerName` | string | No | `"Authorization"` | Header the generated (or directly supplied) credential is injected into. |
+| `bearerToken` | string | Conditional | - | Directly supplied credential. Mutually exclusive with `tokenEndpoint`/`clientId`/`clientSecret` — configure exactly one of the two auth paths. When set, every token-endpoint-only parameter below is unused. |
+| `clientSecret` | string | Conditional | - | OAuth2 client secret. Required with `tokenEndpoint`. Supply either a literal value or a secret reference (e.g. a `secret` template expression) — see the redaction caveat under [Security Considerations](#security-considerations). |
+| `username` | string | Conditional | - | Resource owner username. Required when `grantType` is `"password"`. |
+| `password` | string | Conditional | - | Resource owner password. Required when `grantType` is `"password"` — see the redaction caveat under [Security Considerations](#security-considerations). |
+| `tokenRequestHeaders` | object (string map) | No | - | Extra HTTP headers sent with the token-endpoint request, on top of whatever `clientAuthMethod`/the grant itself already set. `Authorization` and `Content-Type` are dropped if present — both are already managed by `clientAuthMethod` and the grant's own request encoding. |
 | `valuePrefix` | string | No | `"Bearer"` | Prepended (with a single space) to the credential value. Set to `""` explicitly for no prefix at all. |
-| `tokenRequestTimeout` | string | No | `"10s"` | Bounds a single token-endpoint HTTP call (Go duration format). Without this, a hung identity provider would otherwise block a token fetch indefinitely. |
+| `tokenRequestTimeout` | string | No | `"10s"` | Bounds a single token-endpoint HTTP call (Go duration format). Without this, a hung identity provider would otherwise block a token fetch indefinitely. A zero or negative value falls back to the default rather than being honored as-is (it would otherwise disable the timeout entirely). |
 | `tokenRequestMaxRetries` | integer | No | `2` | Additional attempts after the initial token-endpoint call fails with a transient error (network error, `429`, `5xx`) — a rejected/malformed credential (other `4xx`) is never retried. Backoff is exponential with jitter, capped at 2s. |
-| `defaultTokenTTL` | string | No | `"1h"` | Applied when the token endpoint's response omits `expires_in` (Go duration format). Without this fallback, such a token would never be cached — every request would re-fetch it. |
-| `expiryBuffer` | string | No | `"30s"` | How long before a token's actual expiry it's treated as stale and refreshed early (Go duration format) — so a request is never forwarded upstream with a credential that expires mid-flight. Applies to both the cache tiers and the token endpoint's own refresh timing, replacing the hardcoded 10s margin `golang.org/x/oauth2` uses internally. Keep this comfortably below `defaultTokenTTL` and any `expires_in` the token endpoint actually returns — a value at or above the token's real lifetime forces a fresh fetch on every request. |
+| `defaultTokenTTL` | string | No | `"1h"` | Applied when the token endpoint's response omits `expires_in` (Go duration format). Without this fallback, such a token would never be cached — every request would re-fetch it. A zero or negative value falls back to the default rather than being honored as-is (it would otherwise make the fetched token expire before it's even cached). |
+| `expiryBuffer` | string | No | `"30s"` | How long before a token's actual expiry it's treated as stale and refreshed early (Go duration format) — so a request is never forwarded upstream with a credential that expires mid-flight. Applies to both the cache tiers and the token endpoint's own refresh timing, replacing the hardcoded 10s margin `golang.org/x/oauth2` uses internally. Keep this comfortably below `defaultTokenTTL` and any `expires_in` the token endpoint actually returns — a value at or above the token's real lifetime forces a fresh fetch on every request. Unlike every other duration parameter on this page, `0` is honored as-is here (no early-refresh margin — a token only refreshes once actually expired); only a *negative* value falls back to the `30s` default. |
 | `tokenPurgeStatusCodes` | integer array | No | `[401]` | Upstream response status codes that purge the cached token — a signal that the token this policy just injected was rejected (e.g. revoked out-of-band at the identity provider). Set to `[]` to disable purge-on-rejection entirely. |
-| `proxyURL` | string | No | - | HTTP/HTTPS proxy for the token-endpoint call only — independent of the proxied request's own upstream connection. |
-| `tlsCaCertPath` | string | No | - | Path (inside the gateway-runtime container) to a PEM-encoded CA certificate to trust for the token-endpoint call, for a private/internal certificate authority. |
-| `tlsInsecureSkipVerify` | boolean | No | `false` | Skips TLS certificate verification for the token-endpoint call. Only ever use this in local/throwaway test setups, never against a real identity provider. |
 | `cacheStrategy` | string | No | `"memory"` | Token cache tier(s): `"memory"` (per-replica, in-process only) or `"redis"` (adds a shared Redis tier in front of the token endpoint — see [System Parameters](#system-parameters-from-configtoml) below). |
+| `proxyURL` | string | No | `""` | Explicit HTTP/HTTPS proxy URL for the token-endpoint call only (e.g. `"http://user:pass@proxy.internal:8080"`) — independent of the proxied request's own upstream connection. Defaults to the standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables when omitted. |
+| `tlsCaCert` | string | No | `""` | PEM-encoded CA certificate **content** to trust for the token endpoint's TLS connection — for a private/internal CA (on-prem IdPs, TLS-inspecting corporate proxies). This is the certificate content itself, not a filesystem path; supply it via a secret reference (e.g. `{{ secret "handle" }}`) rather than a literal value. Once set, the token endpoint's TLS connection trusts *only* the CA(s) given here, not the system's default public CAs as well — if the endpoint's certificate chain also needs a public root/intermediate to validate, concatenate that certificate into this same value too (multiple PEM certificates in one value are supported, to trust more than one CA). |
+| `tlsInsecureSkipVerify` | boolean | No | `false` | Skips TLS certificate verification for the token-endpoint call. Only ever use this in local/throwaway test setups, never against a real identity provider. |
 
 > **Deprecated fields.** `header`/`value` on an LLM/MCP resource's
 > `upstream.auth` (`type: api-key`) are deprecated in favor of `policyParams`
@@ -98,12 +98,13 @@ fields), and **system parameters**, set by the gateway operator in
 
 Redis connection settings for the shared cache tier are operator/gateway-level,
 not something an individual API publisher sets — they resolve from the
-gateway's own `config.toml`, under the **shared** `policy_configurations.redis`
-section (the same section `advanced-ratelimit` reads), not a section
-namespaced to this policy. `keyPrefix` is the one exception: it stays under
-this policy's own `oauth2_generator_v1` namespace, so that sharing a Redis
-connection with another policy never collides in the keyspace. Only read at
-all when a policy instance sets `cacheStrategy: redis`.
+gateway's own `config.toml`, entirely under this policy's own
+`policy_configurations.oauth2_generator_v1.redis` section. This section is
+*not* shared with any other Redis-using policy (e.g. `advanced-ratelimit`
+resolves its own settings from its own `policy_configurations.ratelimit_v1.redis`
+section instead) — every field below, including `host`/`port`, is namespaced
+to this policy, not just `keyPrefix`. Only read at all when a policy instance
+sets `cacheStrategy: redis`.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -112,22 +113,20 @@ all when a policy instance sets `cacheStrategy: redis`.
 | `username` | string | No | `""` | Redis ACL username (optional, Redis 6+). |
 | `password` | string | No | `""` | Redis authentication password (optional). |
 | `db` | integer | No | `0` | Redis database index (0-15). |
-| `keyPrefix` | string | No | `"oauth2-generator:token:v1:"` | Prefix for this policy's Redis keys. Resolved from `policy_configurations.oauth2_generator_v1.redis.key_prefix` — namespaced, unlike every other field on this page. |
+| `keyPrefix` | string | No | `"oauth2-generator:token:v1:"` | Prefix for this policy's Redis keys, so that sharing a Redis *server* with another policy never collides in the keyspace. |
 | `failureMode` | string | No | `"open"` | Behavior when Redis is unavailable: `"open"` falls back to fetching a fresh token directly from the token endpoint; `"closed"` treats a Redis error as a token-acquisition failure (`502`). |
 | `connectionTimeout` | string | No | `"5s"` | Redis connection timeout (Go duration format). |
 | `readTimeout` | string | No | `"3s"` | Redis read timeout (Go duration format). |
 | `writeTimeout` | string | No | `"3s"` | Redis write timeout (Go duration format). |
-| `poolSize` | integer | No | `0` | Connection pool size for the shared Redis client (`0` = go-redis default, 10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint across every Redis-using policy on the gateway, not per policy instance. |
+| `poolSize` | integer | No | `0` | Connection pool size for the shared Redis client (`0` = go-redis default, 10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint across every *oauth2-generator* policy instance on this gateway with identical connection settings — not across other policy types (each maintains its own separate pool), and not one pool per policy instance. |
 
 #### Sample System Configuration
 
 ```toml
-[policy_configurations.redis]
+[policy_configurations.oauth2_generator_v1.redis]
 host = "redis.example.com"
 port = 6379
 failure_mode = "open"
-
-[policy_configurations.oauth2_generator_v1.redis]
 key_prefix = "my-gateway:oauth2:"
 ```
 
@@ -247,6 +246,19 @@ spec:
         tokenRequestMaxRetries: 3
 ```
 
+### Example 5: Trusting a Private CA for the Token Endpoint
+
+```yaml
+  policies:
+    - name: oauth2-generator
+      version: v0
+      params:
+        tokenEndpoint: https://idp.internal.example.com/oauth2/token
+        clientId: gateway-client
+        clientSecret: '{{ secret "internal-idp-client-secret" }}'
+        tlsCaCert: '{{ secret "internal-idp-ca-bundle" }}'
+```
+
 ## Error Responses
 
 All error responses are returned as JSON with `Content-Type: application/json`.
@@ -276,19 +288,18 @@ is logged internally only, never disclosed to the caller.
   Password grant requires the gateway to handle the resource owner's raw
   username/password directly; use it only to bridge legacy identity
   providers that offer no alternative.
-- **Secret storage** – supply `clientSecret`/`password`/`bearerToken` as a
-  secret reference rather than a literal value where possible; either way,
-  these fields are write-only and never returned by the management API on
-  read.
 - **`tlsInsecureSkipVerify`** – only ever appropriate for local/throwaway
   test setups against a self-signed certificate. Never use it against a
-  real identity provider; prefer `tlsCaCertPath` to trust a specific private
+  real identity provider; prefer `tlsCaCert` to trust a specific private
   CA instead.
-- **Redis cache is a shared resource** – the shared connection pool and
-  keyspace are process-wide across every Redis-using policy on the gateway;
-  `keyPrefix` prevents key collisions, but the Redis instance itself should
-  still be access-controlled like any other credential store, since cached
-  entries are access tokens.
+- **Redis cache is namespaced per policy, not a shared resource across policy types** –
+  the connection pool and keyspace are shared only across oauth2-generator
+  policy instances with identical connection settings, not with other
+  Redis-using policies (each has its own separate `policy_configurations.<policy>_v1.redis`
+  section and pool). `keyPrefix` prevents key collisions between multiple
+  oauth2-generator instances pointed at the same Redis server; the Redis
+  instance itself should still be access-controlled like any other
+  credential store, since cached entries are access tokens.
 - **`failureMode: closed`** – if you cannot tolerate a cache-tier outage
   silently falling back to direct token-endpoint calls (e.g. for load
   reasons), set this explicitly; the default (`open`) prioritizes
