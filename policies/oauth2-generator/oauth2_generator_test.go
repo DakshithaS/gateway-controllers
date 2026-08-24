@@ -1344,7 +1344,10 @@ func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"access_token": accessToken,
 			"token_type":   "Bearer",
-			"expires_in":   300,
+			// 3600s, not the usual 300s fixture value - must clear defaultExpiryBuffer
+			// (5m) with room to spare, or the cache-reuse assertion below is testing
+			// nothing: a token expiring inside the buffer window is never "fresh".
+			"expires_in": 3600,
 		})
 	}))
 	defer server.Close()

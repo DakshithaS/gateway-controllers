@@ -40,6 +40,13 @@ parameters:
       description: |
         OAuth2 client ID used to authenticate to the token endpoint.
         Required unless bearerToken is set instead.
+    clientSecret:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        OAuth2 client secret paired with clientId. Required unless
+        bearerToken is set instead.
     grantType:
       type: string
       x-wso2-policy-advanced-param: false
@@ -76,14 +83,6 @@ parameters:
         client_credentials and grantType: password. Reference a stored
         secret for any sensitive value - {"someParam": "{{ secret
         \"handle\" }}"}.
-    headerName:
-      type: string
-      x-wso2-policy-advanced-param: false
-      minLength: 1
-      description: |
-        HTTP header the credential is injected into. Applies to both
-        auth paths. Defaults to Authorization.
-      default: "Authorization"
     bearerToken:
       type: string
       x-wso2-policy-advanced-param: false
@@ -92,13 +91,6 @@ parameters:
         A directly supplied, already-valid credential (e.g. a long-lived
         personal access token) injected as-is. Mutually exclusive with
         tokenEndpoint/clientId/clientSecret.
-    clientSecret:
-      type: string
-      x-wso2-policy-advanced-param: true
-      minLength: 1
-      description: |
-        OAuth2 client secret paired with clientId. Required unless
-        bearerToken is set instead.
     username:
       type: string
       x-wso2-policy-advanced-param: true
@@ -123,6 +115,14 @@ parameters:
         subscription/API key header some identity providers require.
         Authorization and Content-Type are always ignored if set here.
         Reference a stored secret for any sensitive value.
+    headerName:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        HTTP header the credential is injected into. Applies to both
+        auth paths. Defaults to Authorization.
+      default: "Authorization"
     valuePrefix:
       type: string
       x-wso2-policy-advanced-param: true
@@ -168,13 +168,13 @@ parameters:
       x-wso2-policy-advanced-param: true
       description: |
         How long before a token's actual expiry it's treated as stale and
-        refreshed early, as a Go duration string (e.g. "30s") - so a
+        refreshed early, as a Go duration string (e.g. "5m") - so a
         request is never forwarded upstream with a credential that expires
         mid-flight. Keep this comfortably below defaultTokenTTL and any
         expires_in the token endpoint actually returns - a value at or
         above the token's real lifetime forces a fresh fetch on every
         request. Has no effect when bearerToken is set.
-      default: "30s"
+      default: "5m"
     tokenPurgeStatusCodes:
       type: array
       x-wso2-policy-advanced-param: true

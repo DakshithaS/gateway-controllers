@@ -63,7 +63,7 @@ const (
 	// defaultExpiryBuffer is how far ahead of expiry a token is treated as stale, for both the
 	// caching layer (tokenFreshEnough) and the token source's own reuse (reuseTokenSource) - both
 	// must agree on the same value.
-	defaultExpiryBuffer = 30 * time.Second
+	defaultExpiryBuffer = 5 * time.Minute
 
 	// maxTokenResponseBytes bounds how much of a token response is read, regardless of
 	// Content-Length, so a misbehaving IdP can't exhaust memory.
