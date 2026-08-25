@@ -121,6 +121,17 @@ type TokenError struct {
 	ErrorDescription string
 }
 
+// nonRetryableTokenError wraps a token-response error that retrying can never fix: a malformed
+// body or a well-formed-but-incomplete response. Distinct from *TokenError (a definitive rejection
+// FROM the token endpoint, retryable only on 429/5xx) and from a plain network/build-request
+// error (retryable by default) - see isRetryableTokenError.
+type nonRetryableTokenError struct {
+	err error
+}
+
+func (e *nonRetryableTokenError) Error() string { return e.err.Error() }
+func (e *nonRetryableTokenError) Unwrap() error { return e.err }
+
 func (e *TokenError) Error() string {
 	switch {
 	case e.ErrorDescription != "":
@@ -206,7 +217,7 @@ func doTokenRequest(ctx context.Context, httpClient *http.Client, tokenEndpoint 
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes+1))
 	if err != nil {
@@ -231,10 +242,10 @@ func doTokenRequest(ctx context.Context, httpClient *http.Client, tokenEndpoint 
 
 	var parsed tokenJSON
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("decoding token response: %w", err)
+		return nil, &nonRetryableTokenError{err: fmt.Errorf("decoding token response: %w", err)}
 	}
 	if parsed.AccessToken == "" {
-		return nil, fmt.Errorf("token endpoint response is missing access_token")
+		return nil, &nonRetryableTokenError{err: fmt.Errorf("token endpoint response is missing access_token")}
 	}
 
 	tok := &Token{
@@ -280,14 +291,18 @@ type tokenFetcherFunc func(ctx context.Context) (*Token, error)
 
 func (f tokenFetcherFunc) Token(ctx context.Context) (*Token, error) { return f(ctx) }
 
-// reuseTokenSource wraps a raw, IdP-fetching TokenSource with mutex-guarded reuse: the same token
-// is served until it's within buffer of expiry, at which point one caller refetches while the rest
-// queue behind the lock. Mirrors golang.org/x/oauth2's reuseTokenSource with a configurable buffer.
+// reuseTokenSource wraps a raw, IdP-fetching TokenSource with reuse: the same token is served
+// until it's within buffer of expiry, at which point one caller refetches while the rest share its
+// result via the same single-flight pattern as resilientTokenSource (see tokenCall) - the fetch
+// itself runs with the lock released, so a waiting caller's own ctx cancellation is honored
+// immediately instead of being blocked behind whichever caller is holding the lock.
 type reuseTokenSource struct {
 	mu     sync.Mutex
 	fresh  TokenSource
 	tok    *Token
 	buffer time.Duration
+
+	inFlight *tokenCall // non-nil while a refetch is running
 }
 
 func newReuseTokenSource(fresh TokenSource, buffer time.Duration) *reuseTokenSource {
@@ -296,16 +311,35 @@ func newReuseTokenSource(fresh TokenSource, buffer time.Duration) *reuseTokenSou
 
 func (s *reuseTokenSource) Token(ctx context.Context) (*Token, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if tokenFreshEnough(s.tok, s.buffer) {
-		return s.tok, nil
+		tok := s.tok
+		s.mu.Unlock()
+		return tok, nil
 	}
-	tok, err := s.fresh.Token(ctx)
-	if err != nil {
-		return nil, err
+	if call := s.inFlight; call != nil {
+		s.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.tok, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	s.tok = tok
-	return tok, nil
+	call := &tokenCall{done: make(chan struct{})}
+	s.inFlight = call
+	s.mu.Unlock()
+
+	call.tok, call.err = s.fresh.Token(ctx)
+
+	s.mu.Lock()
+	if call.err == nil {
+		s.tok = call.tok
+	}
+	s.inFlight = nil
+	s.mu.Unlock()
+	close(call.done)
+
+	return call.tok, call.err
 }
 
 // oauth2Params bundles all extracted, validated policy params.
@@ -420,6 +454,22 @@ func redactURLCredentials(s string) string {
 	return credentialedURLPattern.ReplaceAllString(s, "${1}[REDACTED]@")
 }
 
+// sanitizeEndpointForLogging reduces an operator-configured endpoint URL to scheme+host+path
+// before it's logged. tokenEndpoint is user configuration and can carry sensitive URL components
+// (embedded userinfo credentials, an API key or token in the query string), so log lines never
+// emit it verbatim - only this reduced form. Falls back to a fixed placeholder rather than log the
+// raw value when it doesn't even parse as a URL.
+func sanitizeEndpointForLogging(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "[unparsable-endpoint]"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 // buildHeaderValue combines valuePrefix and the credential into the header value to inject.
 // An empty prefix yields the raw credential with no scheme prefix.
 func buildHeaderValue(prefix, token string) string {
@@ -439,7 +489,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	}
 	mode := p.mode()
 	slog.Debug("OAuth2Generator: validated params", "mode", mode,
-		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID,
+		"grantType", p.grantType, "tokenEndpoint", sanitizeEndpointForLogging(p.tokenEndpoint), "clientId", p.clientID,
 		"clientAuthMethod", p.clientAuthMethod, "headerName", p.headerName)
 
 	var tokenSource tokenProvider
@@ -470,7 +520,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	pol.tokenFunc = pol.tokenSource.Token
 
 	slog.Debug("OAuth2Generator: policy initialized", "mode", pol.mode,
-		"grantType", pol.grantType, "tokenEndpoint", pol.tokenEndpoint, "clientId", pol.clientID,
+		"grantType", pol.grantType, "tokenEndpoint", sanitizeEndpointForLogging(pol.tokenEndpoint), "clientId", pol.clientID,
 		"clientAuthMethod", pol.clientAuthMethod, "headerName", pol.headerName)
 
 	return pol, nil
@@ -648,9 +698,15 @@ func (r *resilientTokenSource) fetchWithRetry(ctx context.Context) (*Token, erro
 	return nil, lastErr
 }
 
-// isRetryableTokenError classifies a token-fetch error as worth retrying. A *TokenError is only
-// retryable on 429/5xx; any other error never got a definitive rejection from the IdP.
+// isRetryableTokenError classifies a token-fetch error as worth retrying. A *nonRetryableTokenError
+// (malformed/incomplete response body) never succeeds by retrying unchanged. A *TokenError is only
+// retryable on 429/5xx. Any other error (network failure, request build failure) didn't get a
+// definitive rejection from the IdP and is retried by default.
 func isRetryableTokenError(err error) bool {
+	var nonRetryable *nonRetryableTokenError
+	if errors.As(err, &nonRetryable) {
+		return false
+	}
 	var tokErr *TokenError
 	if errors.As(err, &tokErr) {
 		return tokErr.StatusCode == http.StatusTooManyRequests || tokErr.StatusCode >= 500
@@ -951,7 +1007,7 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 // forwarded to the upstream backend.
 func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, _ map[string]interface{}) policy.RequestHeaderAction {
 	slog.Debug("OAuth2Generator: authenticating outbound request", "method", reqCtx.Method, "path", reqCtx.Path,
-		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
+		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", sanitizeEndpointForLogging(p.tokenEndpoint), "clientId", p.clientID)
 
 	tok, err := p.retrieveToken(ctx)
 	if err != nil {
@@ -973,7 +1029,7 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 func (p *Policy) OnResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
 	if _, purge := p.purgeStatusCodes[respCtx.ResponseStatus]; purge {
 		slog.Warn("OAuth2Generator: upstream rejected the cached token, purging it for the next request",
-			"status", respCtx.ResponseStatus, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
+			"status", respCtx.ResponseStatus, "grantType", p.grantType, "tokenEndpoint", sanitizeEndpointForLogging(p.tokenEndpoint), "clientId", p.clientID)
 		p.tokenSource.Purge()
 	}
 	return policy.DownstreamResponseHeaderModifications{}
@@ -1020,7 +1076,7 @@ func (p *Policy) authProperties() map[string]string {
 // endpoint that failed, not a client-auth rejection.
 func (p *Policy) authFailure(shared *policy.SharedContext, reason string, cause error) policy.RequestHeaderAction {
 	slog.Error("OAuth2Generator: credential acquisition failed", "reason", reason, "error", redactURLCredentials(cause.Error()),
-		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
+		"mode", p.mode, "grantType", p.grantType, "tokenEndpoint", sanitizeEndpointForLogging(p.tokenEndpoint), "clientId", p.clientID)
 
 	shared.AuthContext = &policy.AuthContext{
 		Authenticated: false,

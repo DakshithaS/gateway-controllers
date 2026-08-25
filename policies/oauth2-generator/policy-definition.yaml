@@ -179,6 +179,16 @@ parameters:
           - required: ["tokenEndpoint"]
           - required: ["clientId"]
           - required: ["clientSecret"]
+  allOf:
+    - if:
+        required: ["grantType"]
+        properties:
+          grantType:
+            const: password
+        not:
+          required: ["bearerToken"]
+      then:
+        required: ["username", "password"]
 
 systemParameters:
   type: object

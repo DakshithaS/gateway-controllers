@@ -375,6 +375,47 @@ func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
 	}
 }
 
+// Regression test for the whole-branch review's cache-invalidation finding: a fetch that started
+// before Purge (against the pre-purge inner token source) must not repopulate the cache once it
+// completes, or the purge is silently undone and later requests reuse the token the upstream just
+// rejected until the expiry buffer elapses. Memory-only cache strategy - no real Redis required.
+func TestRedisCachingTokenSource_PurgeDuringInFlightFetch_DoesNotRepopulateCache(t *testing.T) {
+	fetchStarted := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	inner := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		close(fetchStarted)
+		<-releaseFetch
+		return &Token{AccessToken: "pre-purge-token", Expiry: time.Now().Add(time.Hour)}, nil
+	})
+
+	params := testParams()
+	provider := mustNewRedisCachingTokenSource(t, inner, cacheParams{strategy: CacheStrategyMemory}, params)
+	src, ok := provider.(*redisCachingTokenSource)
+	if !ok {
+		t.Fatalf("expected *redisCachingTokenSource, got %T", provider)
+	}
+
+	fetchDone := make(chan struct{})
+	var fetchedTok *Token
+	var fetchErr error
+	go func() {
+		defer close(fetchDone)
+		fetchedTok, fetchErr = src.Token(context.Background())
+	}()
+
+	<-fetchStarted // the fetch is now in flight, holding no lock
+	src.Purge()    // lands while the fetch above is still running against the pre-purge inner
+	close(releaseFetch)
+	<-fetchDone
+
+	if fetchErr != nil || fetchedTok == nil || fetchedTok.AccessToken != "pre-purge-token" {
+		t.Fatalf("expected the in-flight fetch to still hand its own caller a usable token, got tok=%+v err=%v", fetchedTok, fetchErr)
+	}
+	if tok := src.localToken(); tok != nil {
+		t.Errorf("expected Purge to prevent the in-flight fetch's result from repopulating the local cache, but found %+v cached", tok)
+	}
+}
+
 // Verifies the defaultTTL fallback when an IdP omits expires_in, leaving
 // Expiry zero - without it, caching would silently never engage.
 func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *testing.T) {

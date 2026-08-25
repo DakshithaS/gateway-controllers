@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -1549,7 +1550,10 @@ func TestBuildTokenEndpointTransport_ExplicitProxyURLOverridesEnvironment(t *tes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "https://idp.example.com/token", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://idp.example.com/token", nil)
+	if err != nil {
+		t.Fatalf("unexpected error building the probe request: %v", err)
+	}
 	got, err := transport.Proxy(req)
 	if err != nil {
 		t.Fatalf("unexpected error resolving proxy: %v", err)
@@ -1601,6 +1605,31 @@ func TestRedactURLCredentials(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := redactURLCredentials(tt.in); got != tt.want {
 				t.Errorf("redactURLCredentials(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ─── sanitizeEndpointForLogging ──────────────────────────────────────────────
+
+func TestSanitizeEndpointForLogging(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain endpoint, nothing to strip", "https://idp.example.com/token", "https://idp.example.com/token"},
+		{"query string stripped", "https://idp.example.com/token?api_key=s3cr3t&x=1", "https://idp.example.com/token"},
+		{"embedded userinfo stripped", "https://alice:s3cr3t@idp.example.com/token", "https://idp.example.com/token"},
+		{"fragment stripped", "https://idp.example.com/token#accessTokenAbc123", "https://idp.example.com/token"},
+		{"userinfo and query both stripped", "https://alice:s3cr3t@idp.example.com/token?api_key=xyz", "https://idp.example.com/token"},
+		{"not a URL at all", "not a url", "[unparsable-endpoint]"},
+		{"empty string", "", "[unparsable-endpoint]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeEndpointForLogging(tt.in); got != tt.want {
+				t.Errorf("sanitizeEndpointForLogging(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -1720,6 +1749,9 @@ func TestIsRetryableTokenError(t *testing.T) {
 		{"400 invalid_request", &TokenError{StatusCode: http.StatusBadRequest, ErrorCode: "invalid_request"}, false},
 		{"401 invalid_client", &TokenError{StatusCode: http.StatusUnauthorized, ErrorCode: "invalid_client"}, false},
 		{"403 forbidden", &TokenError{StatusCode: http.StatusForbidden, ErrorCode: "access_denied"}, false},
+		{"malformed JSON body", &nonRetryableTokenError{err: errors.New("decoding token response: unexpected EOF")}, false},
+		{"missing access_token", &nonRetryableTokenError{err: errors.New("token endpoint response is missing access_token")}, false},
+		{"wrapped nonRetryableTokenError", fmt.Errorf("doTokenRequest: %w", &nonRetryableTokenError{err: errors.New("missing access_token")}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1907,5 +1939,140 @@ func TestResilientTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWitho
 	<-ownerDone
 	if ownerErr != nil || ownerTok == nil || ownerTok.AccessToken != "slow-token" {
 		t.Errorf("expected the owner's shared fetch to still complete successfully despite the joiner's ctx expiring, got tok=%+v err=%v", ownerTok, ownerErr)
+	}
+}
+
+// ─── reuseTokenSource ────────────────────────────────────────────────────────
+
+func TestReuseTokenSource_ServesCachedTokenWithoutRefetchingWhileFresh(t *testing.T) {
+	var calls int32
+	fresh := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		atomic.AddInt32(&calls, 1)
+		return &Token{AccessToken: "tok", Expiry: time.Now().Add(time.Hour)}, nil
+	})
+	src := newReuseTokenSource(fresh, 5*time.Minute)
+
+	for i := 0; i < 3; i++ {
+		tok, err := src.Token(context.Background())
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if tok.AccessToken != "tok" {
+			t.Errorf("call %d: unexpected token: %+v", i, tok)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("expected exactly 1 real fetch while the token stays fresh, got %d", got)
+	}
+}
+
+func TestReuseTokenSource_RefetchesOnceStale(t *testing.T) {
+	var calls int32
+	fresh := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		n := atomic.AddInt32(&calls, 1)
+		return &Token{AccessToken: fmt.Sprintf("tok-%d", n), Expiry: time.Now().Add(time.Hour)}, nil
+	})
+	src := newReuseTokenSource(fresh, 5*time.Minute)
+
+	first, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	src.tok.Expiry = time.Now() // force staleness without waiting out a real buffer
+
+	second, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if first.AccessToken == second.AccessToken {
+		t.Errorf("expected a refetch once the cached token went stale, got the same token twice: %q", first.AccessToken)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("expected exactly 2 real fetches (initial + one refetch), got %d", got)
+	}
+}
+
+// N concurrent Token() calls arriving while the cached token is stale must share one refetch.
+func TestReuseTokenSource_ConcurrentCallsWhileStale_ShareOneFetch(t *testing.T) {
+	var calls int32
+	fresh := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // wide join window for every goroutine below
+		return &Token{AccessToken: "shared-token", Expiry: time.Now().Add(time.Hour)}, nil
+	})
+	src := newReuseTokenSource(fresh, 5*time.Minute)
+
+	const n = 20
+	results := make([]*Token, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = src.Token(context.Background())
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("expected exactly 1 real fetch shared across %d concurrent callers, got %d", n, got)
+	}
+	for i := range results {
+		if errs[i] != nil {
+			t.Errorf("caller %d: unexpected error: %v", i, errs[i])
+		}
+		if results[i] == nil || results[i].AccessToken != "shared-token" {
+			t.Errorf("caller %d: unexpected result: %+v", i, results[i])
+		}
+	}
+}
+
+// Regression test for the whole-branch review's concurrency finding: a caller joining an
+// in-flight refetch must bail out on its own ctx expiry rather than being blocked behind
+// whichever caller is running the fetch, and the shared fetch itself must still complete and
+// populate the cache for later callers.
+func TestReuseTokenSource_JoiningCallerContextCancellation_ReturnsEarlyWithoutBlockingOnFetch(t *testing.T) {
+	fresh := tokenFetcherFunc(func(ctx context.Context) (*Token, error) {
+		time.Sleep(150 * time.Millisecond)
+		return &Token{AccessToken: "slow-token", Expiry: time.Now().Add(time.Hour)}, nil
+	})
+	src := newReuseTokenSource(fresh, 5*time.Minute)
+
+	var ownerTok *Token
+	var ownerErr error
+	ownerDone := make(chan struct{})
+	go func() {
+		defer close(ownerDone)
+		ownerTok, ownerErr = src.Token(context.Background())
+	}()
+
+	time.Sleep(20 * time.Millisecond) // let the owner start and register inFlight
+
+	joinerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := src.Token(joinerCtx)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the joining caller to get context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected the joining caller to return promptly on its own ctx expiry instead of blocking on the fetch, took %s", elapsed)
+	}
+
+	<-ownerDone
+	if ownerErr != nil || ownerTok == nil || ownerTok.AccessToken != "slow-token" {
+		t.Errorf("expected the owner's shared fetch to still complete successfully despite the joiner's ctx expiring, got tok=%+v err=%v", ownerTok, ownerErr)
+	}
+
+	// A later caller must see the token the owner's fetch just populated, not refetch again.
+	cached, err := src.Token(context.Background())
+	if err != nil || cached == nil || cached.AccessToken != "slow-token" {
+		t.Errorf("expected a later caller to reuse the token the owner's fetch populated, got tok=%+v err=%v", cached, err)
 	}
 }

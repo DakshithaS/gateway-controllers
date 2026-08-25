@@ -274,6 +274,10 @@ type redisCachingTokenSource struct {
 
 	mu sync.Mutex
 
+	// purgeGen increments on every Purge, guarded by mu alongside inner. A fetch that started
+	// before a purge must not repopulate either cache tier once it completes - see Token/Purge.
+	purgeGen uint64
+
 	// localCache holds this instance's single cached token (size-1 SDK cache).
 	// TTL is unused (ttl=0); tokenFreshEnough applies the dynamic expiryBuffer instead.
 	localCache *cache.InMemoryCache[Token]
@@ -350,7 +354,15 @@ func (s *redisCachingTokenSource) Token(ctx context.Context) (*Token, error) {
 		}
 	}
 
-	tok, err := s.getInner().Token(ctx)
+	// inner and purgeGen are read together under one lock so the snapshot is consistent: a Purge
+	// landing between two separate reads could hand back the new inner paired with the new
+	// generation, defeating the staleness check below (see Purge).
+	s.mu.Lock()
+	inner := s.inner
+	gen := s.purgeGen
+	s.mu.Unlock()
+
+	tok, err := inner.Token(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +374,18 @@ func (s *redisCachingTokenSource) Token(ctx context.Context) (*Token, error) {
 		fixed.Expiry = time.Now().Add(s.defaultTTL)
 		tok = &fixed
 	}
+
+	s.mu.Lock()
+	stale := s.purgeGen != gen
+	s.mu.Unlock()
+	if stale {
+		// A Purge ran while this fetch was in flight, against the pre-purge inner. Hand the
+		// caller the token (still valid for this one request) but don't let it repopulate either
+		// cache tier - doing so would silently undo the purge for every later request until the
+		// expiry buffer elapses.
+		return tok, nil
+	}
+
 	s.setLocal(tok)
 
 	if s.redisClient != nil {
@@ -385,12 +409,6 @@ func (s *redisCachingTokenSource) setLocal(tok *Token) {
 	_ = s.localCache.Set(context.Background(), localTokenCacheKey, *tok) // never errors - see InMemoryCache.Set
 }
 
-func (s *redisCachingTokenSource) getInner() TokenSource {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.inner
-}
-
 // Purge clears both cache tiers and rebuilds inner, so the next Token() call
 // fetches fresh rather than reusing inner's own cached token. Deliberately
 // uses context.Background() (bounded by writeTimeout) since purging benefits
@@ -399,6 +417,9 @@ func (s *redisCachingTokenSource) Purge() {
 	_ = s.localCache.Delete(context.Background(), localTokenCacheKey)
 
 	s.mu.Lock()
+	// Bump purgeGen even if the rebuild below fails, so a fetch already in flight against the
+	// current (possibly still-bad) inner is still recognized as pre-purge and isn't cached.
+	s.purgeGen++
 	if fresh, err := buildTokenSource(s.params); err == nil {
 		s.inner = newResilientInner(fresh, s.params)
 	} else {
