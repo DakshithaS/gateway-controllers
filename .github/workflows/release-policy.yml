@@ -66,6 +66,17 @@ jobs:
       environments: ${{ steps.envs.outputs.environments }}
       tag_existed: ${{ steps.tag-check.outputs.tag_existed }}
 
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
