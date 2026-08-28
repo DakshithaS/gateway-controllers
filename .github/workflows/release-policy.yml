@@ -9,6 +9,14 @@
 # environments produces a tag-only release (no Policy Hub calls at all), and
 # releasing an already-tagged version to a new environment reuses that tag's
 # exact content rather than re-validating against whatever HEAD is now.
+#
+# When at least one environment is selected, the tag push is deferred to
+# that environment's approval-gated register job instead of happening in
+# job: release — so pushing it requires the same reviewer approval as
+# registration, and both show up together in one combined GitHub approval
+# screen. Whichever environment is approved first pushes the tag; a
+# concurrently-approved environment treats "tag already exists" as a
+# no-op, not a failure.
 
 name: Release Policy
 
@@ -48,9 +56,10 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------
-  # Validate, test, and tag the release. No Policy Hub / API calls
-  # happen here at all. Any failure writes its own summary and exits
-  # immediately — nothing downstream is needed to explain a failure.
+  # Validate, test, and (for a tag-only run) tag the release. No Policy
+  # Hub / API calls happen here at all. Any failure writes its own
+  # summary and exits immediately — nothing downstream is needed to
+  # explain a failure.
   # ------------------------------------------------------------
   release:
     name: Validate, Test & Release Policy
@@ -337,7 +346,11 @@ jobs:
           [[ -z "$(git status --porcelain)" ]] || fail "Working tree has untracked files after running tests"
 
       - name: Create and push tag
-        if: steps.tag-check.outputs.tag_existed == 'false'
+        # Only for a tag-only run (no environment selected) — otherwise the
+        # tag push is deferred to the approved register job for the same
+        # environment approval and single-approval-screen reasons explained
+        # at the top of this file.
+        if: steps.tag-check.outputs.tag_existed == 'false' && steps.envs.outputs.environments == '[]'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -366,16 +379,21 @@ jobs:
         shell: bash
         env:
           TAG_EXISTED: ${{ steps.tag-check.outputs.tag_existed }}
+          ENVIRONMENTS: ${{ steps.envs.outputs.environments }}
         run: |
           set -euo pipefail
 
-          TAG_STATUS="✅ Policy version released (tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed)"
-          if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
+          if [[ "$ENVIRONMENTS" == "[]" ]]; then
+            TAG_STATUS="✅ Policy version released (tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed)"
+            if [[ "$TAG_EXISTED" == "true" ]]; then
+              TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
+            fi
+          else
+            TAG_STATUS="⏳ Tag \`${{ steps.meta.outputs.tag_name }}\` will be pushed once an environment approves registration below"
           fi
 
           {
-            echo "## ✅ Validation, Tests & Tagging Passed"
+            echo "## ✅ Validation & Tests Passed"
             echo ""
             echo "| Item | Value |"
             echo "|------|------|"
@@ -390,8 +408,14 @@ jobs:
 
   # ------------------------------------------------------------
   # Register the policy in Policy Hub, once per selected environment.
-  # fail-fast: false so one environment's failure doesn't cancel the others.
-  # Skipped entirely when no environment was selected (tag-only release).
+  # Each matrix leg is gated by its own `environment:` approval, and all
+  # legs start waiting at once, so GitHub combines them into a single
+  # review screen. When the release tag hasn't been pushed yet, the
+  # leg that gets approved first pushes it (see "Create and push tag"
+  # below); a leg approved afterward finds it already on the remote and
+  # skips pushing. fail-fast: false so one environment's failure doesn't
+  # cancel the others. Skipped entirely when no environment was selected
+  # (tag-only release, already tagged in job: release).
   # ------------------------------------------------------------
   register:
     name: Register to ${{ matrix.environment }}
@@ -400,12 +424,55 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ matrix.environment }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.release.outputs.environments) }}
 
     steps:
+      - name: Checkout repository
+        if: needs.release.outputs.tag_existed == 'false'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create and push tag
+        if: needs.release.outputs.tag_existed == 'false'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Every selected environment's leg reaches here independently, as
+          # soon as its own approval clears — none of them wait on each
+          # other. Whichever leg lands first creates and pushes the tag; a
+          # concurrently-approved leg either sees it already on the remote
+          # (this check) or has its own push rejected as already-existing
+          # (below) — both are treated as success, not a failure.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️  Tag already exists on remote (pushed by a concurrently-approved environment) — skipping"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG_NAME" -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
+
+            if git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME" 2>push_error.log; then
+              echo "✅ Tag created and pushed: $TAG_NAME"
+            elif grep -qi "already exists" push_error.log; then
+              cat push_error.log
+              echo "ℹ️  Tag already exists on remote (race with a concurrently-approved environment) — treating as success"
+            else
+              cat push_error.log
+              echo "::error::Failed to push tag $TAG_NAME"
+              exit 1
+            fi
+          fi
+
       - name: Download policy definition
         uses: actions/download-artifact@v8
         with:
