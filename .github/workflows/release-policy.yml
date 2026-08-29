@@ -1,8 +1,8 @@
 # Release Policy
 #
-# Validates and tests a policy version (job: release), then creates its git
+# Validates and tests a policy version (job: validate), then creates its git
 # tag under GitHub Environment approval and, for each selected environment,
-# registers it with Policy Hub (jobs: tag-dev-approval / register).
+# registers it with Policy Hub (jobs: release-policy-tag-only / release-and-register-policy).
 #
 # Tag creation always requires environment approval: if no environment was
 # selected, the Dev environment's approval gates a tag-only release (no
@@ -57,8 +57,8 @@ jobs:
   # summary and exits immediately — nothing downstream is needed to
   # explain a failure.
   # ------------------------------------------------------------
-  release:
-    name: Validate, Test & Release Policy
+  validate:
+    name: Validate & Test Policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -96,7 +96,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -191,7 +191,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -250,7 +250,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -311,7 +311,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -332,7 +332,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -375,12 +375,13 @@ jobs:
   # ------------------------------------------------------------
   # Tag-only release path: when no environment was selected, tag creation
   # still requires sign-off. Gated on the Dev GitHub Environment's required
-  # reviewers. The `register` matrix below never runs in this case.
+  # reviewers. The `release-and-register-policy` matrix below never runs in
+  # this case.
   # ------------------------------------------------------------
-  tag-dev-approval:
-    name: Create Tag (Dev Approval)
-    needs: release
-    if: needs.release.outputs.environments == '[]'
+  release-policy-tag-only:
+    name: Release Policy (Tag-only)
+    needs: validate
+    if: needs.validate.outputs.environments == '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: dev
@@ -394,11 +395,11 @@ jobs:
           fetch-depth: 0
 
       - name: Create and push tag
-        if: needs.release.outputs.tag_existed == 'false'
+        if: needs.validate.outputs.tag_existed == 'false'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
         run: |
           set -euo pipefail
 
@@ -415,8 +416,8 @@ jobs:
       - name: Publish summary
         shell: bash
         env:
-          TAG_EXISTED: ${{ needs.release.outputs.tag_existed }}
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          TAG_EXISTED: ${{ needs.validate.outputs.tag_existed }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
         run: |
           set -euo pipefail
 
@@ -434,23 +435,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
-  # Register the policy in Policy Hub, once per selected environment.
-  # fail-fast: false so one environment's failure doesn't cancel the others.
-  # Skipped entirely when no environment was selected (tag-only release,
-  # handled instead by tag-dev-approval above).
+  # Create the release tag and register the policy in Policy Hub, once per
+  # selected environment. fail-fast: false so one environment's failure
+  # doesn't cancel the others. Skipped entirely when no environment was
+  # selected (tag-only release, handled instead by release-policy-tag-only
+  # above).
   #
-  # Also responsible for creating the release tag: each environment's
-  # approval gate covers both tag creation and registration for that
-  # environment, so there is exactly one approval per environment rather
-  # than a separate gate stacked in front of this one. Because multiple
-  # environments can be approved independently and concurrently, whichever
-  # leg is approved first creates the tag; the others detect it already
-  # exists and skip creating it (see the concurrency-safe check below).
+  # Each environment's approval gate covers both tag creation and
+  # registration for that environment, so there is exactly one approval per
+  # environment rather than a separate gate stacked in front of this one.
+  # Because multiple environments can be approved independently and
+  # concurrently, whichever leg is approved first creates the tag; the
+  # others detect it already exists and skip creating it (see the
+  # concurrency-safe check below).
   # ------------------------------------------------------------
-  register:
-    name: Register to ${{ matrix.environment }}
-    needs: release
-    if: needs.release.outputs.environments != '[]'
+  release-and-register-policy:
+    name: Release & Register to ${{ matrix.environment }}
+    needs: validate
+    if: needs.validate.outputs.environments != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ matrix.environment }}
@@ -459,7 +461,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: ${{ fromJson(needs.release.outputs.environments) }}
+        environment: ${{ fromJson(needs.validate.outputs.environments) }}
 
     steps:
       - name: Checkout repository
@@ -468,11 +470,11 @@ jobs:
           fetch-depth: 0
 
       - name: Create and push tag
-        if: needs.release.outputs.tag_existed == 'false'
+        if: needs.validate.outputs.tag_existed == 'false'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
         run: |
           set -euo pipefail
 
@@ -510,7 +512,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: policy-definition
-          path: ${{ needs.release.outputs.target_dir }}
+          path: ${{ needs.validate.outputs.target_dir }}
 
       - name: Register policy in Policy Hub
         shell: bash
@@ -519,18 +521,18 @@ jobs:
           POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
-          TARGET_DIR: ${{ needs.release.outputs.target_dir }}
+          TARGET_DIR: ${{ needs.validate.outputs.target_dir }}
           ENV_NAME: ${{ matrix.environment }}
           TAG_STATUS: ${{ env.TAG_STATUS || 'ℹ️ This policy version was already released — reused its content' }}
         run: |
           set -euo pipefail
 
-          # Writes one "### Registration: <env>" block to the job summary per
-          # invocation — every matrix leg's outcome shows up on the run's
-          # Summary page without needing a separate aggregator job.
+          # Writes one "### Release & Registration: <env>" block to the job
+          # summary per invocation — every matrix leg's outcome shows up on
+          # the run's Summary page without needing a separate aggregator job.
           summarize() {
             {
-              echo "### Registration: $ENV_NAME"
+              echo "### Release & Registration: $ENV_NAME"
               echo ""
               echo "| Field | Value |"
               echo "|-------|-------|"
