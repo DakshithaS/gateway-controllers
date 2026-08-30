@@ -121,7 +121,7 @@ jobs:
           [[ "$RELEASE_PRODUCTION" == "true" ]] && ENVS+=("production")
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
-            echo "ℹ️  No environment selected — this will be a tag-only release (no Policy Hub registration)"
+            echo "ℹ️ No environment selected — this will be a tag-only release (no Policy Hub registration)"
             JSON="[]"
           else
             echo "Selected environments: ${ENVS[*]}"
@@ -163,13 +163,13 @@ jobs:
       - name: Check for existing release tag
         id: tag-check
         shell: bash
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
         run: |
           set -euo pipefail
 
-          TAG_NAME="${{ steps.meta.outputs.tag_name }}"
-
           if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-            echo "ℹ️  Tag already exists: $TAG_NAME"
+            echo "ℹ️ Tag already exists: $TAG_NAME"
             git show "$TAG_NAME" --no-patch --format="Tagged commit: %H (%ai) - %s"
             echo "Checking out that exact commit so every selected environment releases identical content."
             git checkout "refs/tags/$TAG_NAME"
@@ -186,6 +186,8 @@ jobs:
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
           CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
+          EXPECTED_MODULE_PATH: ${{ steps.meta.outputs.module_path }}
         run: |
           set -euo pipefail
 
@@ -195,7 +197,6 @@ jobs:
             exit 1
           }
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
           MAJOR="${VERSION_INPUT%%.*}"
 
           [[ -d "$DIR" ]] || fail "Missing directory: $DIR"
@@ -208,7 +209,7 @@ jobs:
 
           if [[ -f "$DIR/go.mod" ]]; then
             echo "RUNTIME=go" >> "$GITHUB_ENV"
-            EXPECTED="${{ steps.meta.outputs.module_path }}"
+            EXPECTED="$EXPECTED_MODULE_PATH"
             ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
             [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
@@ -245,6 +246,7 @@ jobs:
         shell: bash
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
         run: |
           set -euo pipefail
 
@@ -254,7 +256,6 @@ jobs:
             exit 1
           }
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
           INPUT_VERSION="$VERSION_INPUT"
 
           POLICY_DEF_VERSION=$(yq eval '.version' "$DIR/policy-definition.yaml")
@@ -306,6 +307,8 @@ jobs:
       - name: Run policy tests
         working-directory: ${{ steps.meta.outputs.target_dir }}
         shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
         run: |
           set -euo pipefail
 
@@ -316,12 +319,12 @@ jobs:
           }
 
           if [[ "${RUNTIME}" == "go" ]]; then
-            go test -v -race ./... || fail "Go tests failed for policy ${{ inputs.policy }}"
+            go test -v -race ./... || fail "Go tests failed for policy $POLICY_INPUT"
           elif [[ "${RUNTIME}" == "python" ]]; then
             if python -m pytest --version 2>/dev/null; then
-              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy ${{ inputs.policy }}"
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy $POLICY_INPUT"
             else
-              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy ${{ inputs.policy }}"
+              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy $POLICY_INPUT"
             fi
           fi
 
@@ -350,12 +353,16 @@ jobs:
         shell: bash
         env:
           TAG_EXISTED: ${{ steps.tag-check.outputs.tag_existed }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          MODULE_PATH: ${{ steps.meta.outputs.module_path }}
         run: |
           set -euo pipefail
 
           TAG_STATUS="⏳ Pending environment approval — this policy version will be released once approved"
           if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
+            TAG_STATUS="ℹ️ This policy version was already released (tag \`$TAG_NAME\`) — reused its content, no new policy module released"
           fi
 
           {
@@ -363,10 +370,10 @@ jobs:
             echo ""
             echo "| Item | Value |"
             echo "|------|------|"
-            echo "| Policy | \`${{ inputs.policy }}\` |"
-            echo "| Version | \`${{ inputs.version }}\` |"
-            echo "| Tag | \`${{ steps.meta.outputs.tag_name }}\` |"
-            echo "| Package Path | \`${{ steps.meta.outputs.module_path }}\` |"
+            echo "| Policy | \`$POLICY_INPUT\` |"
+            echo "| Version | \`$VERSION_INPUT\` |"
+            echo "| Tag | \`$TAG_NAME\` |"
+            echo "| Package Path | \`$MODULE_PATH\` |"
             echo ""
             echo "**Tests:** ✅ Passed"
             echo ""
@@ -403,13 +410,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git tag -a "$TAG_NAME" -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
+          git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
 
           git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
             "$TAG_NAME"
@@ -476,6 +485,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
@@ -484,23 +495,32 @@ jobs:
 
           # Multiple environments can be approved independently and around
           # the same time, so more than one matrix leg can reach this step.
-          # Re-check right before creating, and treat losing the race to
-          # another leg's push as success rather than failing this leg.
-          git fetch origin "refs/tags/$TAG_NAME" >/dev/null 2>&1 || true
-
+          # Check the remote directly right before creating — a plain `git
+          # fetch` of a single ref only updates FETCH_HEAD, not a local tag
+          # ref, so it can't be used for this check — and treat losing the
+          # race to another leg's push as success rather than failing this leg.
           TAG_STATUS="✅ Policy released — tag created and pushed following this environment's approval"
-          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-            echo "ℹ️  Tag already created by another environment's approval — nothing to do"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ Tag already created by another environment's approval — nothing to do"
             TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
           else
-            git tag -a "$TAG_NAME" -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
+            git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
 
             if ! PUSH_OUTPUT=$(git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME" 2>&1); then
               if echo "$PUSH_OUTPUT" | grep -qi "already exists"; then
-                echo "ℹ️  Lost the race to another environment's approval — tag already exists remotely"
+                echo "ℹ️ Lost the race to another environment's approval — tag already exists remotely"
                 TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
               else
+                echo "::error::Failed to push tag $TAG_NAME"
                 echo "$PUSH_OUTPUT"
+                {
+                  echo "## ❌ Failed"
+                  echo ""
+                  echo "**Error:** Failed to push tag \`$TAG_NAME\`"
+                  echo '```'
+                  echo "$PUSH_OUTPUT"
+                  echo '```'
+                } >> "$GITHUB_STEP_SUMMARY"
                 exit 1
               fi
             else
@@ -565,7 +585,7 @@ jobs:
           elif [[ "$STATUS" == "409" ]]; then
             MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
             [[ -z "$MESSAGE" ]] && MESSAGE="Version already released to this environment"
-            echo "ℹ️  Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
+            echo "ℹ️ Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
             summarize "ℹ️ Already released" "$MESSAGE"
           elif [[ "$STATUS" == "401" ]]; then
             # Never echo the response body for 401s: some APIs reflect request

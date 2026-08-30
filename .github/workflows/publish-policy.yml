@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       minor_version:
-        description: 'Minor version (e.g., 0.1, 1.2, or v0.1)'
+        description: 'Minor version (e.g., 0.1, 1.2, v0.1, or 1.2.0)'
         required: true
         type: string
       publish_dev:
@@ -83,7 +83,7 @@ jobs:
           [[ "$PUBLISH_PRODUCTION" == "true" ]] && ENVS+=("production")
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
-            echo "ℹ️  No environment selected — nothing will be published"
+            echo "ℹ️ No environment selected — nothing will be published"
             JSON="[]"
           else
             echo "Selected environments: ${ENVS[*]}"
@@ -268,7 +268,7 @@ jobs:
             cp -r "$ASSETS_SOURCE" "$PACKAGE_DIR/"
             echo "✅ Copied assets folder"
           else
-            echo "ℹ️  No assets folder found (optional)"
+            echo "ℹ️ No assets folder found (optional)"
           fi
 
           # Create zip file
@@ -358,23 +358,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "${POLICY_HUB_URL:-}" ]]; then
-            echo "::error::Missing POLICY_HUB_URL environment variable"
-            {
-              echo "## ❌ Configuration Error"
-              echo "**Error:** Missing POLICY_HUB_URL environment variable"
-            } >> "$GITHUB_STEP_SUMMARY"
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          fi
+          }
 
-          if [[ -z "${POLICY_HUB_TOKEN:-}" ]]; then
-            echo "::error::Missing POLICY_HUB_TOKEN secret"
-            {
-              echo "## ❌ Configuration Error"
-              echo "**Error:** Missing POLICY_HUB_TOKEN secret"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          [[ -n "${POLICY_HUB_URL:-}" ]] || fail "Missing POLICY_HUB_URL environment variable"
+          [[ -n "${POLICY_HUB_TOKEN:-}" ]] || fail "Missing POLICY_HUB_TOKEN secret"
 
           echo "✅ API configuration validated"
           echo "API_URL=$POLICY_HUB_URL" >> "$GITHUB_ENV"
