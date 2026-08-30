@@ -369,7 +369,10 @@ jobs:
             echo "| Package Path | \`${{ steps.meta.outputs.module_path }}\` |"
             echo ""
             echo "**Tests:** ✅ Passed"
-            echo "**Tag:** $TAG_STATUS"
+            echo ""
+            echo "## ℹ️ Release Status"
+            echo ""
+            echo "$TAG_STATUS"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
@@ -423,15 +426,13 @@ jobs:
 
           TAG_STATUS="✅ Tag created and pushed following Dev approval"
           if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ Tag already existed — reused its content, nothing new pushed"
+            TAG_STATUS="ℹ️ Policy already released — reused the existing tag, nothing new pushed"
           fi
 
           {
             echo "### Tag: $TAG_NAME"
             echo ""
             echo "**Status:** $TAG_STATUS"
-            echo ""
-            echo "No environment was selected for this release, so this was a tag-only release — Policy Hub registration was not run."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
