@@ -353,7 +353,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG_STATUS="⏳ Pending environment approval — tag \`${{ steps.meta.outputs.tag_name }}\` will be created once approved"
+          TAG_STATUS="⏳ Pending environment approval — this policy version will be released once approved"
           if [[ "$TAG_EXISTED" == "true" ]]; then
             TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
           fi
@@ -424,7 +424,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG_STATUS="✅ Tag created and pushed following Dev approval"
+          TAG_STATUS="✅ Policy released — tag created and pushed (not registered to any environment)"
           if [[ "$TAG_EXISTED" == "true" ]]; then
             TAG_STATUS="ℹ️ Policy already released — reused the existing tag, nothing new pushed"
           fi
@@ -488,17 +488,17 @@ jobs:
           # another leg's push as success rather than failing this leg.
           git fetch origin "refs/tags/$TAG_NAME" >/dev/null 2>&1 || true
 
-          TAG_STATUS="✅ Created and pushed following this environment's approval"
+          TAG_STATUS="✅ Policy released — tag created and pushed following this environment's approval"
           if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
             echo "ℹ️  Tag already created by another environment's approval — nothing to do"
-            TAG_STATUS="ℹ️ Already created by another environment's approval"
+            TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
           else
             git tag -a "$TAG_NAME" -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
 
             if ! PUSH_OUTPUT=$(git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME" 2>&1); then
               if echo "$PUSH_OUTPUT" | grep -qi "already exists"; then
                 echo "ℹ️  Lost the race to another environment's approval — tag already exists remotely"
-                TAG_STATUS="ℹ️ Lost the race to another environment's approval — already exists remotely"
+                TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
               else
                 echo "$PUSH_OUTPUT"
                 exit 1
