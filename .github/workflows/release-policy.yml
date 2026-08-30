@@ -1,14 +1,17 @@
 # Release Policy
 #
-# Validates, tests, and tags a policy version (job: release), then registers
-# it with Policy Hub for each selected environment (job: register).
+# Validates and tests a policy version (job: validate), then creates its git
+# tag under GitHub Environment approval and, for each selected environment,
+# registers it with Policy Hub (jobs: release-policy-tag-only / release-and-register-policy).
 #
-# Tagging never depends on registration succeeding: a git tag only asserts
-# "this version passed validation and tests". Policy Hub registration is a
-# separate, independently retryable concern per environment — selecting zero
-# environments produces a tag-only release (no Policy Hub calls at all), and
-# releasing an already-tagged version to a new environment reuses that tag's
-# exact content rather than re-validating against whatever HEAD is now.
+# Tag creation always requires environment approval: if no environment was
+# selected, the Dev environment's approval gates a tag-only release (no
+# Policy Hub calls at all); if one or more environments were selected,
+# approval for any one of them is enough to create the tag, and each
+# environment's own approval separately gates its own Policy Hub
+# registration. Releasing an already-tagged version to a new environment
+# reuses that tag's exact content rather than re-validating against
+# whatever HEAD is now.
 
 name: Release Policy
 
@@ -48,16 +51,16 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------
-  # Validate, test, and tag the release. No Policy Hub / API calls
-  # happen here at all. Any failure writes its own summary and exits
-  # immediately — nothing downstream is needed to explain a failure.
+  # Validate and test the release. No tagging, environment approval, or
+  # Policy Hub / API calls happen here at all — tag creation is gated by
+  # environment approval in the jobs below. Any failure writes its own
+  # summary and exits immediately — nothing downstream is needed to
+  # explain a failure.
   # ------------------------------------------------------------
-  release:
-    name: Validate, Test & Release Policy
+  validate:
+    name: Validate & Test Policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
     outputs:
       target_dir: ${{ steps.meta.outputs.target_dir }}
       module_path: ${{ steps.meta.outputs.module_path }}
@@ -93,7 +96,7 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
@@ -118,7 +121,7 @@ jobs:
           [[ "$RELEASE_PRODUCTION" == "true" ]] && ENVS+=("production")
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
-            echo "ℹ️  No environment selected — this will be a tag-only release (no Policy Hub registration)"
+            echo "ℹ️ No environment selected — this will be a tag-only release (no Policy Hub registration)"
             JSON="[]"
           else
             echo "Selected environments: ${ENVS[*]}"
@@ -160,13 +163,13 @@ jobs:
       - name: Check for existing release tag
         id: tag-check
         shell: bash
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
         run: |
           set -euo pipefail
 
-          TAG_NAME="${{ steps.meta.outputs.tag_name }}"
-
           if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-            echo "ℹ️  Tag already exists: $TAG_NAME"
+            echo "ℹ️ Tag already exists: $TAG_NAME"
             git show "$TAG_NAME" --no-patch --format="Tagged commit: %H (%ai) - %s"
             echo "Checking out that exact commit so every selected environment releases identical content."
             git checkout "refs/tags/$TAG_NAME"
@@ -183,16 +186,17 @@ jobs:
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
           CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
+          EXPECTED_MODULE_PATH: ${{ steps.meta.outputs.module_path }}
         run: |
           set -euo pipefail
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
           MAJOR="${VERSION_INPUT%%.*}"
 
           [[ -d "$DIR" ]] || fail "Missing directory: $DIR"
@@ -205,7 +209,7 @@ jobs:
 
           if [[ -f "$DIR/go.mod" ]]; then
             echo "RUNTIME=go" >> "$GITHUB_ENV"
-            EXPECTED="${{ steps.meta.outputs.module_path }}"
+            EXPECTED="$EXPECTED_MODULE_PATH"
             ACTUAL=$(grep '^module ' "$DIR/go.mod" | awk '{print $2}')
 
             [[ "$EXPECTED" == "$ACTUAL" ]] || fail "go.mod module mismatch. Expected: $EXPECTED, Actual: $ACTUAL"
@@ -242,16 +246,16 @@ jobs:
         shell: bash
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          DIR: ${{ steps.meta.outputs.target_dir }}
         run: |
           set -euo pipefail
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
-          DIR="${{ steps.meta.outputs.target_dir }}"
           INPUT_VERSION="$VERSION_INPUT"
 
           POLICY_DEF_VERSION=$(yq eval '.version' "$DIR/policy-definition.yaml")
@@ -303,22 +307,24 @@ jobs:
       - name: Run policy tests
         working-directory: ${{ steps.meta.outputs.target_dir }}
         shell: bash
+        env:
+          POLICY_INPUT: ${{ inputs.policy }}
         run: |
           set -euo pipefail
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
           if [[ "${RUNTIME}" == "go" ]]; then
-            go test -v -race ./... || fail "Go tests failed for policy ${{ inputs.policy }}"
+            go test -v -race ./... || fail "Go tests failed for policy $POLICY_INPUT"
           elif [[ "${RUNTIME}" == "python" ]]; then
             if python -m pytest --version 2>/dev/null; then
-              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy ${{ inputs.policy }}"
+              PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ -v || fail "Python tests failed for policy $POLICY_INPUT"
             else
-              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy ${{ inputs.policy }}"
+              PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v || fail "Python tests failed for policy $POLICY_INPUT"
             fi
           fi
 
@@ -329,31 +335,12 @@ jobs:
 
           fail() {
             echo "::error::$1"
-            { echo "## ❌ Release Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
+            { echo "## ❌ Validation Failed"; echo ""; echo "**Error:** $1"; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
 
           git diff --exit-code || fail "Working tree has uncommitted changes after running tests"
           [[ -z "$(git status --porcelain)" ]] || fail "Working tree has untracked files after running tests"
-
-      - name: Create and push tag
-        if: steps.tag-check.outputs.tag_existed == 'false'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git tag -a "${{ steps.meta.outputs.tag_name }}" \
-            -m "Release ${{ inputs.policy }} v${{ inputs.version }}"
-
-          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
-            "${{ steps.meta.outputs.tag_name }}"
-
-          echo "✅ Tag created and pushed: ${{ steps.meta.outputs.tag_name }}"
 
       - name: Upload policy definition for registration
         uses: actions/upload-artifact@v7
@@ -366,51 +353,187 @@ jobs:
         shell: bash
         env:
           TAG_EXISTED: ${{ steps.tag-check.outputs.tag_existed }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          MODULE_PATH: ${{ steps.meta.outputs.module_path }}
         run: |
           set -euo pipefail
 
-          TAG_STATUS="✅ Policy version released (tag \`${{ steps.meta.outputs.tag_name }}\` created and pushed)"
+          TAG_STATUS="⏳ Pending environment approval — this policy version will be released once approved"
           if [[ "$TAG_EXISTED" == "true" ]]; then
-            TAG_STATUS="ℹ️ This policy version was already released (tag \`${{ steps.meta.outputs.tag_name }}\`) — reused its content, no new policy module released"
+            TAG_STATUS="ℹ️ This policy version was already released (tag \`$TAG_NAME\`) — reused its content, no new policy module released"
           fi
 
           {
-            echo "## ✅ Validation, Tests & Tagging Passed"
+            echo "## ✅ Validation & Tests Passed"
             echo ""
             echo "| Item | Value |"
             echo "|------|------|"
-            echo "| Policy | \`${{ inputs.policy }}\` |"
-            echo "| Version | \`${{ inputs.version }}\` |"
-            echo "| Tag | \`${{ steps.meta.outputs.tag_name }}\` |"
-            echo "| Package Path | \`${{ steps.meta.outputs.module_path }}\` |"
+            echo "| Policy | \`$POLICY_INPUT\` |"
+            echo "| Version | \`$VERSION_INPUT\` |"
+            echo "| Tag | \`$TAG_NAME\` |"
+            echo "| Package Path | \`$MODULE_PATH\` |"
             echo ""
             echo "**Tests:** ✅ Passed"
-            echo "**Tag:** $TAG_STATUS"
+            echo ""
+            echo "## ℹ️ Release Status"
+            echo ""
+            echo "$TAG_STATUS"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------
-  # Register the policy in Policy Hub, once per selected environment.
-  # fail-fast: false so one environment's failure doesn't cancel the others.
-  # Skipped entirely when no environment was selected (tag-only release).
+  # Tag-only release path: when no environment was selected, tag creation
+  # still requires sign-off. Gated on the Dev GitHub Environment's required
+  # reviewers. The `release-and-register-policy` matrix below never runs in
+  # this case.
   # ------------------------------------------------------------
-  register:
-    name: Register to ${{ matrix.environment }}
-    needs: release
-    if: needs.release.outputs.environments != '[]'
+  release-policy-tag-only:
+    name: Release Policy (Tag-only)
+    needs: validate
+    if: needs.validate.outputs.environments == '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: dev
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        if: needs.validate.outputs.tag_existed == 'false'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
+
+          git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" \
+            "$TAG_NAME"
+
+          echo "✅ Tag created and pushed: $TAG_NAME"
+
+      - name: Publish summary
+        shell: bash
+        env:
+          TAG_EXISTED: ${{ needs.validate.outputs.tag_existed }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          TAG_STATUS="✅ Policy released — tag created and pushed (not registered to any environment)"
+          if [[ "$TAG_EXISTED" == "true" ]]; then
+            TAG_STATUS="ℹ️ Policy already released — reused the existing tag, nothing new pushed"
+          fi
+
+          {
+            echo "### Tag: $TAG_NAME"
+            echo ""
+            echo "**Status:** $TAG_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------
+  # Create the release tag and register the policy in Policy Hub, once per
+  # selected environment. fail-fast: false so one environment's failure
+  # doesn't cancel the others. Skipped entirely when no environment was
+  # selected (tag-only release, handled instead by release-policy-tag-only
+  # above).
+  #
+  # Each environment's approval gate covers both tag creation and
+  # registration for that environment, so there is exactly one approval per
+  # environment rather than a separate gate stacked in front of this one.
+  # Because multiple environments can be approved independently and
+  # concurrently, whichever leg is approved first creates the tag; the
+  # others detect it already exists and skip creating it (see the
+  # concurrency-safe check below).
+  # ------------------------------------------------------------
+  release-and-register-policy:
+    name: Release & Register to ${{ matrix.environment }}
+    needs: validate
+    if: needs.validate.outputs.environments != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ matrix.environment }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        environment: ${{ fromJson(needs.release.outputs.environments) }}
+        environment: ${{ fromJson(needs.validate.outputs.environments) }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        if: needs.validate.outputs.tag_existed == 'false'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          POLICY_INPUT: ${{ inputs.policy }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Multiple environments can be approved independently and around
+          # the same time, so more than one matrix leg can reach this step.
+          # Check the remote directly right before creating — a plain `git
+          # fetch` of a single ref only updates FETCH_HEAD, not a local tag
+          # ref, so it can't be used for this check — and treat losing the
+          # race to another leg's push as success rather than failing this leg.
+          TAG_STATUS="✅ Policy released — tag created and pushed following this environment's approval"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "ℹ️ Tag already created by another environment's approval — nothing to do"
+            TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
+          else
+            git tag -a "$TAG_NAME" -m "Release $POLICY_INPUT v$VERSION_INPUT"
+
+            if ! PUSH_OUTPUT=$(git push "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "$TAG_NAME" 2>&1); then
+              if echo "$PUSH_OUTPUT" | grep -qi "already exists"; then
+                echo "ℹ️ Lost the race to another environment's approval — tag already exists remotely"
+                TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
+              else
+                echo "::error::Failed to push tag $TAG_NAME"
+                echo "$PUSH_OUTPUT"
+                {
+                  echo "## ❌ Failed"
+                  echo ""
+                  echo "**Error:** Failed to push tag \`$TAG_NAME\`"
+                  echo '```'
+                  echo "$PUSH_OUTPUT"
+                  echo '```'
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+            else
+              echo "✅ Tag created and pushed: $TAG_NAME"
+            fi
+          fi
+          echo "TAG_STATUS=$TAG_STATUS" >> "$GITHUB_ENV"
+
       - name: Download policy definition
         uses: actions/download-artifact@v8
         with:
           name: policy-definition
-          path: ${{ needs.release.outputs.target_dir }}
+          path: ${{ needs.validate.outputs.target_dir }}
 
       - name: Register policy in Policy Hub
         shell: bash
@@ -419,22 +542,24 @@ jobs:
           POLICY_HUB_TOKEN: ${{ secrets.POLICY_HUB_TOKEN }}
           POLICY_INPUT: ${{ inputs.policy }}
           VERSION_INPUT: ${{ inputs.version }}
-          TARGET_DIR: ${{ needs.release.outputs.target_dir }}
+          TARGET_DIR: ${{ needs.validate.outputs.target_dir }}
           ENV_NAME: ${{ matrix.environment }}
+          TAG_STATUS: ${{ env.TAG_STATUS || 'ℹ️ This policy version was already released — reused its content' }}
         run: |
           set -euo pipefail
 
-          # Writes one "### Registration: <env>" block to the job summary per
-          # invocation — every matrix leg's outcome shows up on the run's
-          # Summary page without needing a separate aggregator job.
+          # Writes one "### Release & Registration: <env>" block to the job
+          # summary per invocation — every matrix leg's outcome shows up on
+          # the run's Summary page without needing a separate aggregator job.
           summarize() {
             {
-              echo "### Registration: $ENV_NAME"
+              echo "### Release & Registration: $ENV_NAME"
               echo ""
               echo "| Field | Value |"
               echo "|-------|-------|"
               echo "| Policy | \`$POLICY_INPUT\` |"
               echo "| Version | \`$VERSION_INPUT\` |"
+              echo "| Tag | $TAG_STATUS |"
               echo "| Status | $1 |"
               echo "| Message | $2 |"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -460,7 +585,7 @@ jobs:
           elif [[ "$STATUS" == "409" ]]; then
             MESSAGE=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null || true)
             [[ -z "$MESSAGE" ]] && MESSAGE="Version already released to this environment"
-            echo "ℹ️  Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
+            echo "ℹ️ Already released to $ENV_NAME (HTTP 409) — treating as no-op, not a failure"
             summarize "ℹ️ Already released" "$MESSAGE"
           elif [[ "$STATUS" == "401" ]]; then
             # Never echo the response body for 401s: some APIs reflect request
