@@ -85,6 +85,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate inputs
         shell: bash
@@ -403,6 +404,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Create and push tag
         if: needs.validate.outputs.tag_existed == 'false'
@@ -478,6 +480,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Create and push tag
         if: needs.validate.outputs.tag_existed == 'false'
@@ -576,8 +579,8 @@ jobs:
             -H "api-key: $POLICY_HUB_TOKEN" \
             -F "definition=@$TARGET_DIR/policy-definition.yaml;type=application/yaml")
 
-          STATUS=$(echo "$RESPONSE" | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
-          BODY=$(echo "$RESPONSE" | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
+          STATUS="${RESPONSE##*HTTPSTATUS:}"
+          BODY="${RESPONSE%HTTPSTATUS:*}"
 
           if [[ "$STATUS" =~ ^(200|201)$ ]]; then
             echo "✅ Released to $ENV_NAME"
