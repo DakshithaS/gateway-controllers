@@ -503,7 +503,7 @@ jobs:
           # ref, so it can't be used for this check — and treat losing the
           # race to another leg's push as success rather than failing this leg.
           TAG_STATUS="✅ Policy released — tag created and pushed following this environment's approval"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags "https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git" "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
             echo "ℹ️ Tag already created by another environment's approval — nothing to do"
             TAG_STATUS="ℹ️ Policy already released by another environment's approval — reusing that tag"
           else
