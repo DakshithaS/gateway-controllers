@@ -78,9 +78,9 @@ jobs:
           set -euo pipefail
 
           ENVS=()
-          [[ "$PUBLISH_DEV" == "true" ]] && ENVS+=("dev")
-          [[ "$PUBLISH_STAGING" == "true" ]] && ENVS+=("staging")
-          [[ "$PUBLISH_PRODUCTION" == "true" ]] && ENVS+=("production")
+          [[ "$PUBLISH_DEV" == "true" ]] && ENVS+=("Dev")
+          [[ "$PUBLISH_STAGING" == "true" ]] && ENVS+=("Staging")
+          [[ "$PUBLISH_PRODUCTION" == "true" ]] && ENVS+=("Production")
 
           if [[ ${#ENVS[@]} -eq 0 ]]; then
             echo "ℹ️ No environment selected — nothing will be published"
