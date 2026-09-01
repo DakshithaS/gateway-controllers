@@ -348,7 +348,7 @@ jobs:
         with:
           name: policy-definition
           path: ${{ steps.meta.outputs.target_dir }}/policy-definition.yaml
-          retention-days: 1
+          retention-days: 7
 
       - name: Publish summary
         shell: bash
